@@ -1,0 +1,337 @@
+import hashlib
+import json
+import os
+import random
+import sys
+import tempfile
+import time
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from katago_mcp.board import BLACK, WHITE, Board, IllegalMove  # noqa: E402
+from katago_mcp.config import Config  # noqa: E402
+from katago_mcp.coords import idx_to_gtp, idx_to_sgf, gtp_to_idx, star_points  # noqa: E402
+from katago_mcp.engine import MockEngine  # noqa: E402
+from katago_mcp.tools import Tools, ToolError, encode_ownership, decode_ownership  # noqa: E402
+
+
+def synthetic_game(n_moves: int = 70, seed: int = 7, handicap: int = 0) -> str:
+    """Random-but-legal game biased toward the corners and existing stones."""
+    rng = random.Random(seed)
+    board = Board()
+    setup = []
+    if handicap:
+        hs = ["Q16", "D4", "Q4", "D16", "K10", "D10", "Q10", "K16", "K4"][:handicap]
+        for p in hs:
+            board.place(BLACK, gtp_to_idx(p))
+            setup.append(idx_to_sgf(gtp_to_idx(p)))
+    color = WHITE if handicap >= 2 else BLACK
+    moves = []
+    stars = list(star_points())
+    for n in range(n_moves):
+        cands = []
+        if n < 6 and not handicap:
+            cands = [s for s in stars if board.cells[s] == 0]
+        else:
+            stones = board.stones()
+            near = set()
+            for s in stones:
+                r, c = divmod(s, 19)
+                for rr in range(max(0, r - 2), min(19, r + 3)):
+                    for cc in range(max(0, c - 2), min(19, c + 3)):
+                        i = rr * 19 + cc
+                        if board.cells[i] == 0:
+                            near.add(i)
+            cands = list(near)
+        rng.shuffle(cands)
+        for idx in cands:
+            try:
+                board = board.play(color, idx, "japanese")
+                moves.append((color, idx))
+                break
+            except IllegalMove:
+                continue
+        color = BLACK if color == WHITE else WHITE
+    body = "".join(f";{'B' if c == BLACK else 'W'}[{idx_to_sgf(i)}]" for c, i in moves)
+    ab = f"HA[{handicap}]AB" + "".join(f"[{s}]" for s in setup) if handicap else ""
+    komi = "0.5" if handicap else "6.5"
+    return (f"(;GM[1]FF[4]SZ[19]{ab}KM[{komi}]RU[Japanese]PB[cwhay888]BR[7k]PW[rival]WR[6k]RE[W+R]"
+            f"PC[OGS: https://online-go.com/game/{1000 + seed}]{body})")
+
+
+class MockToolsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cfg = Config()
+        cfg.reviews_dir = os.path.join(cls.tmp.name, "reviews")
+        cfg.throughput.visits_per_second_sustained = 650.0
+        cls.tools = Tools(cfg, engine=MockEngine(), start_engine=True)
+        cls.sgf = synthetic_game(70, seed=7)
+        cls.summary = cls.tools.sgf_summary(cls.sgf)
+        cls.plan = cls.tools.plan_budget(40, move_count=70)
+        cls.started = cls.tools.start_game_analysis(cls.sgf, {"profile": "survey"})
+        cls.job_id = cls.started["job_id"]
+        for _ in range(600):
+            st = cls.tools.job_status(cls.job_id)
+            if st["state"] in ("done", "failed", "cancelled"):
+                break
+            time.sleep(0.05)
+        cls.status = st
+        cls.digest = cls.tools.job_results(cls.job_id, "digest", max_episodes=6)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tools.close()
+        cls.tmp.cleanup()
+
+    # ---------------------------------------------------------------- summary / plan / job
+    def test_sgf_summary(self):
+        s = self.summary
+        self.assertEqual(s["student"]["color"], "B")
+        self.assertEqual(s["opponent"]["human_profile"], "rank_6k")
+        self.assertEqual(s["moves"]["count"], 70)
+        self.assertEqual(s["rules"]["katago_rules"], "japanese")
+        self.assertEqual(s["result"]["method"], "resign")
+        self.assertEqual(s["moves"]["resign_after_move"], 70)
+        self.assertEqual([b["after_move"] for b in s["boards"]], [50, 70])
+        self.assertTrue(s["boards"][0]["ascii"].startswith("Black to move" if 50 % 2 == 0 else "White to move"))
+        self.assertEqual(s["profiles"], {"peer": "rank_7k", "target": "rank_4k", "horizon": "rank_1d", "opponent": "rank_6k"})
+
+    def test_plan_and_job(self):
+        self.assertTrue(self.plan["feasible"])
+        self.assertEqual(self.started["visits_per_move"], self.plan["profiles"]["survey"])
+        self.assertEqual(self.status["state"], "done", self.status.get("error"))
+        self.assertEqual(self.status["positions_done"], 71)
+        d = self.digest
+        self.assertTrue(d["complete"])
+        self.assertEqual(d["game"]["student_color"], "B")
+        self.assertEqual(d["phases"]["opening"][0], 1)
+        self.assertGreaterEqual(d["points_lost"]["student"]["total"], 0.0)
+        self.assertEqual(d["points_lost"]["student"]["moves"], 35)
+        eps = d["episodes"]
+        self.assertTrue(eps, "mock game should produce at least one episode")
+        totals = [e["points_lost_total"] for e in eps]
+        self.assertEqual(totals, sorted(totals, reverse=True))
+        e = eps[0]
+        for key in ("root", "region", "phase", "acceptable_set", "signature", "style_axis", "human", "learnability",
+                    "candidate_tags", "pattern_hash", "stability", "group_status_change"):
+            self.assertIn(key, e)
+        self.assertIn(e["region"]["standard"], ("UL", "U", "UR", "L", "C", "R", "LL", "D", "LR"))
+        self.assertTrue(e["pattern_hash"].startswith("ph_"))
+        self.assertIn("peer", e["human"]["played"])
+        self.assertLessEqual(len(e["candidate_tags"]), 3)
+        self.assertIn(d["game_type"]["type"], ("single_blunder", "accumulation", "mixed"))
+        rows = self.tools.job_results(self.job_id, "moves", range=[10, 12])["moves"]
+        self.assertEqual([r["n"] for r in rows], [10, 11, 12])
+        self.assertNotIn("idx", rows[0])
+
+    def test_reuse_existing(self):
+        r = self.tools.start_game_analysis(self.sgf, {"visits_per_move": self.started["visits_per_move"]})
+        self.assertTrue(r["reused"])
+        self.assertEqual(r["state"], "done")
+
+    def test_budget_replan_with_job(self):
+        sel = [{"id": "E1", "needs_local_solve": True}, {"id": "E2", "needs_local_solve": False}]
+        p = self.tools.plan_budget(40, job_id=self.job_id, selected=sel)
+        self.assertEqual(p["mode"], "replan")
+        self.assertEqual(p["verification"]["episodes"], 2)
+        self.assertEqual(p["survey"]["visits_per_move"], self.started["visits_per_move"])
+
+    # ---------------------------------------------------------------- position tools
+    def test_position_ref_and_analyze(self):
+        ref = self.tools.get_position_ref(job_id=self.job_id, move_number=30)
+        self.assertTrue(ref["position_ref"].startswith("pos_"))
+        self.assertEqual(ref["move_number"], 30)
+        self.assertEqual(ref["to_move"], "B")
+        self.assertIsNotNone(ref["cached_analysis"])
+        a = self.tools.analyze_position({"ref": ref["position_ref"]}, {"profile": "root"}, {"include_ownership": True})
+        self.assertEqual(a["perspective"], "B")   # student color from the job
+        self.assertEqual(len(a["ownership"]), 361)
+        self.assertTrue(a["candidates"])
+        self.assertIn("peer", a["candidates"][0]["human"])
+        self.assertTrue(a["acceptable_set"]["moves"])
+        self.assertTrue(a["groups"])
+        # same position via job_id resolves to the same ref, and via `then` to a different one
+        a2 = self.tools.analyze_position({"job_id": self.job_id, "move_number": 30}, {"visits": 50}, {"perspective": "W"})
+        self.assertEqual(a2["position_ref"], ref["position_ref"])
+        self.assertAlmostEqual(a2["root"]["score_lead"], -a["root"]["score_lead"], places=1)
+        best = a["candidates"][0]["move"]
+        a3 = self.tools.analyze_position({"ref": ref["position_ref"], "then": [["B", best]]}, {"visits": 50})
+        self.assertNotEqual(a3["position_ref"], ref["position_ref"])
+        self.assertEqual(a3["to_move"], "W")
+
+    def test_analyze_position_errors(self):
+        with self.assertRaises(ToolError) as cm:
+            self.tools.analyze_position({"ref": "pos_doesnotexist0000"})
+        self.assertEqual(cm.exception.code, "unknown_ref")
+        with self.assertRaises(ToolError) as cm:
+            self.tools.analyze_position({"job_id": self.job_id, "move_number": 5, "then": [["W", "pass"], ["B", "A1"], ["W", "A1"]]})
+        self.assertEqual(cm.exception.code, "illegal_move")
+        self.assertEqual(cm.exception.details["ply"], 3)
+
+    def test_analyze_line_three_line_contrast(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        a = self.tools.analyze_position(pos, {"visits": 100})
+        played = self.digest["episodes"][0]["root"]["played"] if self.digest["episodes"] else a["candidates"][-1]["move"]
+        line = self.tools.analyze_line(pos, [{"color": "B", "move": a["candidates"][1]["move"] if len(a["candidates"]) > 1 else a["candidates"][0]["move"]},
+                                             {"engine": True}], {"visits": 60}, follow_pv_plies=3)
+        self.assertEqual(len(line["nodes"]), 5)
+        self.assertTrue(line["nodes"][0]["forced"])
+        self.assertFalse(line["nodes"][1]["forced"])
+        self.assertEqual(line["nodes"][1]["color"], "W")
+        self.assertIn("refutation_probability", line)
+        self.assertIn("ownership", line["end"])
+        self.assertIn("vs_best", line["summary"])
+        self.assertEqual(line["legality"], "ok")
+        with self.assertRaises(ToolError) as cm:
+            self.tools.analyze_line(pos, [{"color": "W", "move": "K10"}], {"visits": 20})
+        self.assertEqual(cm.exception.code, "bad_request")
+
+    def test_pass_probe_and_regions(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        r = self.tools.pass_probe(pos, "B", None, {"visits": 60}, {"rank_regions": True})
+        self.assertIn("score_if_pass", r)
+        self.assertIsNotNone(r["local_value"]["best"])
+        self.assertEqual(len(r["urgency"]), 9)
+        self.assertGreaterEqual(r["urgency"][0]["value"], r["urgency"][-1]["value"])
+        with self.assertRaises(ToolError):
+            self.tools.pass_probe(pos, "W", None, {"visits": 20})
+
+    def test_swing_value(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        board = self.tools._resolve_position(pos).board
+        pts = [idx_to_gtp(i) for i in board.empties()[:3]]
+        r = self.tools.swing_value(pos, pts, {"visits": 40})
+        self.assertEqual(len(r["results"]), 3)
+        self.assertEqual(len(r["ranked"]), 3)
+        self.assertIn(r["results"][0]["sente_gote"]["for_black"], ("sente", "gote", "unclear"))
+
+    def test_local_solve_and_status_quiz(self):
+        pos = {"job_id": self.job_id, "move_number": 60}
+        board = self.tools._resolve_position(pos).board
+        groups = sorted(board.groups(), key=lambda g: -g.size)
+        gp = idx_to_gtp(groups[0].anchor)
+        r = self.tools.local_solve(pos, gp, None, {"visits": 30}, {"max_plies": 6})
+        self.assertIn(r["status"], ("alive", "dead", "unsettled", "unclear"))
+        self.assertIn(r["confidence"], ("high", "medium", "low"))
+        self.assertTrue(r["attacker_first"]["sequence"])
+        self.assertIn(r["query_id"], self.tools.solve_results)
+        with self.assertRaises(ToolError) as cm:
+            self.tools.local_solve(pos, idx_to_gtp(board.empties()[0]), None, {"visits": 10})
+        self.assertEqual(cm.exception.code, "no_group_at_point")
+
+    def test_group_status_ownership_diff_human_render(self):
+        a = {"job_id": self.job_id, "move_number": 44}
+        b = {"job_id": self.job_id, "move_number": 45}
+        gs = self.tools.group_status(a)
+        self.assertTrue(gs["groups"])
+        self.assertEqual(set(gs["summary"].keys()), {"B", "W"})
+        od = self.tools.ownership_diff(a, b)
+        self.assertEqual(len(od["regional"]), 9)
+        self.assertIn(od["local_vs_global"]["classification"], ("local", "mixed", "global"))
+        hm = self.tools.human_move_distribution(a, ["peer", "rank_2d"], ["K10"])
+        self.assertEqual(hm["profiles"]["peer"]["profile"], "rank_7k")
+        self.assertEqual(hm["profiles"]["rank_2d"]["profile"], "rank_2d")
+        self.assertIn("K10", hm["profiles"]["peer"]["moves_of_interest"])
+        rb = self.tools.render_board(a, {"overlay": "ownership", "highlight": ["K10"], "region_box": {"standard": "UL"}})
+        self.assertIn("legend", rb)
+        self.assertEqual(len(rb["ascii"].splitlines()), 22)
+        self.assertEqual(len(rb["overlay_ascii"].splitlines()), 21)
+
+    # ---------------------------------------------------------------- export
+    def test_validate_variations_export(self):
+        d = self.digest
+        ep = d["episodes"][0]
+        n = ep["root"]["move"]
+        a = self.tools.analyze_position({"job_id": self.job_id, "move_number": n - 1}, {"visits": 80})
+        best = a["candidates"][0]["move"]
+        reply = a["candidates"][0]["pv"][1] if len(a["candidates"][0]["pv"]) > 1 else None
+        branch_moves = [f"B{best}"]
+        episodes = [{
+            "id": "E1", "moves": ep["moves"], "title": "Test episode", "category": "5", "tags": ep["candidate_tags"],
+            "points_lost": ep["points_lost_total"],
+            "commentary": [{"at_move": n, "text": "The played move loses points."}],
+            "branches": [
+                {"id": "B1", "label": "Engine's move", "from_move": n - 1, "moves": branch_moves, "ledger_ref": "H1"},
+                {"id": "B2", "label": "As played", "from_move": n - 1, "moves": [f"B{ep['root']['played']}"]},
+            ],
+            "quiz": {"at_move": n, "type": "move", "candidates": [best]},
+            "principle": "Check liberties before extending.", "cue": "Two-liberty group nearby.",
+        }]
+        r = self.tools.validate_variations(self.job_id, episodes, {"headline": "x"})
+        self.assertTrue(r["valid"], r["errors"])
+        self.assertTrue(any("never diverges" in w for w in r["warnings"]))
+        blob = r["dashboard_data"]
+        self.assertEqual(hashlib.sha256(blob.encode("utf-8")).hexdigest(), r["sha256"])
+        data = json.loads(blob)
+        self.assertEqual(data["game"]["you"], "B")
+        self.assertEqual(len(data["moves"]), 70)
+        self.assertEqual(len(data["scoreSeries"]), 71)
+        e1 = data["episodes"][0]
+        self.assertEqual(len(e1["branches"]), 2)
+        self.assertEqual(e1["branches"][0]["moves"], branch_moves)
+        self.assertEqual(len(e1["branches"][0]["evals"]), 1)
+        self.assertIn(e1["branches"][0]["ownershipAtEnd"], data["ownership"])
+        self.assertEqual(len(data["ownership"][f"m{n}"]), 361)
+        labels = {c["move"]: c["labels"] for c in e1["quiz"]["candidates"]}
+        self.assertIn("actual", labels[ep["root"]["played"]])
+        self.assertTrue(any("peer" in l for l in labels.values()))
+        # illegal branch and wrong color are reported, not exported
+        bad = [{"id": "E2", "moves": ep["moves"], "branches": [
+            {"id": "B1", "from_move": n - 1, "moves": ["WK10"]},
+            {"id": "B2", "from_move": n - 1, "moves": [f"B{ep['root']['played']}", f"W{ep['root']['played']}"]}]}]
+        r2 = self.tools.validate_variations(self.job_id, bad)
+        self.assertFalse(r2["valid"])
+        self.assertEqual({e["code"] for e in r2["errors"]}, {"wrong_color", "illegal_move"})
+        self.assertNotIn("dashboard_data", r2)
+
+    def test_ownership_codec(self):
+        vals = [-1.0, -0.55, 0.0, 0.37, 1.0]
+        s = encode_ownership(vals)
+        self.assertEqual(s, "a" + chr(ord("a") + 4) + "k" + chr(ord("a") + 14) + "u")
+        back = decode_ownership(s)
+        for v, b in zip(vals, back):
+            self.assertLessEqual(abs(v - b), 0.05)
+
+    def test_engine_info_and_logs(self):
+        info = self.tools.engine_info()
+        self.assertEqual(info["contract_version"], "0.1")
+        self.assertEqual(info["backend"], "mock")
+        self.assertEqual(info["student"]["peer"], "rank_7k")
+        log_path = os.path.join(self.tools.cfg.reviews_dir, self.started["game_id"], "queries.jsonl")
+        self.assertTrue(os.path.exists(log_path))
+        with open(log_path) as f:
+            lines = f.read().splitlines()
+        self.assertTrue(all(json.loads(l)["query_id"].startswith("q_ogs_1007_") for l in lines))
+        self.assertTrue(os.path.exists(os.path.join(self.tools.cfg.reviews_dir, self.started["game_id"], "analysis.json")))
+
+
+class HandicapDigestTest(unittest.TestCase):
+    def test_handicap_game_uses_score_basis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config()
+            cfg.reviews_dir = os.path.join(tmp, "reviews")
+            cfg.throughput.visits_per_second_sustained = 650.0
+            t = Tools(cfg, engine=MockEngine(), start_engine=True)
+            sgf = synthetic_game(40, seed=3, handicap=4)
+            s = t.sgf_summary(sgf)
+            self.assertEqual(s["rules"]["handicap"], 4)
+            self.assertEqual(len(s["rules"]["setup"]["B"]), 4)
+            r = t.start_game_analysis(sgf, {"visits_per_move": 60})
+            for _ in range(400):
+                if t.job_status(r["job_id"])["state"] in ("done", "failed"):
+                    break
+                time.sleep(0.05)
+            d = t.job_results(r["job_id"])
+            self.assertTrue(d["complete"])
+            self.assertEqual(d["game"]["handicap"], 4)
+            self.assertEqual(d["game"]["reconciliation"]["status"], "n/a")
+            if d["decisive"]:
+                self.assertEqual(d["decisive"]["basis"], "score")
+            t.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,195 @@
+"""plan_budget (tool contract §1.2): time budget -> concrete allocation."""
+from __future__ import annotations
+
+from dataclasses import asdict
+
+from .config import BudgetConfig, Unit
+
+
+class BudgetError(ValueError):
+    pass
+
+
+def unit_visits(u: Unit) -> int:
+    return u.root + 3 * (u.plies + 1) * u.line_node + sum(u.stability) * u.root
+
+
+def solve_visits(u: Unit) -> int:
+    return 2 * u.solve
+
+
+def minutes(visits: float, vps: float) -> float:
+    return visits / vps / 60.0
+
+
+def apply_step(u: Unit, step: str) -> Unit:
+    v = u.copy()
+    if step == "root_3000":
+        v.root = max(v.root, 3000)
+    elif step == "line_600":
+        v.line_node = max(v.line_node, 600)
+    elif step == "stability_16x":
+        if 16 not in v.stability:
+            v.stability = sorted(set(v.stability) | {16})
+    elif step == "plies_12":
+        v.plies = max(v.plies, 12)
+    elif step == "solve_4000_all_ld":
+        v.solve = max(v.solve, 4000)
+    elif step == "root_6000":
+        v.root = max(v.root, 6000)
+    elif step == "line_1000":
+        v.line_node = max(v.line_node, 1000)
+    else:
+        raise BudgetError(f"unknown ladder step {step!r}")
+    return v
+
+
+def _profiles(survey_visits: int, u: Unit, quick: int = 200) -> dict:
+    return {
+        "survey": survey_visits,
+        "root": u.root,
+        "line_node": u.line_node,
+        "stability": [m * u.root for m in u.stability],
+        "local_solve": u.solve,
+        "quick": quick,
+    }
+
+
+def _per_episode(u: Unit) -> dict:
+    return {"root_visits": u.root, "line_node_visits": u.line_node, "follow_pv_plies": u.plies,
+            "stability_multipliers": list(u.stability), "local_solve_visits": u.solve, "lines": 3}
+
+
+def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
+         self_review_minutes: float | None = None, episodes_requested: int | None = None,
+         expected_ld_episodes: int | None = None, selected: list[dict] | None = None,
+         elapsed_minutes: float = 0.0, survey_visits_existing: int | None = None) -> dict:
+    """Return the allocation dict of tool contract §1.2.  Pure function."""
+    if vps <= 0:
+        raise BudgetError("throughput unknown: run `katago-mcp benchmark` first")
+    if move_count <= 0:
+        raise BudgetError("move_count must be positive")
+    O = cfg.overhead_minutes
+    C_ep = cfg.claude_minutes_per_episode
+    S = cfg.self_review_minutes_default if self_review_minutes is None else float(self_review_minutes)
+    E_req = min(cfg.max_episodes, episodes_requested or cfg.max_episodes)
+    LD = cfg.ld_reserve_episodes if expected_ld_episodes is None else int(expected_ld_episodes)
+    base, cap = cfg.unit_base, cfg.unit_cap
+    unlimited = total_minutes in ("unlimited", None) or (isinstance(total_minutes, str))
+    T = None if unlimited else float(total_minutes)
+    notes: list[str] = []
+    replan = selected is not None
+
+    def ep_minutes(u: Unit) -> float:
+        return minutes(unit_visits(u), vps) + C_ep
+
+    def verification_minutes(u: Unit, n: int, ld: int) -> float:
+        return n * ep_minutes(u) + min(ld, n) * minutes(solve_visits(u), vps)
+
+    # ---------------------------------------------------------------- survey
+    if replan and survey_visits_existing:
+        v_s = survey_visits_existing
+    else:
+        v_s = cap_clamp(int(vps * S * 60 / move_count), cfg.survey_floor, cfg.survey_cap)
+    if unlimited and not replan:
+        v_s = cfg.survey_cap
+    t_s = minutes(move_count * v_s, vps)
+    c_s = max(0.0, t_s - S)
+    if c_s > 0:
+        notes.append(f"survey at the floor of {v_s} visits/move still needs {t_s:.1f} min on this machine; "
+                     f"{c_s:.1f} min run past the self-review and are charged to the budget")
+
+    # ---------------------------------------------------------------- minimum for three episodes
+    v_min = cfg.survey_floor
+    c_min = max(0.0, minutes(move_count * v_min, vps) - S)
+    minimum_three = O + S + c_min + verification_minutes(base, cfg.min_episodes, LD)
+
+    # ---------------------------------------------------------------- unlimited
+    if unlimited:
+        n = E_req if not replan else min(cfg.max_episodes, len(selected))
+        ld = LD if not replan else sum(1 for s in selected if s.get("needs_local_solve"))
+        u = cap
+        expected_total = O + max(S, t_s) + verification_minutes(u, n, ld)
+        return {
+            "feasible": True, "mode": "unlimited", "total_minutes": "unlimited", "elapsed_minutes": elapsed_minutes,
+            "throughput_vps": vps,
+            "reserved": {"overhead_minutes": O, "self_review_minutes": S},
+            "survey": {"visits_per_move": v_s, "expected_minutes": round(t_s, 2), "runs_past_self_review": c_s > 0,
+                       "charged_minutes": round(c_s, 2)},
+            "verification": {"wall_minutes_available": None, "episodes": n, "per_episode": _per_episode(u),
+                             "ld_episodes_budgeted": min(ld, n), "ladder_steps_applied": list(cfg.ladder),
+                             "expected_minutes": round(verification_minutes(u, n, ld), 2), "slack_minutes": None},
+            "minimum_minutes_for_three_episodes": round(minimum_three, 1),
+            "expected_total_minutes": round(expected_total, 1),
+            "profiles": _profiles(v_s, u), "notes": notes,
+        }
+
+    # ---------------------------------------------------------------- wall clock for verification
+    if replan:
+        W = T - O - elapsed_minutes
+        n_target = min(cfg.max_episodes, len(selected))
+        ld = sum(1 for s in selected if s.get("needs_local_solve"))
+        if len(selected) > cfg.max_episodes:
+            notes.append(f"{len(selected)} episodes selected; only {cfg.max_episodes} are budgeted")
+    else:
+        W = T - O - S - c_s
+        n_target = E_req
+        ld = LD
+
+    # ---------------------------------------------------------------- episode count at base rigor
+    n = 0
+    for m in range(n_target, 0, -1):
+        if verification_minutes(base, m, ld) <= W:
+            n = m
+            break
+    if replan:
+        feasible = n == n_target
+        if not feasible:
+            notes.append(f"only {n} of {n_target} selected episodes fit at base rigor in the remaining "
+                         f"{W:.1f} min; drop episodes or extend the budget")
+    else:
+        feasible = n >= cfg.min_episodes
+        if not feasible:
+            notes.append(f"fewer than {cfg.min_episodes} episodes fit; a three-episode review needs about "
+                         f"{minimum_three:.0f} min on this machine")
+    if W <= 0:
+        notes.append("no time left for verification after overhead and self-review")
+
+    # ---------------------------------------------------------------- depth ladder
+    u = base.copy()
+    applied: list[str] = []
+    used = verification_minutes(u, n, ld) if n > 0 else 0.0
+    surplus = W - used
+    if n > 0:
+        for step in cfg.ladder:
+            nu = apply_step(u, step)
+            cost = verification_minutes(nu, n, ld) - verification_minutes(u, n, ld)
+            if cost <= surplus:
+                u = nu
+                surplus -= cost
+                applied.append(step)
+            else:
+                break
+    expected_verif = verification_minutes(u, n, ld) if n > 0 else 0.0
+    expected_total = O + (S + c_s if not replan else elapsed_minutes) + expected_verif
+    return {
+        "feasible": feasible, "mode": "replan" if replan else "plan", "total_minutes": T,
+        "elapsed_minutes": elapsed_minutes, "throughput_vps": vps,
+        "reserved": {"overhead_minutes": O, "self_review_minutes": S},
+        "survey": {"visits_per_move": v_s, "expected_minutes": round(t_s, 2), "runs_past_self_review": c_s > 0,
+                   "charged_minutes": round(c_s, 2)},
+        "verification": {"wall_minutes_available": round(W, 2), "episodes": n, "per_episode": _per_episode(u),
+                         "ld_episodes_budgeted": min(ld, n), "ladder_steps_applied": applied,
+                         "expected_minutes": round(expected_verif, 2), "slack_minutes": round(max(surplus, 0.0), 2)},
+        "minimum_minutes_for_three_episodes": round(minimum_three, 1),
+        "expected_total_minutes": round(expected_total, 1),
+        "profiles": _profiles(v_s, u), "notes": notes,
+    }
+
+
+def cap_clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
+
+
+def unit_to_dict(u: Unit) -> dict:
+    return asdict(u)
