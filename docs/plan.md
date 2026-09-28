@@ -139,7 +139,7 @@ sequenceDiagram
 
 **Purpose.** The one component that touches the engine. It exposes a small, teaching-oriented tool surface, runs jobs asynchronously, converts budgets, caches, computes derived facts, and validates everything that will reach the dashboard.
 
-**Stack (decided).** Python with the official MCP SDK, `sgfmill` for SGF parsing and board logic, `numpy` for ownership maps, `pytest`. One stdio MCP server per machine, used from the Claude desktop app or Claude Code. No remote mode in v1; the transport layer should not preclude adding one later. `local_solve` ships in v1.
+**Stack (decided).** Python with the official MCP SDK, `sgfmill` for SGF parsing and board logic, `numpy` for ownership maps, `pytest`. *As built:* the server has its own SGF parser and board (`katago_mcp/sgf.py`, `board.py`) instead of `sgfmill`, numpy is only used by the mock engine, and the tests are `unittest` (pytest also runs them). One stdio MCP server per machine, used from the Claude desktop app or Claude Code. No remote mode in v1; the transport layer should not preclude adding one later. `local_solve` ships in v1.
 
 **Tool contract (v1)**
 
@@ -448,22 +448,21 @@ Question bank v1:
 
 ## 3. Build order and milestones
 
-### Status, 27 Sep 2026
+### Status, 28 Sep 2026
 
 | Workstream | State | Notes |
 |---|---|---|
-| WS1 engine setup | **in progress on the Pro** | install scripts and `selfcheck` delivered; first live run pending |
-| WS2 katago-mcp server | code complete, v0.1.0 | 17 tools, 36 offline tests; not yet run against a live KataGo |
+| WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
+| WS2 katago-mcp server | running, v0.1.5 | 17 tools; runs against live KataGo on the Pro; offline test suite with the mock engine |
 | WS3 katago-analysis skill | delivered | |
 | WS4 go-teaching skill | delivered | |
 | WS5 review-dashboard | delivered | template + `build_dashboard.py`; sample published |
-| WS6 memory artifact | not started | next |
-| WS7 project instructions | delivered (v1) | |
-| WS8 seeding (20 games) | not started | needs WS1 + WS6 |
+| WS6 memory artifact | delivered | "Go teacher memory" artifact with `db`; schema and recipe in `skills/go-teacher-flow/references/memory.md` |
+| WS7 project instructions | delivered (v1) | plus the `go-teacher-flow` skill for plain Claude Desktop chats, which can reach the local server |
+| WS8 seeding (20 games) | **in progress** | 20 games surveyed at 500 visits/move; calibration draft (`seed/calibration.md`, local) awaits the student's correction pass |
 | WS9 integration | not started | |
 
-Contract is at v0.2 (deviations folded in). Milestones M1–M4 are built but M1's acceptance ("verified
-answers in chat") is what the Pro test decides.
+Contract is at v0.2.1 (deviations folded in).
 
 
 | Milestone | Delivers | What you can do at that point |
@@ -477,18 +476,21 @@ answers in chat") is what the Pro test decides.
 
 Rationale: M1–M3 prove the hard part (engine → verified teaching) before any UI; the dashboard and memory are additive.
 
-**Repository layout**
+**Repository layout** (as built)
 ```
-go-teacher/
-  katago-mcp/          src/, config/{m5pro,r5700xt,m2air}.toml, tests/, install/
+Go-Teacher/
+  katago-mcp/          katago_mcp/ (the server), config/{analysis.cfg,m5pro,r5700xt,m2air}.toml,
+                       install/, scripts/, tests/
   skills/
-    katago-analysis/   SKILL.md, references/
-    go-teaching/       SKILL.md, references/taxonomy.md, references/questions.md
-    review-dashboard/  SKILL.md, template/dashboard.html, scripts/build_dashboard.py, schema/
-  project/             instructions.md, handoff-templates/
-  seed/                games/, run_seed.py, profile-v0.md
-  docs/                plan.md, tool-contract.md, changelog.md
+    katago-analysis/   SKILL.md
+    go-teaching/       SKILL.md
+    review-dashboard/  SKILL.md, template/dashboard.html, scripts/build_dashboard.py
+    go-teacher-flow/   SKILL.md, references/{memory.md, tool-contract.md}
+  docs/                plan.md, tool-contract.md (identical copy of the skill's)
+  seed/                local only (not in git): seed SGFs, seed_summary.{json,md}, calibration.md
 ```
+The taxonomy and question bank live inside `go-teaching/SKILL.md`; the project instructions live in the
+Claude project itself; there is no separate schema file or changelog yet.
 
 ---
 
