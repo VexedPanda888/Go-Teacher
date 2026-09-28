@@ -456,7 +456,17 @@ def build_episodes(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds,
         }
         ep["candidate_tags"] = candidate_tags(ep, rows, ga, n, before, after, th)
         episodes.append(ep)
+    link_persistent_best(episodes)
     return episodes
+
+
+def link_persistent_best(episodes: list[dict]) -> None:
+    """A point that is best (or teachable) at several episode roots is one big point left open across
+    the game: list the other episodes sharing it (hint for 2 / 15, and one lesson candidate)."""
+    for ep in episodes:
+        mine = {ep["root"]["best"], ep["teachable_move_preliminary"]} - {None, "pass"}
+        ep["persistent_best"] = [o["id"] for o in episodes if o is not ep
+                                 and mine & ({o["root"]["best"], o["teachable_move_preliminary"]} - {None, "pass"})]
 
 
 def _policy_top(a: Analysis, size: int) -> int | None:
@@ -488,17 +498,26 @@ def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before:
     sig = ep["signature"]
     pl = root["points_lost"]
     played_idx, best_idx = root["idx"], root["best_idx"]
-    pp, pb = sig["prior_played"] or 0.0, sig["prior_best"] or 0.0
+    # "Plausible" is judged by the human model (what a player of the student's rank plays), not by
+    # KataGo's policy, which almost always prefers the best move; fall back to the policy without it.
+    hp, hb = ep["human"]["played"], ep["human"]["best"]
+    if "peer" in hp and "peer" in hb:
+        pp, pb = hp["peer"], hb["peer"]
+        pb_target = hb.get("target", pb)
+    else:
+        pp, pb = sig["prior_played"] or 0.0, sig["prior_best"] or 0.0
+        pb_target = pb
     changes = ep["group_status_change"]
     own_fell = any(c["group"].startswith(COLOR_CHAR[ga.student_color]) and c["after_value"] < c["before_value"] - 0.15 for c in changes)
-    opp_prefix = COLOR_CHAR[WHITE if ga.student_color == BLACK else BLACK]
+    dist = chebyshev(played_idx, best_idx, ga.size) if played_idx is not None and best_idx is not None else None
     # 13 failure to punish
     if n >= 2:
         prev = rows[n - 2]
-        if prev["color"] != root["color"] and prev["points_lost"] >= th.tag_min_loss and pl >= th.got_away_ratio * prev["points_lost"]:
+        if prev["color"] != root["color"] and prev["points_lost"] >= th.tag_punish_min_loss and pl >= th.got_away_ratio * prev["points_lost"]:
             tags.append("13")
     # 3 / 4 / 5: plausible move refuted by search
-    if pp >= pb and pl >= th.tag_min_loss:
+    plausible = pp >= th.tag_plausible_min_peer and pp >= th.tag_plausible_ratio * pb and pl >= th.tag_plausible_min_loss
+    if plausible:
         if own_fell:
             tags.append("3")
         elif n in ga.after_best_ownership and after.ownership is not None:
@@ -507,21 +526,26 @@ def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before:
             tags.append("4" if opp_hurt else "5")
         else:
             tags.append("5")
-    # 6 / 15 / 1 / 2: intuition failed
-    if pb >= 0.20 and pp <= 0.10 and played_idx is not None and best_idx is not None:
-        if chebyshev(played_idx, best_idx, ga.size) <= 2:
+    # 6 / 15 / 1 / 2: intuition failed — by KataGo's policy, or the target rank finds the best move
+    # and the student's rank does not
+    prior_pp, prior_pb = sig["prior_played"] or 0.0, sig["prior_best"] or 0.0
+    by_policy = prior_pb >= th.tag_intuition_best_min and prior_pp <= th.tag_intuition_played_max
+    by_human = not plausible and pb_target >= th.tag_intuition_best_min and pp <= th.tag_intuition_played_max
+    if (by_policy or by_human) and dist is not None:
+        if dist <= 2:
             tags.append("6")
         elif standard_code(played_idx, ga.size) == standard_code(best_idx, ga.size):
             tags.append("15")
-        else:
+        elif dist >= th.tag_direction_min_distance:
             tags.append("1")
             best_region = standard_code(best_idx, ga.size)
-            weak_there = any(standard_code(g.anchor, ga.size) == best_region and (len(g.liberties) <= 3 or g.size >= 3)
-                             for g in ga.boards[n - 1].groups() if len(g.liberties) <= 3)
-            if weak_there:
+            if any(standard_code(g.anchor, ga.size) == best_region
+                   for g in ga.boards[n - 1].groups() if len(g.liberties) <= 3):
                 tags.append("2")
-    # 1 whole-board by ownership attribution
-    if sig.get("local_loss_share") is not None and sig["local_loss_share"] <= th.local_share_global and "1" not in tags:
+    # 1 whole-board by ownership attribution, only when the best move is genuinely elsewhere
+    if sig.get("local_loss_share") is not None and sig["local_loss_share"] <= th.local_share_global \
+            and "1" not in tags and not any(t in tags for t in ("6", "15")) \
+            and dist is not None and dist >= th.tag_direction_min_distance:
         tags.append("1")
     # 9 choice of fight
     if ep["style_axis"]["label"] == "overplay" and sig.get("score_stdev_played") and sig.get("score_stdev_best") \

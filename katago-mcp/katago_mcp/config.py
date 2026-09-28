@@ -64,7 +64,15 @@ class Thresholds:
     single_blunder_share: float = 0.40
     accumulation_share: float = 0.20
     reconciliation_tolerance: float = 2.5
-    tag_min_loss: float = 3.0
+    tag_min_loss: float = 3.0                # got-away-with-it
+    # candidate-tag rules (calibrated in WS8 on 20 seed games)
+    tag_plausible_min_loss: float = 2.0      # 3/4/5: root loss
+    tag_plausible_min_peer: float = 0.20     # 3/4/5: peer-rank probability of the played move
+    tag_plausible_ratio: float = 1.5         # 3/4/5: played >= ratio x best (peer probabilities)
+    tag_intuition_best_min: float = 0.20     # 6/15/1: target-rank probability of the best move
+    tag_intuition_played_max: float = 0.10   # 6/15/1: peer-rank probability of the played move
+    tag_punish_min_loss: float = 5.0         # 13: the opponent's previous move lost at least this
+    tag_direction_min_distance: int = 5      # 1 by ownership attribution: best this far from played
     quick_visits: int = 200
     stable_stop_delta: float = 0.5
 

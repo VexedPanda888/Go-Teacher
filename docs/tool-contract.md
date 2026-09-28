@@ -327,6 +327,7 @@ type Episode = {
                local_loss_share: number | null; score_stdev_played: number; score_stdev_best: number; ko_present: boolean };
   style_axis: { label: "overplay" | "slack" | "neutral"; own_share: number; opponent_share: number };
   got_away_with_it: null | { opponent_move: number; restored_points: number };
+  persistent_best: string[];                    // other episode ids whose root best or teachable point is the same point (one big point left open)
   human: { played: Record<string, number>; best: Record<string, number> };    // keyed by resolved profile
   learnability: number;                         // target-rank probability of the preliminary teachable move
   teachable_move_preliminary: Point;            // argmax target probability within the acceptable set
@@ -634,10 +635,11 @@ Student perspective series `w'_k = w_k` (Black) or `1 − w_k` (White). If the s
 
 ### 3.7 Search-signature candidate tags
 Computed at each episode root (taxonomy ids from the plan, WS4). Up to three tags, in this order of precedence:
-- **13 Failure to punish**: the opponent's previous move lost ≥ 3 points and the student's move gives back ≥ `got_away_ratio` (0.6) of it.
-- **3 / 4 / 5**: `prior_played ≥ prior_best` and `points_lost ≥ 3` (search refutes a plausible move) → 3 if the student's own group status falls after the played move, 4 if the opponent's group status rises after the best move (missed attack), else 5.
-- **6 / 15 / 1 / 2**: `prior_best ≥ 0.20` and `prior_played ≤ 0.10` (intuition failed) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else 1, plus 2 when the best move's region contains a group of either color with ≤ 3 liberties or unsettled status.
-- **1**: `local_loss_share ≤ local_share_global` (0.4) regardless of priors.
+Thresholds calibrated in WS8 (20 seed games, `seed/calibration.md`). "Plausible" uses the human model's peer-rank probabilities (`human.played.peer`, `human.best.peer`), falling back to KataGo's policy priors when the human model is unavailable: KataGo's policy almost always prefers the best move, so the policy-only rule never fired.
+- **13 Failure to punish**: the opponent's previous move lost ≥ `tag_punish_min_loss` (5) points and the student's move gives back ≥ `got_away_ratio` (0.6) of it.
+- **3 / 4 / 5**: peer(played) ≥ `tag_plausible_min_peer` (0.20), peer(played) ≥ `tag_plausible_ratio` (1.5) × peer(best) and `points_lost ≥ tag_plausible_min_loss` (2) (search refutes a move the student's rank plays) → 3 if the student's own group status falls after the played move, 4 if the opponent's group status rises after the best move (missed attack), else 5.
+- **6 / 15 / 1 / 2**: intuition failed — `prior_best ≥ 0.20` and `prior_played ≤ 0.10`, or (when 3/4/5 did not fire) target(best) ≥ `tag_intuition_best_min` (0.20) and peer(played) ≤ `tag_intuition_played_max` (0.10) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else, when `dist ≥ tag_direction_min_distance` (5), 1, plus 2 when the best move's region contains a group of either color with ≤ 3 liberties.
+- **1**: `local_loss_share ≤ local_share_global` (0.4) and `dist(best, played) ≥ tag_direction_min_distance` (5), unless 6 or 15 already applies.
 - **9**: `style_axis = overplay` and `score_stdev_played ≥ 1.5 × score_stdev_best`.
 - **10**: the best move's region has mean `ownership_stdev ≥ 0.35` and the played move is elsewhere.
 - **11**: phase is endgame and none of 3/4/5 applies.

@@ -1,8 +1,9 @@
 # Go teacher memory — schema and recipe
 
-Memory lives in the artifact **Go teacher memory**, `https://claude.ai/artifact/VSCdXzYPmxzdFtAkDmxj9E`,
-in its `db`. Claude reads and writes it with the Artifact tool (`action: "read_db"` / `"write_db"`,
-`url` as above). The page itself is a read-only view for the student. Memory records **recurrence**,
+Memory lives in the artifact **Go teacher memory**, `https://claude.ai/artifact/XsADdyJrw9nLYJZPa99Net`
+(private), in its `db`. Claude reads and writes it with the `ArtifactData` tool, `url` as above. Below,
+`read_db` means ArtifactData `get` / `list` / `query` and `write_db` means `set` / `update` / `batch`
+(≤ 50 writes per batch; pin `if_version` on documents you have read). The page itself is a read-only view for the student. Memory records **recurrence**,
 never progress or improvement.
 
 ## Collections
@@ -70,7 +71,7 @@ SURVEY episode counts half (weight 0.5 × 0.85^age) and never on its own makes a
 
 ## Phase 0: read
 
-One call: `read_db` with `collection: "profile"`, `doc_id: "main"`, `db_op: "get"`. Note the `version`.
+One call: ArtifactData `get` with `collection: "profile"`, `doc_id: "main"`. Note the `version`.
 Copy `watch` and the `recurring` entries with `recurring: true` into `intake.md`. Pull individual
 episodes or patterns only when the survey digest shows a matching category or pattern hash
 (`read_db` `query` on `episodes` with `where: [["category","eq","2"]]`, or `get` on `patterns/<hash>`).

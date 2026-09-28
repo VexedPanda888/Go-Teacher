@@ -41,6 +41,14 @@ episode_min_loss = 2.0
 alive = 0.6
 dead = -0.6
 reconciliation_tolerance = 2.5
+# candidate-tag rules, calibrated in WS8 (seed/calibration.md)
+tag_plausible_min_loss = 2.0
+tag_plausible_min_peer = 0.20
+tag_plausible_ratio = 1.5
+tag_intuition_best_min = 0.20
+tag_intuition_played_max = 0.10
+tag_punish_min_loss = 5.0
+tag_direction_min_distance = 5
 
 [paths]
 reviews_dir = "reviews"

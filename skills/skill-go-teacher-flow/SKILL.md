@@ -23,9 +23,10 @@ reached through the `katago` MCP server (tools `engine_info`, `plan_budget`, `sg
 **go-teaching** (what to teach and how), **katago-analysis** (how to use the tools and keep the ledger),
 **review-dashboard** (how to publish the result). Read the relevant skill before each phase.
 
-Memory lives in the "Go teacher memory" artifact whose URL the student gives in the first message of the
-review (ask for it if missing; do not guess one). Read and write it with the Artifact tool's `read_db` /
-`write_db` actions exactly as `references/memory.md` in this skill describes. Read `profile/main` at the start of a review; write the game, the
+Memory lives in the "Go teacher memory" artifact, `https://claude.ai/artifact/XsADdyJrw9nLYJZPa99Net`
+(private). Read and write its database with the `ArtifactData` tool (the recipe's `read_db` = actions
+`get` / `list` / `query`, `write_db` = `set` / `update` / `batch`) exactly as `references/memory.md` in
+this skill describes. Read `profile/main` at the start of a review; write the game, the
 CONFIRMED episodes, the lessons and the refreshed profile at the end.
 
 ## A review, phase by phase

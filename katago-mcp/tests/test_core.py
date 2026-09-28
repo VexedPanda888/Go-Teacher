@@ -172,5 +172,19 @@ class TestRender(unittest.TestCase):
         self.assertEqual(row16.split()[1:][15], "@")
 
 
+class TestPersistentBest(unittest.TestCase):
+    def test_links_episodes_sharing_best_or_teachable_point(self):
+        from katago_mcp.metrics import link_persistent_best
+        def ep(i, best, teach):
+            return {"id": i, "root": {"best": best}, "teachable_move_preliminary": teach}
+        eps = [ep("E1", "M6", "M6"), ep("E2", "Q3", "M6"), ep("E3", "D4", "D4"), ep("E4", "pass", "pass"),
+               ep("E5", "pass", "pass")]
+        link_persistent_best(eps)
+        self.assertEqual(eps[0]["persistent_best"], ["E2"])
+        self.assertEqual(eps[1]["persistent_best"], ["E1"])
+        self.assertEqual(eps[2]["persistent_best"], [])
+        self.assertEqual(eps[3]["persistent_best"], [])   # passes never link
+
+
 if __name__ == "__main__":
     unittest.main()
