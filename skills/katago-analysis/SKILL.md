@@ -86,7 +86,7 @@ Write each hypothesis as a testable prediction with a number in it. Then run the
 | Thickness / aji (10) | "The best move removes aji the engine sees" | `analyze_position` with `include_ownership_stdev`; `ownership_diff` before/after best |
 | Endgame value (11) | "Point A is worth more than point B by ≥ 1.5" | `swing_value(position, [A, B, …])` |
 | Ko (12) | "Ko threats decide the local result" | `analyze_line` with the ko sequence forced; check `ko_present` |
-| Failure to punish (13) | "Opponent's move n−1 lost ≥ 3 and the refutation is playable by a 4k" | `analyze_position` at the position before the student's move; `human_move_distribution` on the refutation |
+| Failure to punish (13) | "Opponent's move n−1 lost ≥ 5 (the server's `tag_punish_min_loss`) and the refutation is playable by a 4k" | `analyze_position` at the position before the student's move; `human_move_distribution` on the refutation |
 | Passive (14) | "The defensive move protected less than the attacking move gained" | `analyze_line` both; `ownership_diff` per group |
 | Slow (15) | "Best move is far away and bigger by ≥ 2" | `pass_probe` with `rank_regions`, `swing_value` |
 

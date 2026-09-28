@@ -29,7 +29,7 @@ confirms it (see katago-analysis §3), and *what to teach*.
 | 10 | Thickness / aji | best move removes or exploits aji (`ownership_stdev` high there) | Don't leave cutting points behind; use the opponent's |
 | 11 | Endgame value | `swing_value` ranks the played point below others | Count the swing; sente before gote; the 2-point difference is the game |
 | 12 | Ko | ko present and mishandled | Count ko threats before starting |
-| 13 | Failure to punish | opponent lost ≥ 3 the move before and the student gave it back | Look for the punishment when the opponent plays away |
+| 13 | Failure to punish | opponent lost ≥ 5 the move before and the student gave most of it back (server rule: `tag_punish_min_loss`, `got_away_ratio`) | Look for the punishment when the opponent plays away |
 | 14 | Passive | defensive move protected less than the attack gained | Defend by attacking; check whether the group actually needed help |
 | 15 | Slow | best move far away and bigger; played move locally fine but small | Ask "what is my biggest move" before "what is my safest move" |
 
@@ -97,7 +97,7 @@ resignation). Always include Q1, Q2, one of Q3–Q5, and Q8.
 9. (Handicap) At which move did the handicap stop mattering? Did you simplify enough?
 10. (Resigned games) Was resigning right? What would you have needed to see to continue?
 
-Save answers verbatim in `self_review.md`. In Phase 5, compare each answer with the engine: agreements,
+Save answers verbatim in `self_review.md`. In Phase 3, when the survey digest is opened, compare each answer with the engine: agreements,
 misjudgements (saw the area, wrong fix), blind spots (rated fine, engine disagreed strongly). Blind spots
 get the awareness boost in triage and are the first thing the summary mentions.
 
