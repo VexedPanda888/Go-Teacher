@@ -1,7 +1,7 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.1** (17 tools): whole-game surveys, budgeted verification
+It implements **tool contract v0.2.1** (17 tools): whole-game surveys, budgeted verification
 (`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
 human-model move distributions, and the checksummed dashboard export.
 
@@ -33,11 +33,13 @@ katago_mcp/
   tools.py      the 17 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
-config/         analysis.cfg + m5pro.toml, r5700xt.toml, m2air.toml
-install/        macos.sh, windows.ps1
+  seed.py       katago-mcp-seed: survey a folder of SGFs for the WS8 calibration pass
+config/         analysis.cfg (shared) + m5pro.toml, r5700xt.toml, m2air.toml (per machine)
+install/        macos.sh, windows.ps1, register_claude_desktop.py
 scripts/        verify_export.py (dashboard checksum check)
 tests/          unittest suite (runs offline with the mock engine)
-reviews/        created at runtime: <game_id>/game.sgf, analysis.json, queries.jsonl, export-N.json
+games/          created at runtime: SGFs given by name, and the OGS download cache (not in git)
+reviews/        created at runtime: <game_id>/game.sgf, analysis.json, queries.jsonl, export-N.json (not in git)
 ```
 
 ## 2. Install (WS1) — per machine
@@ -70,6 +72,11 @@ lower; if a survey runs late, `plan_budget` re-plans with the remaining time aft
 
 The first OpenCL start tunes kernels for the GPU (minutes); the install script triggers it once.
 
+**Search threads.** Each machine's thread count is `[katago].search_threads` in its TOML (m5pro 24,
+m2air 8, r5700xt 16). The server passes it to KataGo with `-override-config`, so the shared
+`analysis.cfg` never changes per machine. `./install/macos.sh m5pro 16` writes a different value
+into the TOML.
+
 **What `selfcheck` proves**
 
 1. the engine starts and the human model answers (`rank_7k` distribution on a test position);
@@ -85,10 +92,12 @@ The first OpenCL start tunes kernels for the GPU (minutes); the install script t
 python -m pytest            # if pytest is installed
 ```
 
-36 tests: coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
+The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
 variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget` against the two
-worked examples of contract §1.2.4, and all 17 tools end to end on synthetic games including the
-dashboard export and its checksum, job reuse across a server restart, and a handicap game.
+worked examples of contract §1.2.3, all 17 tools end to end on synthetic games including the
+dashboard export and its checksum, job reuse across a server restart, and a handicap game. It also
+checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
+that `docs/tool-contract.md` matches the skill's copy.
 
 ## 4. Registering the server
 
@@ -121,9 +130,7 @@ granted access to the folder (on managed Macs that grant may not be possible). `
 On Windows use `C:\\...\\.venv\\Scripts\\katago-mcp.exe` and `config\\r5700xt.toml`.
 Relative paths inside the TOML (`analysis_config`, `model`, `reviews_dir`) resolve against the repo
 root (the parent of `config/`), and KataGo runs with the repo root as its working directory, so the
-server works no matter where Claude Desktop launches it from. KataGo starts in the background right
-after the handshake; a tool called before it is ready answers `engine_unavailable: katago is still
-starting` — wait a few seconds and call again.
+server works no matter where Claude Desktop launches it from.
 
 Logs: Claude Desktop writes the server's stderr to `~/Library/Logs/Claude/mcp-server-katago.log`
 (macOS) or `%APPDATA%\\Claude\\logs\\` (Windows). KataGo's own logs go to `analysis_logs/` in the repo.
@@ -139,10 +146,11 @@ two instances of every server (one for chat, one for its Cowork/Code pool), and 
 should load a model. `engine_info` kicks the start off, so Phase 0's first call gets the model loading;
 a tool called while KataGo is still loading waits up to 45 s and then answers
 `engine_unavailable: katago is still starting` — call it again. Set `[katago].start_on_boot = true`
-for eager starting. The server needs `mcp` 1.x (`mcp>=1.2,<2` in `pyproject.toml`); on `mcp` 2.x the
-import fails with a message that says to run `pip install 'mcp<2'`.
+for eager starting. The server needs `mcp` 1.x (`mcp>=1.2,<2` in `pyproject.toml`). If `mcp` 2.x is
+installed anyway, the server falls back to its renamed `MCPServer` class and warns on stderr; if tools
+misbehave, run `pip install 'mcp<2'`.
 
-## 4b. First live test on the Pro (what to look at)
+## 4b. First live test on a machine (what to look at)
 
 1. `katago-mcp benchmark --config config/m5pro.toml` prints visits/second and writes
    `config/m5pro.throughput.json`. Expect a few hundred visits/s for b18 on an M5 Pro; the exact number
@@ -154,8 +162,8 @@ import fails with a message that says to run `pip install 'mcp<2'`.
    - `human model ok: [...]` lists three plausible moves; a `human_model_unavailable` error means
      `-human-model` did not load (path, or KataGo < 1.15).
    - the survey progress line, then the digest excerpt: `reconciliation.status` should be `ok` for a
-     game decided by counting (`n/a` for resignations); `mismatch` means komi/rules/handicap were
-     read wrongly — send me the SGF header.
+     game decided by counting (`n/a` for resignations); `mismatch` usually means komi/rules/handicap were
+     read wrongly — compare the SGF header (`KM`, `RU`, `HA`, `AB`) with `sgf_summary`.
    - episodes: `(id, [from, to], points_lost, tags)` — sanity, not truth, at 200 visits.
 3. Register the server (§4), restart Claude Desktop, open a plain chat (no project yet) and ask, in
    turn: "call engine_info", "here is an SGF … run sgf_summary", "start_game_analysis with 300 visits
@@ -163,7 +171,7 @@ import fails with a message that says to run `pip install 'mcp<2'`.
    render_board it", "analyze_line the best move for 4 plies". Each answer should quote numbers that
    appear in the tool results.
 
-If anything fails, the useful things to send back are: the selfcheck output, the last 40 lines of
+If anything fails, look first at the selfcheck output, the last 40 lines of
 `~/Library/Logs/Claude/mcp-server-katago.log`, and `katago version`.
 
 ## 5. Using it (what Claude does)
@@ -223,12 +231,12 @@ Twenty games at 500 visits/move take roughly `20 × 200 × 500 / vps` seconds �
 | 8 | `Budget.seconds` | requires a measured throughput; otherwise `budget_infeasible` |
 | 9 | — | chain clustering also caps a chain at 24 plies / 6 student moves (`cluster_max_span`, `cluster_max_moves`) |
 
-## 7. Known limits (v0.1)
+## 7. Known limits
 
 - 19×19 only (`unsupported_board_size` otherwise).
 - One job at a time; a second `start_game_analysis` while a survey runs answers `engine_busy`.
 - `human_policy` costs one extra 1-visit query per profile and position (cached per ref).
 - The mock engine is *not* a Go engine: it only produces well-formed, self-consistent data for tests.
-- The KataGo wrapper is written against the analysis-engine JSON protocol (`reportDuringSearchEvery`,
-  `terminate`, `overrideSettings.humanSLProfile`, `humanPolicy`) but has not been run against a live
-  engine in this sandbox — `selfcheck` is the first thing to run on each machine.
+- The KataGo wrapper uses the analysis-engine JSON protocol (`reportDuringSearchEvery`, `terminate`,
+  `overrideSettings.humanSLProfile`, `humanPolicy`). It runs on the M5 Pro (the 20-game seed survey);
+  `selfcheck` is the first thing to run on each new machine.
