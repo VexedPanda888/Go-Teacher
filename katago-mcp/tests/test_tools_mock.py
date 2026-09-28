@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from katago_mcp import CONTRACT_VERSION  # noqa: E402
 from katago_mcp.board import BLACK, WHITE, Board, IllegalMove  # noqa: E402
 from katago_mcp.config import Config  # noqa: E402
 from katago_mcp.coords import idx_to_gtp, idx_to_sgf, gtp_to_idx, star_points  # noqa: E402
@@ -295,7 +296,7 @@ class MockToolsTest(unittest.TestCase):
 
     def test_engine_info_and_logs(self):
         info = self.tools.engine_info()
-        self.assertEqual(info["contract_version"], "0.1")
+        self.assertEqual(info["contract_version"], CONTRACT_VERSION)
         self.assertEqual(info["backend"], "mock")
         self.assertEqual(info["student"]["peer"], "rank_7k")
         log_path = os.path.join(self.tools.cfg.reviews_dir, self.started["game_id"], "queries.jsonl")

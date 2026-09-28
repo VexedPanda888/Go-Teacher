@@ -1,6 +1,6 @@
-# katago-mcp — Tool Contract (v0.2.1, as implemented in katago-mcp 0.1.3)
+# katago-mcp — Tool Contract (v0.2.1, as implemented in katago-mcp 0.1.5)
 
-**Status:** draft. This is the document WS2 is built from and WS3 quotes. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
+**Status:** draft. The canonical copy is `skills/go-teacher-flow/references/tool-contract.md` (skills must be self-contained); `docs/tool-contract.md` is kept identical and a test checks it. This is the document WS2 is built from and WS3 quotes. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
 Two refinements surfaced while writing this and are reflected in the plan (v0.3):
 1. The self-review minutes are part of the total time you give, so the budget formula reserves them (§1.2).
@@ -566,8 +566,7 @@ type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" 
 {
   job_id: string;
   episodes: DashboardEpisodeSpec[];
-  summary: { lessons: LessonSpec[]; strength: { move: number; text: string }; narrative: string;
-             self_review: { question: string; answer: string; verdict: string }[] };
+  summary: DashboardSummary;                              // copied verbatim into the blob; rendered by the template
   options?: { evaluate_missing?: boolean = true; budget?: Budget = { profile: "line_node" }; ownership_at?: "roots_and_branch_ends" = "roots_and_branch_ends" }
 }
 type DashboardEpisodeSpec = {
@@ -578,7 +577,14 @@ type DashboardEpisodeSpec = {
            status?: { group_point: Point; solve_query_id: string } };
   principle: string; cue: string;
 };
-type LessonSpec = { title: string; episode_ids: string[]; principle: string; cue: string; text: string };
+type DashboardSummary = {                              // the shape the review-dashboard skill writes and the template reads
+  headline?: string;
+  lessons?: { episodeId: string; title: string; principle: string; cue: string }[];
+  strengths?: string[];
+  selfReview?: { agreements?: string[]; blindSpots?: string[] };
+  nextGame?: string;
+  reliability?: string;
+};
 ```
 **Output.**
 ```ts
@@ -638,7 +644,7 @@ Student perspective series `w'_k = w_k` (Black) or `1 − w_k` (White). If the s
 
 ### 3.7 Search-signature candidate tags
 Computed at each episode root (taxonomy ids from the plan, WS4). Up to three tags, in this order of precedence:
-Thresholds calibrated in WS8 (20 seed games, `seed/calibration.md`). "Plausible" uses the human model's peer-rank probabilities (`human.played.peer`, `human.best.peer`), falling back to KataGo's policy priors when the human model is unavailable: KataGo's policy almost always prefers the best move, so the policy-only rule never fired.
+Thresholds calibrated in WS8 (20 seed games; notes in `seed/calibration.md`, which stays local because `seed/` is not in git). "Plausible" uses the human model's peer-rank probabilities (`human.played.peer`, `human.best.peer`), falling back to KataGo's policy priors when the human model is unavailable: KataGo's policy almost always prefers the best move, so the policy-only rule never fired.
 - **13 Failure to punish**: the opponent's previous move lost ≥ `tag_punish_min_loss` (5) points and the student's move gives back ≥ `got_away_ratio` (0.6) of it.
 - **3 / 4 / 5**: peer(played) ≥ `tag_plausible_min_peer` (0.20), peer(played) ≥ `tag_plausible_ratio` (1.5) × peer(best) and `points_lost ≥ tag_plausible_min_loss` (2) (search refutes a move the student's rank plays) → 3 if the student's own group status falls after the played move, 4 if the opponent's group status rises after the best move (missed attack), else 5.
 - **6 / 15 / 1 / 2**: intuition failed — `prior_best ≥ 0.20` and `prior_played ≤ 0.10`, or (when 3/4/5 did not fire) target(best) ≥ `tag_intuition_best_min` (0.20) and peer(played) ≤ `tag_intuition_played_max` (0.10) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else, when `dist ≥ tag_direction_min_distance` (5), 1, plus 2 when the best move's region contains a group of either color with ≤ 3 liberties.
@@ -707,7 +713,7 @@ The exported JSON follows the plan's WS5 schema with these encodings, chosen so 
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.1", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.2.1", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
@@ -723,6 +729,7 @@ binary = "/usr/local/bin/katago"
 analysis_config = "config/analysis.cfg"   # threads, batch size, cache, analysisPVLen ≥ 12
 model = "models/kata1-b18c384nbt-latest.bin.gz"
 human_model = "models/b18c384nbt-humanv0.bin.gz"
+search_threads = 24                       # numSearchThreadsPerAnalysisThread, passed with -override-config
 
 [throughput]
 visits_per_second_cold = 0                # filled by `katago-mcp benchmark`

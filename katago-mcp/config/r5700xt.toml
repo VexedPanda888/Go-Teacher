@@ -42,7 +42,7 @@ episode_min_loss = 2.0
 alive = 0.6
 dead = -0.6
 reconciliation_tolerance = 2.5
-# candidate-tag rules, calibrated in WS8 (seed/calibration.md)
+# candidate-tag rules, calibrated in WS8 (notes in seed/calibration.md, kept locally, not in git)
 tag_plausible_min_loss = 2.0
 tag_plausible_min_peer = 0.20
 tag_plausible_ratio = 1.5

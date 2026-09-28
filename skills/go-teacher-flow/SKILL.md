@@ -81,7 +81,7 @@ Asked when the student brings `seed/seed_summary.md` + `.json` (made by `katago-
    and test candidate rules on the JSON before proposing them. The server's rules live in
    `katago_mcp/metrics.py` `candidate_tags`; thresholds live in `[thresholds]` of `config/*.toml`.
 3. Draft profile + a 20-episode sample (top episode per game) for the student to rate; the plan's bar
-   is ≥ 80 % tag accuracy. Record everything in `seed/calibration.md`.
+   is ≥ 80 % tag accuracy. Record everything in `seed/calibration.md` (local; `seed/` is not in git).
 4. Seed memory only after the student agrees: `verdict: "SURVEY"`, `points_lost` = root loss (the chain
    sum double-counts swings), skip games already reviewed, never overwrite CONFIRMED episodes.
 5. If tag rules change in code, rebuild tags from `reviews/<game_id>/analysis.json` (use
