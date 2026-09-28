@@ -1,6 +1,7 @@
 """Survey jobs (tool contract §1.4–§1.6)."""
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 import traceback
@@ -44,7 +45,6 @@ def student_color_of(game: SgfGame, username: str) -> int | None:
 def game_id_of(game: SgfGame, text: str) -> str:
     if game.ogs_game_id:
         return f"ogs_{game.ogs_game_id}"
-    import hashlib
     return "sgf_" + hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
 
 
@@ -67,7 +67,6 @@ class Job:
     reused: bool = False
     ga: GameAnalysis | None = None
     _cancel: threading.Event = field(default_factory=threading.Event)
-    _digest_cache: dict | None = None
     plan: dict | None = None
 
     @property
@@ -243,7 +242,6 @@ class JobManager:
             raise EngineError("engine_busy", f"job {job_id} is still running", True, "cancel it first")
         n = self.store.forget_game(job.game_id)
         job.ga = None
-        job._digest_cache = None
         self.jobs.pop(job_id, None)
         return {"job_id": job_id, "game_id": job.game_id, "analyses_dropped": n}
 

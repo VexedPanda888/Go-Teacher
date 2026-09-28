@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 import json
+import os
 import sys
 import time
 
 from .config import load_config
+from .coords import gtp_to_idx
 from .engine import MockEngine
 from .tools import ToolError, Tools
 
@@ -79,7 +80,6 @@ def cmd_selfcheck(args) -> int:
                "moves": [], "to_move": "W", "rules": "japanese", "komi": 6.5}
         r = t.analyze_position(pos, {"visits": 100}, {"include_ownership": True, "include_groups": False, "perspective": "B"})
         own = r["ownership"]
-        from .coords import gtp_to_idx
         corner = sum(own[gtp_to_idx(p)] for p in ("A1", "B1", "B2", "A2", "C2", "D2")) / 6
         print(f"corner ownership (should be clearly positive): {corner:+.2f}")
         if corner < 0.3:

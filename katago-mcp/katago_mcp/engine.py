@@ -6,19 +6,23 @@ reportAnalysisWinratesAs setting (tool contract §0.3).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from queue import Queue, Empty
 from typing import Callable
 
-from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, Board, IllegalMove
-from .coords import gtp_to_idx, idx_to_gtp
+from .board import BLACK, WHITE, COLOR_CHAR, Board, IllegalMove
+from pathlib import Path
+
+from .coords import gtp_to_idx, idx_to_gtp, star_points
 
 
 class EngineError(Exception):
@@ -166,7 +170,6 @@ class KataGoEngine:
         self._reader.start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
         # a trivial query proves the engine is up
-        t0 = time.time()
         try:
             self.query({"id": "startup", "moves": [], "rules": "japanese", "komi": 6.5,
                         "boardXSize": 19, "boardYSize": 19, "maxVisits": 1}, timeout=self.startup_timeout)
@@ -174,7 +177,6 @@ class KataGoEngine:
             self.starting = False
             self.start_error = f"katago failed to start: {e}; stderr: " + " | ".join(self._stderr_tail[-5:])
             raise EngineError("engine_unavailable", self.start_error, False)
-        self._startup_seconds = time.time() - t0
         self.starting = False
         self.ready = True
 
@@ -410,7 +412,7 @@ class KataGoEngine:
     def info(self) -> dict:
         return {"katago_version": self.version, "backend": self.backend, "running": self.running, "ready": self.ready,
                 "start_error": self.start_error,
-                "human_model": {"name": (self.human_model or "").split("/")[-1], "loaded": bool(self.human_model)}}
+                "human_model": {"name": Path(self.human_model).name if self.human_model else "", "loaded": bool(self.human_model)}}
 
 
 # ====================================================================== mock
@@ -425,7 +427,6 @@ class MockEngine:
         self.seconds_per_kvisit = seconds_per_kvisit
         self.version = "mock"
         self.backend = "mock"
-        self.calls = 0
 
     @property
     def running(self) -> bool:
@@ -473,7 +474,7 @@ class MockEngine:
         return sum(own) * 0.5 - komi
 
     def _noise(self, key: str, scale: float) -> float:
-        h = int(__import__("hashlib").sha1(key.encode()).hexdigest()[:8], 16)
+        h = int(hashlib.sha1(key.encode()).hexdigest()[:8], 16)
         return ((h % 10000) / 10000.0 - 0.5) * 2 * scale
 
     def analyze(self, spec: PositionSpec, max_visits: int, include_ownership: bool = True,
@@ -482,7 +483,6 @@ class MockEngine:
                 avoid_moves: list[dict] | None = None, priority: int = 0, stop_when_stable: bool = False,
                 stable_delta: float = 0.5, human_profiles: list[str] | None = None,
                 max_seconds: float | None = None) -> Analysis:
-        self.calls += 1
         if max_seconds:
             max_visits = int(max(1, min(max_visits, max_seconds * 1000)))
         if self.seconds_per_kvisit:
@@ -507,7 +507,7 @@ class MockEngine:
         cands_idx: list[int] = []
         empties = board.empties()
         if not stones:
-            cands_idx = sorted(__import__("katago_mcp.coords", fromlist=["star_points"]).star_points(n))
+            cands_idx = sorted(star_points(n))
         else:
             near = set()
             for s in stones:
@@ -572,7 +572,6 @@ class MockEngine:
             analysis = self.analyze(spec, 16, include_ownership=False)
         n = spec.size
         # weaker ranks -> flatter distribution
-        import re
         m = re.match(r"rank_(\d+)([kd])", profile)
         strength = 0.0
         if m:

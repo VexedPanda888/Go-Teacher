@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, Board, Group
+from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, Board
 from .config import Thresholds
 from .coords import chebyshev, idx_to_gtp
 from .engine import Analysis

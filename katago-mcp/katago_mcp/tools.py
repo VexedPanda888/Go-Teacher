@@ -20,11 +20,11 @@ from . import CONTRACT_VERSION, __version__
 from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, CHAR_COLOR, Board, IllegalMove, opponent
 from .budget import BudgetError, plan as plan_budget_fn
 from .config import Config
-from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, parse_move
-from .engine import Analysis, EngineError, KataGoEngine, MockEngine, PositionSpec
-from .jobs import Job, JobManager, resolve_profiles, student_color_of
-from .metrics import (acceptable_set, classify_local, group_changes, group_records, group_status_label,
-                      regional_attribution, sign_of)
+from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, parse_move
+from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
+from .jobs import Job, JobManager, game_id_of, resolve_profiles, student_color_of
+from .metrics import (acceptable_set, classify_local, decisive_and_last_chance, group_changes, group_records,
+                      group_status_label, move_rows, phases as phases_fn, regional_attribution, sign_of)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
 from .sgf import SgfError, parse, rank_to_profile
@@ -530,7 +530,6 @@ class Tools:
         warnings = list(game.warnings)
         if sc is None:
             warnings.append(f"student username {username!r} not found in PB/PW; confirm the color")
-        from .jobs import game_id_of
         gid = gid_hint or game_id_of(game, sgf)
         # replay for capture and tension events
         board = Board(19, to_move=game.first_to_move)
@@ -924,7 +923,6 @@ class Tools:
             scores = {}
             for color_ch in ("B", "W"):
                 color = CHAR_COLOR[color_ch]
-                spec = rec.spec
                 then = []
                 if rec.to_move != color:
                     then.append([COLOR_CHAR[rec.to_move], "pass"])
@@ -990,7 +988,7 @@ class Tools:
         allow_tenuki = bool(o.get("allow_tenuki", True))
         defender, attacker = g.color, opponent(g.color)
         caveats = []
-        if any(any(nb not in reg for nb in __import__("katago_mcp.coords", fromlist=["neighbors"]).neighbors(l, size)) for l in g.liberties):
+        if any(any(nb not in reg for nb in neighbors(l, size)) for l in g.liberties):
             caveats.append("group's liberties touch the region boundary: outside liberties may matter")
         if rec.board.ko_capture_available(rec.spec.rules):
             caveats.append("ko present in the position")
@@ -1083,7 +1081,7 @@ class Tools:
         o = options or {}
         rec = self._resolve_position(position)
         t0 = time.time()
-        own, score, visits = self._ownership(rec, o.get("budget"))
+        own, _score, visits = self._ownership(rec, o.get("budget"))
         groups = group_records(rec.board, own, self.cfg.thresholds, int(o.get("min_size", 1)), bool(o.get("include_liberty_points", False)))
         summary = {"B": {"alive": 0, "unsettled": 0, "dead": 0}, "W": {"alive": 0, "unsettled": 0, "dead": 0}}
         for g in groups:
@@ -1351,7 +1349,6 @@ class Tools:
             game = job.game
             you = COLOR_CHAR[student]
             opp = "W" if you == "B" else "B"
-            from .metrics import phases as phases_fn, move_rows, decisive_and_last_chance
             rows = move_rows(ga, th)
             ph = phases_fn(ga, th)
             dec, lc = decisive_and_last_chance(ga, rows, th)

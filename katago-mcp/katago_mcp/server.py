@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 
+from . import __version__
 from .config import load_config
 from .tools import ToolError, Tools
 
@@ -31,7 +32,7 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
         # Optional eager start. Default is lazy: Claude Desktop launches two server instances (chat and the
         # Cowork/Code pool) and only the one that is used should load a model.
         tools.start_engine_background()
-    log.info("katago-mcp %s serving; engine %s", __import__("katago_mcp").__version__,
+    log.info("katago-mcp %s serving; engine %s", __version__,
              "starting" if cfg.katago.start_on_boot else "starts on first use")
     server = FastMCP("katago-mcp", instructions=(
         "KataGo analysis for Go teaching. Coordinates are GTP (A1..T19, no I). Scores are points from the "

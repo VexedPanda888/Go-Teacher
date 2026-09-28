@@ -61,10 +61,6 @@ def idx_to_sgf(idx: int | None, size: int = 19) -> str:
     return chr(ord("a") + c) + chr(ord("a") + r)
 
 
-def rc(idx: int, size: int = 19) -> tuple[int, int]:
-    return divmod(idx, size)
-
-
 def chebyshev(a: int, b: int, size: int = 19) -> int:
     ra, ca = divmod(a, size)
     rb, cb = divmod(b, size)

@@ -90,10 +90,3 @@ def expand(indices: set[int], by: int, size: int = 19) -> set[int]:
                 out.add(rr * size + cc)
     return out
 
-
-def dominant_standard(indices: set[int], size: int = 19) -> str:
-    counts: dict[str, int] = {}
-    for i in indices:
-        code = standard_code(i, size)
-        counts[code] = counts.get(code, 0) + 1
-    return max(counts, key=counts.get) if counts else "C"

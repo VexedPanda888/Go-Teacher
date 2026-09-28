@@ -14,12 +14,18 @@ def canonical(data) -> str:
 
 
 def main() -> int:
-    path = sys.argv[1]
-    obj = json.load(open(path, encoding="utf-8"))
+    if len(sys.argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    with open(sys.argv[1], encoding="utf-8") as f:
+        obj = json.load(f)
     if "data" in obj and "sha256" in obj:
         expected, data = obj["sha256"], obj["data"]
-    else:
+    elif len(sys.argv) >= 3:
         expected, data = sys.argv[2], obj
+    else:
+        print("a bare blob needs the expected sha256 as the second argument", file=sys.stderr)
+        return 2
     got = hashlib.sha256(canonical(data).encode("utf-8")).hexdigest()
     ok = got == expected
     print(f"{'OK' if ok else 'MISMATCH'}  expected {expected[:16]}…  got {got[:16]}…  episodes={len(data.get('episodes', []))}")

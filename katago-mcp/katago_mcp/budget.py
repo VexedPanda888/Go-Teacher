@@ -1,8 +1,6 @@
 """plan_budget (tool contract §1.2): time budget -> concrete allocation."""
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from .config import BudgetConfig, Unit
 
 
@@ -190,6 +188,3 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
 def cap_clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
-
-def unit_to_dict(u: Unit) -> dict:
-    return asdict(u)

@@ -223,9 +223,6 @@ class Board:
         b.history_hash = ((b.history_hash * 1000003) ^ b.board_hash) & _MASK64
         return b
 
-    def legal_moves(self, color: int, rules: str = "japanese") -> list[int]:
-        return [i for i in self.empties() if self.legality(color, i, rules) is None]
-
     # ------------------------------------------------------------------ misc
     def ko_capture_available(self, rules: str = "japanese") -> bool:
         """True if either side could capture a single stone in a ko shape right now."""
@@ -245,12 +242,3 @@ class Board:
                                 return True
         return False
 
-    def ascii_rows(self) -> list[str]:
-        rows = []
-        for r in range(self.size):
-            row = []
-            for c in range(self.size):
-                v = self.cells[r * self.size + c]
-                row.append("X" if v == BLACK else "O" if v == WHITE else ".")
-            rows.append(" ".join(row))
-        return rows

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .board import BLACK, WHITE, Board
+from .board import Board
 from .engine import Analysis, PositionSpec
 
 
