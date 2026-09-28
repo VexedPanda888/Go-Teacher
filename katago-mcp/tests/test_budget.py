@@ -5,7 +5,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from katago_mcp.budget import plan, unit_visits, solve_visits, BudgetError  # noqa: E402
-from katago_mcp.config import BudgetConfig, Unit  # noqa: E402
+from katago_mcp.config import BudgetConfig  # noqa: E402
 
 
 class TestUnits(unittest.TestCase):

@@ -174,7 +174,6 @@ class MockToolsTest(unittest.TestCase):
     def test_analyze_line_three_line_contrast(self):
         pos = {"job_id": self.job_id, "move_number": 40}
         a = self.tools.analyze_position(pos, {"visits": 100})
-        played = self.digest["episodes"][0]["root"]["played"] if self.digest["episodes"] else a["candidates"][-1]["move"]
         line = self.tools.analyze_line(pos, [{"color": "B", "move": a["candidates"][1]["move"] if len(a["candidates"]) > 1 else a["candidates"][0]["move"]},
                                              {"engine": True}], {"visits": 60}, follow_pv_plies=3)
         self.assertEqual(len(line["nodes"]), 5)
@@ -247,7 +246,6 @@ class MockToolsTest(unittest.TestCase):
         n = ep["root"]["move"]
         a = self.tools.analyze_position({"job_id": self.job_id, "move_number": n - 1}, {"visits": 80})
         best = a["candidates"][0]["move"]
-        reply = a["candidates"][0]["pv"][1] if len(a["candidates"][0]["pv"]) > 1 else None
         branch_moves = [f"B{best}"]
         episodes = [{
             "id": "E1", "moves": ep["moves"], "title": "Test episode", "category": "5", "tags": ep["candidate_tags"],
@@ -333,10 +331,6 @@ class HandicapDigestTest(unittest.TestCase):
             t.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SgfInputTest(unittest.TestCase):
     """sgf inputs: text, file path (games dir / absolute), OGS id or link (fetched, cached)."""
 
@@ -366,6 +360,11 @@ class SgfInputTest(unittest.TestCase):
         self.assertEqual(s2["game_id"], "ogs_555001")
         r = self.tools.start_game_analysis(p, {"visits_per_move": 30})
         self.assertEqual(r["game_id"], "ogs_555001")
+        # let the background job finish before tearDown deletes the folder it writes into
+        for _ in range(400):
+            if self.tools.job_status(r["job_id"])["state"] in ("done", "failed", "cancelled"):
+                break
+            time.sleep(0.02)
 
     def test_ogs_fetch_is_cached_and_used_by_all_entry_points(self):
         import urllib.request
@@ -445,8 +444,9 @@ class LenientInputsTest(unittest.TestCase):
         pos = {"job_id": self.job, "move_number": 20}
         a = self.tools.analyze_position(pos, 60)                    # bare number = visits
         best = a["candidates"][0]["move"]
-        r = self.tools.analyze_line(pos, [f"B{best}", "engine", best if False else "W" + a["candidates"][0]["pv"][1] if len(a["candidates"][0]["pv"]) > 1 else "engine"],
-                                    "line_node", follow_pv_plies=1)
+        pv = a["candidates"][0]["pv"]
+        third = "W" + pv[1] if len(pv) > 1 else "engine"
+        r = self.tools.analyze_line(pos, [f"B{best}", "engine", third], "line_node", follow_pv_plies=1)
         self.assertGreaterEqual(len(r["nodes"]), 3)
         self.assertTrue(r["nodes"][0]["forced"])
         self.assertFalse(r["nodes"][1]["forced"])
@@ -467,3 +467,7 @@ class LenientInputsTest(unittest.TestCase):
         self.assertIn("D4", hm["profiles"]["peer"]["moves_of_interest"])
         with self.assertRaises(ToolError):
             self.tools.analyze_position(12345)
+
+
+if __name__ == "__main__":
+    unittest.main()
