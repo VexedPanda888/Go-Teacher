@@ -29,8 +29,10 @@ if (-not (Test-Path ".venv")) { python -m venv .venv }
 # The 5700 XT's thread count is [katago].search_threads in config\r5700xt.toml; analysis.cfg is shared and left alone.
 
 # The first start of the OpenCL backend tunes kernels for the GPU (several minutes); do it once now.
+# `katago tuner`, not `katago benchmark`: benchmark rejects analysis.cfg (no numSearchThreads, and its
+# humanSL parameters need a -human-model flag that benchmark does not accept).
 Write-Host ">> first-run OpenCL tuning (this can take a few minutes) ..."
-& "$KataDir\katago.exe" benchmark -model models\kata1-b18c384nbt-latest.bin.gz -config config\analysis.cfg -v 200 2>&1 | Select-Object -Last 5
+& "$KataDir\katago.exe" tuner -model models\kata1-b18c384nbt-latest.bin.gz -config config\analysis.cfg 2>&1 | Select-Object -Last 5
 
 Write-Host ""
 Write-Host "Next steps"
