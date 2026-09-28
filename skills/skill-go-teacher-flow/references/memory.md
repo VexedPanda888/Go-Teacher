@@ -27,7 +27,9 @@ never progress or improvement.
     "game_state": {"ahead": 4, "close": 8, "behind": 3},
     "phase": {"opening": 21.5, "middlegame": 63.0, "endgame": 12.0}
   },
-  "open_lesson_ids": ["ogs_12345678-L1", "ogs_12345001-L2"]
+  "open_lesson_ids": ["ogs_12345678-L1", "ogs_12345001-L2"],
+  "student_priorities": "The student's own steer on what to teach first (e.g. 13 tracked but not led with). Follow it in triage.",
+  "games_seeded": 19, "seed_note": "Where seeded data came from and how far to trust it."
 }
 ```
 
@@ -61,6 +63,9 @@ never progress or improvement.
 **Seeded games** (WS8, survey only, no verification) use the same collections with `episodes.verdict:
 "SURVEY"`, `taught: false`, `games.seeded: true`, and no lessons. In the profile's recurrence math a
 SURVEY episode counts half (weight 0.5 × 0.85^age) and never on its own makes a category "recurring".
+Seeded episodes also carry `chain_points` (the digest's chain sum; `points_lost` is the root loss),
+`server_tags`, `tags_source`, `persistent_best`, `learnability`, `peer_played` and `stability`. When a
+seeded game is later reviewed properly, replace its SURVEY episodes with the CONFIRMED ones.
 
 `patterns/<pattern_hash>` — one per 7×7 canonical pattern seen as a mistake:
 

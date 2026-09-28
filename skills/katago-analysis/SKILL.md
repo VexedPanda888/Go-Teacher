@@ -29,6 +29,9 @@ Then:
 1. `engine_info` — confirm the machine, `throughput.visits_per_second_sustained > 0` (else
    `refresh_benchmark: true`), human model loaded.
 2. `sgf_summary` — confirm the student's colour, rules, komi, handicap, result. Read `warnings`.
+   Pass the game as the OGS link or game id (the server fetches and caches the SGF) or as the file
+   name of an `.sgf` in the server's `games/` folder. Never retype SGF text into a tool call: long
+   records get mangled. Use the same `sgf` value for `start_game_analysis`.
 3. `plan_budget(total_minutes, move_count)` — returns survey visits, how many episodes fit, and the
    per-episode search sizes. If `feasible` is false, tell the student the minimum
    (`minimum_minutes_for_three_episodes`) and let them choose: extend, or accept fewer episodes.
@@ -46,18 +49,23 @@ Costs to keep in mind: one root search = 1 unit; each `analyze_line` node = one 
 
 `job_results(job_id)` (≤ 4k tokens). Use it in this order:
 
-1. `game.reconciliation` — if `mismatch`, stop and fix komi/rules/handicap before anything else.
+1. `game.reconciliation` — if `mismatch`, stop and check komi/rules/handicap before anything else
+   (go-teacher-flow, "When things go wrong", has the diagnosis when they are already correct).
 2. `reliability.low_visit_positions`, `unstable_episodes` — treat those episodes as needing the
    stability protocol before any claim.
 3. `game_type` and `decisive` / `last_chance` — the shape of the story (single blunder vs accumulation;
    where the game was decided; the last recoverable moment, which is the best teaching moment in a loss).
-4. `episodes[]` sorted by points lost. For each: `root` (played/best/points lost), `region`, `phase`,
+4. `episodes[]` sorted by points lost. `points_lost_total` sums every seed in the chain and can be
+   several times the real damage when both sides keep swinging the same group; judge cost by
+   `root.points_lost` and the net score change over the chain. For each: `root` (played/best/points lost), `region`, `phase`,
    `game_state_before`, `acceptable_set` (was the played move within 1 point of best?), `signature`
    (prior_played vs prior_best, local_loss_share, score_stdev played vs best, ko_present),
    `style_axis` (overplay/slack), `human.played` / `human.best` for peer/target/horizon/opponent,
    `learnability` (target-rank probability of the teachable move), `candidate_tags` (taxonomy hints, not
-   verdicts), `stability`, `got_away_with_it`, `group_status_change`.
-5. `positives` — correct moves that a 7k usually misses. Mention one in the summary.
+   verdicts), `stability`, `got_away_with_it`, `group_status_change`, `persistent_best` (other episodes whose best
+   point is the same: one big point left open — often one lesson, usually category 2 or 15).
+5. `positives` — correct moves that a 7k usually misses. Mention one in the summary; skip passes and
+   dame-like first/last-line moves, which the list still contains.
 
 The digest's tags and teachable move are *hypotheses*. Phase 4 decides.
 

@@ -72,6 +72,22 @@ category, one strength). Write each in the lesson format (go-teaching §3). Writ
 chat. Then update memory: the game, the CONFIRMED episodes with pattern hashes, the lessons, and the
 refreshed profile (≤ 1,500 tokens). Finish by asking whether anything on the page is unclear.
 
+## Calibration / seeding pass (WS8)
+
+Asked when the student brings `seed/seed_summary.md` + `.json` (made by `katago-mcp-seed`; the plan is
+`docs/plan.md` WS8, the tool-side notes are `katago-mcp/README.md` §5b). No self-review, no lessons.
+1. Reconciliation per game (see "When things go wrong" for a mismatch with correct rules).
+2. Tag frequencies and the top episodes: look for tags that never fire or fire on half the episodes,
+   and test candidate rules on the JSON before proposing them. The server's rules live in
+   `katago_mcp/metrics.py` `candidate_tags`; thresholds live in `[thresholds]` of `config/*.toml`.
+3. Draft profile + a 20-episode sample (top episode per game) for the student to rate; the plan's bar
+   is ≥ 80 % tag accuracy. Record everything in `seed/calibration.md`.
+4. Seed memory only after the student agrees: `verdict: "SURVEY"`, `points_lost` = root loss (the chain
+   sum double-counts swings), skip games already reviewed, never overwrite CONFIRMED episodes.
+5. If tag rules change in code, rebuild tags from `reviews/<game_id>/analysis.json` (use
+   `katago-mcp/.venv/bin/python`; system Python lacks `tomllib`), check they reproduce what was seeded,
+   and update memory to match. The running server must be restarted to pick up code changes.
+
 ## Rules that do not bend
 
 - You interpret the engine; you do not compute Go yourself. Every board claim traces to a ledger row
@@ -89,7 +105,11 @@ refreshed profile (≤ 1,500 tokens). Finish by asking whether anything on the p
 
 - `engine_unavailable`: tell the student which machine to start the server on; continue Phase 2 with
   SGF-only tools if a survey already finished earlier (`reuse_existing`).
-- Reconciliation mismatch: stop, fix rules/komi/handicap with the student, rerun the survey.
+- Reconciliation mismatch: first check rules/komi/handicap with `sgf_summary`; if wrong, fix with the
+  student and rerun the survey. If they are right, count the final board from the ownership overlay
+  (`render_board` with `overlay: "ownership"`, territory + dead stones + captures + komi) and ask the
+  student how the disputed groups were scored. A count that matches the SGF means the engine's score
+  includes unfinished play: proceed. Otherwise note the unexplained gap and distrust only endgame figures.
 - The student disagrees with a verdict: test their line with `analyze_line`, add it to the ledger,
   report the numbers; the engine's line and theirs both go on the dashboard.
 - Time is up before verification finished: deliver fewer lessons rather than unverified ones.

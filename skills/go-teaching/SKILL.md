@@ -21,7 +21,7 @@ confirms it (see katago-analysis §3), and *what to teach*.
 | 2 | Urgent vs big | best move in another region where a weak group sits; `pass_probe` value there large | "Urgent before big": settle or attack weak groups first |
 | 3 | Own life and death | own group's ownership fell; `local_solve` says dead/unsettled | Count liberties and eye space before tenuki; the vital point |
 | 4 | Attack / killing | opponent's group survived when it shouldn't; best move attacks | Attack from the outside, take the base, don't touch weak stones |
-| 5 | Tactical reading | plausible move (policy high) refuted by search | Read the opponent's best reply before playing; ladders, nets, snapbacks |
+| 5 | Tactical reading | a move the student's rank plays often (peer ≥ 20 %) refuted by search | Read the opponent's best reply before playing; ladders, nets, snapbacks |
 | 6 | Shape | best move adjacent (≤ 2) to played; target rank plays it | Empty triangle / hane at the head / the tiger's mouth: the shape the rank above plays |
 | 7 | Joseki | opening corner deviation with a ≥ 2-point contrast | The one joseki line the student keeps deviating from |
 | 8 | Invasion / reduction | invasion died or reduction insufficient | Where a framework can still be invaded; the shoulder hit as reduction |
@@ -44,8 +44,12 @@ Score every candidate episode after verification:
 
     priority = cost × learnability × recurrence × awareness_boost
 
-- **cost**: points lost in the episode (from the digest), capped at 15 so one blunder does not
-  crowd out everything else.
+- **cost**: points lost at the episode root (or the net change over the chain — not
+  `points_lost_total`, which double-counts swings), capped at 15 so one blunder does not crowd out
+  everything else.
+- **student priorities**: read `student_priorities` in the memory profile and follow it. Currently:
+  failure to punish (13) is tracked but not led with, because punishing needs strength the student builds
+  by fixing other categories first; prefer lessons whose fix is a move a 7k can find.
 - **learnability**: `learnability` in the digest (probability that the target rank plays the teachable
   move). Below 0.05 the fix is not learnable now → teach the *recognition cue* instead of the move, or skip.
 - **recurrence**: 1.0 if the pattern hash or category is new; ×1.5 if the memory shows the same category
