@@ -186,6 +186,15 @@ The review flow is the project's; the server only makes it cheap and honest:
 
 Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that the ledger cites.
 
+## 5a. Memory over long sessions
+
+KataGo's NN cache is capped at 2^19 entries in `analysis.cfg` (about 1–1.5 GB); the old 2^21 setting grew to
+~6 GB over a seeding run and made a 24 GB machine swap, each game slower than the last. The server keeps at
+most 4,000 analyses in RAM (a few hundred MB) and restarts KataGo before a survey once 6,000 queries have run
+since its start (`[katago].restart_after_queries`, ~30 s on Metal). `job_status(job_id, "release")` frees a
+finished job's memory; its results stay in `reviews/<game_id>/` and are reused. The seeding command restarts
+KataGo every four games (`--restart-every`) and releases each game as it finishes.
+
 ## 5b. Seeding memory from past games (WS8)
 
 ```bash

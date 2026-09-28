@@ -60,8 +60,15 @@ class Analysis:
     raw_id: str | None = None
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        return d
+        return {
+            "to_move": self.to_move, "visits": self.visits, "winrate": self.winrate, "score_lead": self.score_lead,
+            "score_stdev": self.score_stdev,
+            "candidates": [{"move": c.move, "order": c.order, "visits": c.visits, "prior": c.prior, "winrate": c.winrate,
+                            "score_lead": c.score_lead, "score_stdev": c.score_stdev, "lcb": c.lcb, "utility": c.utility,
+                            "pv": list(c.pv)} for c in self.candidates],
+            "policy": self.policy, "ownership": self.ownership, "ownership_stdev": self.ownership_stdev,
+            "human": self.human, "stopped_early": self.stopped_early, "seconds": self.seconds, "raw_id": self.raw_id,
+        }
 
     @staticmethod
     def from_dict(d: dict) -> "Analysis":
@@ -129,6 +136,7 @@ class KataGoEngine:
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._stderr_tail: list[str] = []
+        self.queries_since_start = 0
         self.version: str = "unknown"
         self.backend: str = "unknown"
 
@@ -170,7 +178,14 @@ class KataGoEngine:
         self.starting = False
         self.ready = True
 
+    def restart(self) -> None:
+        """Stop and start again: drops KataGo's NN cache (its memory) and any stale state."""
+        self.stop()
+        self.queries_since_start = 0
+        self.start()
+
     def stop(self) -> None:
+        self.ready = False
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.stdin.close()
@@ -236,6 +251,7 @@ class KataGoEngine:
         """Send a query; return the final response.  on_report(partial) may return True to terminate early."""
         qid = q.get("id") or f"q{uuid.uuid4().hex[:10]}"
         q["id"] = qid
+        self.queries_since_start += 1
         queue: Queue = Queue()
         with self._lock:
             self._queues[qid] = queue
@@ -415,11 +431,16 @@ class MockEngine:
     def running(self) -> bool:
         return True
 
+    queries_since_start = 0
+
     def start(self) -> None:
         pass
 
     def stop(self) -> None:
         pass
+
+    def restart(self) -> None:
+        self.queries_since_start = 0
 
     def info(self) -> dict:
         return {"katago_version": "mock", "backend": "mock", "running": True, "ready": True, "start_error": None,

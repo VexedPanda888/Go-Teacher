@@ -236,6 +236,17 @@ class JobManager:
             self.store.put_cached(rec.ref, a, ownership=a.ownership is not None)
         return ga
 
+    def release(self, job_id: str) -> dict:
+        """Free a finished job's memory (analysis.json on disk remains; a new start_game_analysis reuses it)."""
+        job = self.get(job_id)
+        if job.state in ("queued", "running"):
+            raise EngineError("engine_busy", f"job {job_id} is still running", True, "cancel it first")
+        n = self.store.forget_game(job.game_id)
+        job.ga = None
+        job._digest_cache = None
+        self.jobs.pop(job_id, None)
+        return {"job_id": job_id, "game_id": job.game_id, "analyses_dropped": n}
+
     # ---------------------------------------------------------------- access
     def get(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)

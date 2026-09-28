@@ -39,6 +39,7 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
     if st["state"] != "done":
         return {"file": path.name, "game_id": r["game_id"], "error": st.get("error") or st["state"]}
     d = t.job_results(r["job_id"], "digest", max_episodes=episodes)
+    t.job_status(r["job_id"], "release")          # keep memory flat across a long run (files stay on disk)
     eps = []
     for e in d["episodes"]:
         eps.append({
@@ -125,6 +126,7 @@ def main() -> int:
     ap.add_argument("--episodes", type=int, default=6)
     ap.add_argument("--out", default=None)
     ap.add_argument("--mock", action="store_true")
+    ap.add_argument("--restart-every", type=int, default=4, help="restart KataGo every N games to drop its NN cache (0 = never)")
     args = ap.parse_args()
     cfg = load_config(args.config)
     t = Tools(cfg, engine=MockEngine() if args.mock else None, start_engine=not args.mock)
@@ -137,6 +139,9 @@ def main() -> int:
     records = []
     try:
         for i, p in enumerate(files, 1):
+            if args.restart_every and i > 1 and (i - 1) % args.restart_every == 0 and not args.mock:
+                print("  restarting KataGo to clear its cache ...", file=sys.stderr)
+                t.restart_engine()
             print(f"[{i}/{len(files)}] {p.name}", file=sys.stderr)
             try:
                 records.append(survey_one(t, p, args.visits, args.student, args.episodes))

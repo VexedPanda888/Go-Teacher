@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import OrderedDict
 import threading
 import time
 from dataclasses import dataclass, field
@@ -58,7 +59,9 @@ class Store:
         self.reviews_dir = Path(reviews_dir)
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
         self.positions: dict[str, PositionRecord] = {}
-        self.cache: dict[tuple, Analysis] = {}
+        self.cache: "OrderedDict[tuple, Analysis]" = OrderedDict()
+        self.by_ref: dict[str, set] = {}
+        self.max_cache_entries = 4000        # ~70 KB each with ownership + human policies -> a few hundred MB at most
         self._lock = threading.Lock()
         self._seq: dict[str, int] = {}
 
@@ -103,8 +106,10 @@ class Store:
         """Best cached analysis for this ref with at least min_visits and compatible options."""
         best = None
         with self._lock:
-            for (r, v, o), a in self.cache.items():
-                if r != ref or v < min_visits:
+            for key in self.by_ref.get(ref, ()):
+                (r, v, o) = key
+                a = self.cache.get(key)
+                if a is None or v < min_visits:
                     continue
                 od = dict((k, json.loads(val)) for k, val in o)
                 ok = True
@@ -120,16 +125,39 @@ class Store:
         return best
 
     def put_cached(self, ref: str, a: Analysis, **opts) -> None:
+        key = self.cache_key(ref, a.visits, **opts)
         with self._lock:
-            self.cache[self.cache_key(ref, a.visits, **opts)] = a
+            self.cache[key] = a
+            self.cache.move_to_end(key)
+            self.by_ref.setdefault(ref, set()).add(key)
+            while len(self.cache) > self.max_cache_entries:
+                old_key, _ = self.cache.popitem(last=False)
+                keys = self.by_ref.get(old_key[0])
+                if keys:
+                    keys.discard(old_key)
+                    if not keys:
+                        del self.by_ref[old_key[0]]
 
     def any_ownership(self, ref: str) -> list[float] | None:
         best = None
         with self._lock:
-            for (r, v, o), a in self.cache.items():
-                if r == ref and a.ownership is not None and (best is None or a.visits > best.visits):
+            for key in self.by_ref.get(ref, ()):
+                a = self.cache.get(key)
+                if a is not None and a.ownership is not None and (best is None or a.visits > best.visits):
                     best = a
         return best.ownership if best else None
+
+    def forget_game(self, game_id: str) -> int:
+        """Drop in-memory analyses and positions of a game (its files under reviews/ stay)."""
+        n = 0
+        with self._lock:
+            refs = [r for r, rec in self.positions.items() if rec.game_id == game_id]
+            for r in refs:
+                for key in self.by_ref.pop(r, set()):
+                    if self.cache.pop(key, None) is not None:
+                        n += 1
+                self.positions.pop(r, None)
+        return n
 
     # ---------------------------------------------------------------- dirs, ids, logs
     def game_dir(self, game_id: str | None) -> Path:

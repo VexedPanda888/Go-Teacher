@@ -421,6 +421,14 @@ class Tools:
                         "pv": [idx_to_gtp(p, size) for p in c.pv], "human": hp, "in_acceptable_set": c.move in acc})
         return out
 
+    def restart_engine(self) -> dict:
+        if hasattr(self.engine, "restart"):
+            try:
+                self.engine.restart()
+            except EngineError as e:
+                raise _wrap_engine_error(e)
+        return self.engine.info()
+
     # ================================================================ 1.1 engine_info
     def engine_info(self, refresh_benchmark: bool = False) -> dict:
         if refresh_benchmark:
@@ -608,6 +616,13 @@ class Tools:
             plan = self.last_plan
             visits = int(plan["profiles"]["survey"]) if plan else self._default_survey_visits(len(game.moves) or 1)
         self._ensure_engine()
+        limit = self.cfg.katago.restart_after_queries
+        if limit and getattr(self.engine, "queries_since_start", 0) >= limit and self.jobs.active is None \
+                and hasattr(self.engine, "restart"):
+            try:
+                self.engine.restart()      # fresh NN cache before a long job
+            except EngineError as e:
+                raise _wrap_engine_error(e)
         try:
             job = self.jobs.start(sgf, visits, student_username, game_id, options)
         except EngineError as e:
@@ -628,6 +643,8 @@ class Tools:
         try:
             if action == "cancel":
                 return self.jobs.cancel(job_id)
+            if action == "release":
+                return self.jobs.release(job_id)
             return self.jobs.get(job_id).status()
         except EngineError as e:
             raise _wrap_engine_error(e)

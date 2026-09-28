@@ -81,7 +81,7 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     @server.tool()
     @guarded
     def job_status(job_id: str, action: str = "status") -> dict:
-        """Progress of a survey job (action 'status') or cancel it (action 'cancel')."""
+        """Progress of a survey job (action 'status'), cancel it ('cancel'), or free a finished job's memory ('release'; its results stay on disk)."""
         return tools.job_status(job_id, action)
 
     @server.tool()

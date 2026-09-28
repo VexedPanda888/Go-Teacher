@@ -87,6 +87,8 @@ class KatagoConfig:
     start_on_boot: bool = False             # False: KataGo starts on the first tool that needs it (Claude Desktop
                                             # launches two server instances; only the one in use should load a model)
     first_call_wait_seconds: float = 45.0   # how long a tool call waits for a starting engine before answering "starting"
+    restart_after_queries: int = 6000       # a new survey restarts KataGo once this many queries have run since its start
+                                            # (frees the NN cache; ~30 s on Metal). 0 disables.
     human_profile_key: str = "humanSLProfile"
     startup_timeout: float = 120.0
     query_timeout: float = 600.0
