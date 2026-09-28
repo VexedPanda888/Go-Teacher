@@ -26,9 +26,7 @@ if (-not (Test-Path "models\b18c384nbt-humanv0.bin.gz")) {
 if (-not (Test-Path ".venv")) { python -m venv .venv }
 & .\.venv\Scripts\pip.exe install -q -e ".[dev]"
 
-# thread count for the 5700 XT
-(Get-Content config\analysis.cfg) -replace '^numSearchThreadsPerAnalysisThread = .*', 'numSearchThreadsPerAnalysisThread = 16' | Set-Content config\analysis.cfg
-Write-Host ">> numSearchThreadsPerAnalysisThread = 16"
+# The 5700 XT's thread count is [katago].search_threads in config\r5700xt.toml; analysis.cfg is shared and left alone.
 
 # The first start of the OpenCL backend tunes kernels for the GPU (several minutes); do it once now.
 Write-Host ">> first-run OpenCL tuning (this can take a few minutes) ..."

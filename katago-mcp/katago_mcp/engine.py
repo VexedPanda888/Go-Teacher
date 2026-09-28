@@ -120,8 +120,9 @@ class KataGoEngine:
     def __init__(self, binary: str, analysis_config: str, model: str, human_model: str | None = None,
                  perspective: str = "BLACK", human_profile_key: str = "humanSLProfile",
                  startup_timeout: float = 120.0, query_timeout: float = 600.0, report_every: float = 1.0,
-                 cwd: str | None = None):
+                 cwd: str | None = None, search_threads: int | None = None):
         self.binary = binary
+        self.search_threads = search_threads    # per machine; overrides analysis.cfg via -override-config
         self.cwd = cwd
         self.echo_stderr = False        # CLI: mirror KataGo's own startup log to our stderr until ready
         self.ready = False
@@ -152,9 +153,7 @@ class KataGoEngine:
     def start(self) -> None:
         if self.running:
             return
-        cmd = [self.binary, "analysis", "-config", self.analysis_config, "-model", self.model]
-        if self.human_model:
-            cmd += ["-human-model", self.human_model]
+        cmd = self.command()
         self.ready = False
         self.starting = True
         self.start_error = None
@@ -179,6 +178,14 @@ class KataGoEngine:
             raise EngineError("engine_unavailable", self.start_error, False)
         self.starting = False
         self.ready = True
+
+    def command(self) -> list[str]:
+        cmd = [self.binary, "analysis", "-config", self.analysis_config, "-model", self.model]
+        if self.human_model:
+            cmd += ["-human-model", self.human_model]
+        if self.search_threads:
+            cmd += ["-override-config", f"numSearchThreadsPerAnalysisThread={int(self.search_threads)}"]
+        return cmd
 
     def restart(self) -> None:
         """Stop and start again: drops KataGo's NN cache (its memory) and any stale state."""

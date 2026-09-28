@@ -6,6 +6,7 @@ binary = "C:/katago/katago.exe"               # OpenCL build from the KataGo rel
 analysis_config = "config/analysis.cfg"
 model = "models/kata1-b18c384nbt-latest.bin.gz"
 human_model = "models/b18c384nbt-humanv0.bin.gz"
+search_threads = 16                           # numSearchThreadsPerAnalysisThread, passed with -override-config
 perspective = "BLACK"                         # must match reportAnalysisWinratesAs in analysis.cfg
 startup_timeout = 600                         # first OpenCL start tunes kernels (can take minutes)
 query_timeout = 900

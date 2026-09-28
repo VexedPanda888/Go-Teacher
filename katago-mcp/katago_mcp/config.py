@@ -98,6 +98,7 @@ class KatagoConfig:
     restart_after_queries: int = 6000       # a new survey restarts KataGo once this many queries have run since its start
                                             # (frees the NN cache; ~30 s on Metal). 0 disables.
     human_profile_key: str = "humanSLProfile"
+    search_threads: int | None = None       # numSearchThreadsPerAnalysisThread for this machine (None: analysis.cfg)
     startup_timeout: float = 120.0
     query_timeout: float = 600.0
     report_every: float = 1.0

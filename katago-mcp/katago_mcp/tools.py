@@ -56,7 +56,8 @@ class Tools:
         self.engine = engine or KataGoEngine(cfg.katago.binary, cfg.katago.analysis_config, cfg.katago.model,
                                             cfg.katago.human_model, cfg.katago.perspective,
                                             cfg.katago.human_profile_key, cfg.katago.startup_timeout,
-                                            cfg.katago.query_timeout, cfg.katago.report_every, cwd=cfg.root_dir)
+                                            cfg.katago.query_timeout, cfg.katago.report_every, cwd=cfg.root_dir,
+                                            search_threads=cfg.katago.search_threads)
         self.store = store or Store(cfg.reviews_dir)
         self.jobs = JobManager(cfg, self.engine, self.store)
         self.vps: float = cfg.vps

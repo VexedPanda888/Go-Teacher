@@ -5,7 +5,6 @@ models/
 reviews/
 analysis_logs/
 config/*.throughput.json
-config/analysis.cfg.bak
 .pytest_cache/
 *.egg-info/
 games/

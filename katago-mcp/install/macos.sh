@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 case "$(pwd)" in *"/.Trash/"*) echo "This folder is inside the Trash ($(pwd)). Move the repo out first."; exit 1;; esac
 MACHINE="${1:-m5pro}"                 # m5pro | m2air
-THREADS="${2:-}"                      # override numSearchThreadsPerAnalysisThread
+THREADS="${2:-}"                      # override [katago].search_threads in the machine TOML
 
 if ! command -v katago >/dev/null 2>&1; then
   if command -v brew >/dev/null 2>&1; then
@@ -50,24 +50,23 @@ python -m pip install -q --upgrade pip
 pip install -q -e ".[dev]"
 echo ">> installed: $(katago-mcp --help 2>/dev/null | head -1 || echo 'katago-mcp entry point missing')"
 
-if [ -z "$THREADS" ]; then
-  case "$MACHINE" in
-    m2air) THREADS=8 ;;
-    *)     THREADS=24 ;;
-  esac
-fi
-sed -i.bak -E "s/^numSearchThreadsPerAnalysisThread = .*/numSearchThreadsPerAnalysisThread = ${THREADS}/" config/analysis.cfg && rm -f config/analysis.cfg.bak
-echo ">> numSearchThreadsPerAnalysisThread = ${THREADS}"
-
+# The search thread count lives in config/<machine>.toml ([katago].search_threads); the shared
+# analysis.cfg is not modified.  A THREADS argument overrides the TOML value.  Files are only
+# rewritten when a value actually changes, so re-running leaves the working tree clean.
 BIN="$(command -v katago)"
-python3 - "$MACHINE" "$BIN" <<'PY'
+python3 - "$MACHINE" "$BIN" "$THREADS" <<'PY'
 import re, sys
-machine, binary = sys.argv[1], sys.argv[2]
+machine, binary, threads = sys.argv[1], sys.argv[2], sys.argv[3]
 p = f"config/{machine}.toml"
 s = open(p).read()
-s = re.sub(r'^binary = .*$', f'binary = "{binary}"', s, flags=re.M)
-open(p, "w").write(s)
-print(f">> wrote binary path into {p}")
+new = re.sub(r'^binary = "[^"]*"', f'binary = "{binary}"', s, flags=re.M)
+if threads:
+    new = re.sub(r'^search_threads = \d+', f'search_threads = {int(threads)}', new, flags=re.M)
+if new != s:
+    open(p, "w").write(new)
+    print(f">> updated {p}")
+m = re.search(r'^search_threads = (\d+)', new, flags=re.M)
+print(f">> search_threads = {m.group(1) if m else 'from analysis.cfg'}")
 PY
 
 cat <<MSG
