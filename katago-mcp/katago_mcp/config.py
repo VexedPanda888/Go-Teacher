@@ -84,10 +84,20 @@ class KatagoConfig:
     model: str = "models/kata1-b18c384nbt-latest.bin.gz"
     human_model: str | None = "models/b18c384nbt-humanv0.bin.gz"
     perspective: str = "BLACK"              # must match reportAnalysisWinratesAs in analysis.cfg
+    start_on_boot: bool = False             # False: KataGo starts on the first tool that needs it (Claude Desktop
+                                            # launches two server instances; only the one in use should load a model)
+    first_call_wait_seconds: float = 45.0   # how long a tool call waits for a starting engine before answering "starting"
     human_profile_key: str = "humanSLProfile"
     startup_timeout: float = 120.0
     query_timeout: float = 600.0
     report_every: float = 1.0
+
+
+@dataclass
+class OgsConfig:
+    enabled: bool = True
+    timeout: float = 20.0
+    base_url: str = "https://online-go.com"
 
 
 @dataclass
@@ -106,8 +116,11 @@ class Config:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
     reviews_dir: str = "reviews"
+    games_dir: str = "games"          # SGF files given by name are looked up here; OGS downloads are cached here
+    ogs: OgsConfig = field(default_factory=OgsConfig)
     log_level: str = "info"
     path: str | None = None
+    root_dir: str | None = None        # repo root: relative paths in the TOML and analysis.cfg resolve against it
 
     @property
     def vps(self) -> float:
@@ -149,5 +162,26 @@ def load_config(path: str | Path | None) -> Config:
         _fill(cfg.budget.unit_cap, b["unit_cap"])
     _fill(cfg.thresholds, data.get("thresholds"))
     cfg.reviews_dir = data.get("paths", {}).get("reviews_dir", cfg.reviews_dir)
+    cfg.games_dir = data.get("paths", {}).get("games_dir", cfg.games_dir)
+    _fill(cfg.ogs, data.get("ogs"))
     cfg.log_level = data.get("logging", {}).get("level", cfg.log_level)
+    # Relative paths are relative to the repo root (the parent of config/), not to the process cwd:
+    # Claude Desktop launches servers from an arbitrary directory.
+    cfg_dir = p.resolve().parent
+    root = cfg_dir.parent if cfg_dir.name == "config" else cfg_dir
+    cfg.root_dir = str(root)
+
+    def absolute(v: str | None) -> str | None:
+        if not v:
+            return v
+        q = Path(v).expanduser()
+        return str(q if q.is_absolute() else (root / q).resolve())
+
+    cfg.katago.analysis_config = absolute(cfg.katago.analysis_config)
+    cfg.katago.model = absolute(cfg.katago.model)
+    cfg.katago.human_model = absolute(cfg.katago.human_model)
+    cfg.reviews_dir = absolute(cfg.reviews_dir)
+    cfg.games_dir = absolute(cfg.games_dir)
+    if "/" in cfg.katago.binary or "\\" in cfg.katago.binary:
+        cfg.katago.binary = absolute(cfg.katago.binary)
     return cfg

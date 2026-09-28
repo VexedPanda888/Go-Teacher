@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 import time
@@ -21,7 +22,20 @@ from .tools import ToolError, Tools
 def _tools(args, start_engine: bool) -> Tools:
     cfg = load_config(getattr(args, "config", None))
     engine = MockEngine() if getattr(args, "mock", False) else None
-    return Tools(cfg, engine=engine, start_engine=start_engine)
+    t = Tools(cfg, engine=engine, start_engine=False)
+    if start_engine and engine is None:
+        t.engine.echo_stderr = True
+        print(f"starting KataGo ({cfg.katago.binary}) with {os.path.basename(cfg.katago.model)}"
+              + (f" and {os.path.basename(cfg.katago.human_model)}" if cfg.katago.human_model else "")
+              + "\n  loading takes seconds on Metal; the first OpenCL start can tune kernels for several minutes."
+              + "\n  KataGo's own log follows; the check continues when the engine answers.", file=sys.stderr, flush=True)
+        t0 = time.time()
+        t.engine.start()
+        print(f"  engine ready after {time.time() - t0:.0f}s ({t.engine.info().get('backend')} backend, "
+              f"KataGo {t.engine.info().get('katago_version')})", file=sys.stderr, flush=True)
+    elif start_engine:
+        t.engine.start()
+    return t
 
 
 def cmd_serve(args) -> int:

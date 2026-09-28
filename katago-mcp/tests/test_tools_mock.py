@@ -335,3 +335,135 @@ class HandicapDigestTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SgfInputTest(unittest.TestCase):
+    """sgf inputs: text, file path (games dir / absolute), OGS id or link (fetched, cached)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        cfg = Config()
+        cfg.reviews_dir = os.path.join(self.tmp.name, "reviews")
+        cfg.games_dir = os.path.join(self.tmp.name, "games")
+        cfg.throughput.visits_per_second_sustained = 650.0
+        self.tools = Tools(cfg, engine=MockEngine())
+        self.sgf = synthetic_game(30, seed=41)
+
+    def tearDown(self):
+        self.tools.close()
+        self.tmp.cleanup()
+
+    def test_file_by_name_in_games_dir_and_absolute(self):
+        os.makedirs(self.tools.cfg.games_dir, exist_ok=True)
+        p = os.path.join(self.tools.cfg.games_dir, "ogs_555001.sgf")
+        with open(p, "w") as f:
+            f.write(self.sgf.replace("PC[OGS: https://online-go.com/game/1041]", ""))   # no PC: id comes from the file name
+        s = self.tools.sgf_summary("ogs_555001.sgf")
+        self.assertEqual(s["game_id"], "ogs_555001")
+        self.assertEqual(s["input"]["kind"], "file")
+        self.assertEqual(s["source"]["ogs_game_id"], "555001")
+        s2 = self.tools.sgf_summary(p)
+        self.assertEqual(s2["game_id"], "ogs_555001")
+        r = self.tools.start_game_analysis(p, {"visits_per_move": 30})
+        self.assertEqual(r["game_id"], "ogs_555001")
+
+    def test_ogs_fetch_is_cached_and_used_by_all_entry_points(self):
+        import urllib.request
+        calls = []
+
+        class FakeResp:
+            def __init__(self, data): self.data = data
+            def read(self): return self.data
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=0):
+            calls.append(req.full_url)
+            return FakeResp(self.sgf.encode("utf-8"))
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            s = self.tools.sgf_summary("https://online-go.com/game/78123456")
+            self.assertEqual(s["game_id"], "ogs_78123456")
+            self.assertEqual(s["input"]["kind"], "ogs")
+            self.assertTrue(calls[0].endswith("/api/v1/games/78123456/sgf"))
+            self.assertTrue(os.path.exists(os.path.join(self.tools.cfg.games_dir, "ogs_78123456.sgf")))
+            s2 = self.tools.sgf_summary("78123456")          # bare id, served from the cache
+            self.assertEqual(len(calls), 1)
+            self.assertIn("cached", s2["input"])
+            ref = self.tools.get_position_ref(sgf="78123456", move_number=5)
+            self.assertEqual(ref["move_number"], 5)
+        finally:
+            urllib.request.urlopen = real
+
+    def test_ogs_http_error_and_bad_input(self):
+        import urllib.error, urllib.request
+        real = urllib.request.urlopen
+
+        def failing(req, timeout=0):
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        urllib.request.urlopen = failing
+        try:
+            with self.assertRaises(ToolError) as cm:
+                self.tools.sgf_summary("online-go.com/game/99999999")
+            self.assertEqual(cm.exception.code, "ogs_fetch_failed")
+        finally:
+            urllib.request.urlopen = real
+        with self.assertRaises(ToolError) as cm:
+            self.tools.sgf_summary("not-a-game")
+        self.assertEqual(cm.exception.code, "bad_request")
+        s = self.tools.sgf_summary(self.sgf)                 # raw text still works
+        self.assertEqual(s["input"]["kind"], "text")
+
+
+class LenientInputsTest(unittest.TestCase):
+    """Argument shapes a model plausibly sends: string steps, bare refs, bare visit counts, colour words."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cfg = Config()
+        cfg.reviews_dir = os.path.join(cls.tmp.name, "reviews")
+        cfg.throughput.visits_per_second_sustained = 650.0
+        cls.tools = Tools(cfg, engine=MockEngine())
+        cls.sgf = synthetic_game(40, seed=61)
+        r = cls.tools.start_game_analysis(cls.sgf, {"visits_per_move": 40})
+        cls.job = r["job_id"]
+        for _ in range(400):
+            if cls.tools.job_status(cls.job)["state"] == "done":
+                break
+            time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tools.close()
+        cls.tmp.cleanup()
+
+    def test_line_steps_as_strings(self):
+        pos = {"job_id": self.job, "move_number": 20}
+        a = self.tools.analyze_position(pos, 60)                    # bare number = visits
+        best = a["candidates"][0]["move"]
+        r = self.tools.analyze_line(pos, [f"B{best}", "engine", best if False else "W" + a["candidates"][0]["pv"][1] if len(a["candidates"][0]["pv"]) > 1 else "engine"],
+                                    "line_node", follow_pv_plies=1)
+        self.assertGreaterEqual(len(r["nodes"]), 3)
+        self.assertTrue(r["nodes"][0]["forced"])
+        self.assertFalse(r["nodes"][1]["forced"])
+        r2 = self.tools.analyze_line(pos, [best], 30, follow_pv_plies=0)   # bare point: colour = side to move
+        self.assertEqual(r2["nodes"][0]["color"], "B")
+        with self.assertRaises(ToolError) as cm:
+            self.tools.analyze_line(pos, ["W" + best], 30, follow_pv_plies=0)
+        self.assertEqual(cm.exception.code, "bad_request")
+
+    def test_bare_ref_and_colour_words(self):
+        ref = self.tools.get_position_ref(job_id=self.job, move_number=20)["position_ref"]
+        a = self.tools.analyze_position(ref, "quick")                # bare ref string, profile string
+        self.assertEqual(a["position_ref"], ref)
+        p = self.tools.pass_probe(ref, "black", None, 40)
+        self.assertEqual(p["player"], "B")
+        hm = self.tools.human_move_distribution(ref, "peer, target", "K10 D4")
+        self.assertEqual(set(hm["profiles"]), {"peer", "target"})
+        self.assertIn("D4", hm["profiles"]["peer"]["moves_of_interest"])
+        with self.assertRaises(ToolError):
+            self.tools.analyze_position(12345)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -107,8 +108,14 @@ class KataGoEngine:
 
     def __init__(self, binary: str, analysis_config: str, model: str, human_model: str | None = None,
                  perspective: str = "BLACK", human_profile_key: str = "humanSLProfile",
-                 startup_timeout: float = 120.0, query_timeout: float = 600.0, report_every: float = 1.0):
+                 startup_timeout: float = 120.0, query_timeout: float = 600.0, report_every: float = 1.0,
+                 cwd: str | None = None):
         self.binary = binary
+        self.cwd = cwd
+        self.echo_stderr = False        # CLI: mirror KataGo's own startup log to our stderr until ready
+        self.ready = False
+        self.starting = False
+        self.start_error: str | None = None
         self.analysis_config = analysis_config
         self.model = model
         self.human_model = human_model
@@ -136,11 +143,16 @@ class KataGoEngine:
         cmd = [self.binary, "analysis", "-config", self.analysis_config, "-model", self.model]
         if self.human_model:
             cmd += ["-human-model", self.human_model]
+        self.ready = False
+        self.starting = True
+        self.start_error = None
         try:
             self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE, text=True, bufsize=1)
+                                          stderr=subprocess.PIPE, text=True, bufsize=1, cwd=self.cwd or None)
         except FileNotFoundError:
-            raise EngineError("engine_unavailable", f"katago binary not found: {self.binary}", False,
+            self.starting = False
+            self.start_error = f"katago binary not found: {self.binary}"
+            raise EngineError("engine_unavailable", self.start_error, False,
                               "install KataGo and set [katago].binary in the config")
         self._reader = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader.start()
@@ -151,9 +163,12 @@ class KataGoEngine:
             self.query({"id": "startup", "moves": [], "rules": "japanese", "komi": 6.5,
                         "boardXSize": 19, "boardYSize": 19, "maxVisits": 1}, timeout=self.startup_timeout)
         except EngineError as e:
-            raise EngineError("engine_unavailable", f"katago failed to start: {e}; stderr: "
-                              + " | ".join(self._stderr_tail[-5:]), False)
+            self.starting = False
+            self.start_error = f"katago failed to start: {e}; stderr: " + " | ".join(self._stderr_tail[-5:])
+            raise EngineError("engine_unavailable", self.start_error, False)
         self._startup_seconds = time.time() - t0
+        self.starting = False
+        self.ready = True
 
     def stop(self) -> None:
         if self._proc and self._proc.poll() is None:
@@ -190,19 +205,27 @@ class KataGoEngine:
         for line in self._proc.stderr:
             line = line.rstrip()
             self._stderr_tail.append(line)
+            if self.echo_stderr and not self.ready and line:
+                print("  katago | " + line, file=sys.stderr, flush=True)
             if len(self._stderr_tail) > 200:
                 del self._stderr_tail[:100]
             low = line.lower()
             if "katago v" in low and self.version == "unknown":
                 self.version = line.split("v", 1)[-1].split()[0]
-            for b in ("metal", "opencl", "cuda", "tensorrt", "eigen"):
-                if f"using {b}" in low or f"backend: {b}" in low:
-                    self.backend = b
+            if self.backend == "unknown":
+                for b in ("metal", "opencl", "cuda", "tensorrt", "eigen"):
+                    if f"{b} backend" in low or f"using {b}" in low or f"backend: {b}" in low or f"{b} device" in low:
+                        self.backend = b
+                        break
 
     # ------------------------------------------------------------- raw queries
     def _send(self, obj: dict) -> None:
         if not self.running:
-            raise EngineError("engine_unavailable", "katago is not running", True, "start the engine")
+            if self.starting:
+                raise EngineError("engine_unavailable", "katago is still starting", True, "try again in a few seconds")
+            msg = self.start_error or "katago is not running"
+            raise EngineError("engine_unavailable", msg, True,
+                              "check [katago] paths in the config and the server's stderr log; restart the server")
         line = json.dumps(obj)
         with self._lock:
             self._proc.stdin.write(line + "\n")
@@ -277,8 +300,7 @@ class KataGoEngine:
         override = {}
         if wide_root_noise:
             override["wideRootNoise"] = wide_root_noise
-        if pv_len:
-            override["analysisPVLen"] = pv_len
+        # analysisPVLen comes from analysis.cfg (15); PVs are truncated client-side to pv_len below
         if override:
             q["overrideSettings"] = override
         if allow_moves:
@@ -309,6 +331,9 @@ class KataGoEngine:
                 return False
         resp = self.query(q, on_report=on_report)
         a = self._normalize(resp, spec)
+        if pv_len:
+            for c in a.candidates:
+                c.pv = c.pv[:pv_len]
         a.seconds = time.time() - t0
         a.stopped_early = bool(on_report) and a.visits < max_visits
         for prof in human_profiles or []:
@@ -367,7 +392,8 @@ class KataGoEngine:
         )
 
     def info(self) -> dict:
-        return {"katago_version": self.version, "backend": self.backend, "running": self.running,
+        return {"katago_version": self.version, "backend": self.backend, "running": self.running, "ready": self.ready,
+                "start_error": self.start_error,
                 "human_model": {"name": (self.human_model or "").split("/")[-1], "loaded": bool(self.human_model)}}
 
 
@@ -396,7 +422,7 @@ class MockEngine:
         pass
 
     def info(self) -> dict:
-        return {"katago_version": "mock", "backend": "mock", "running": True,
+        return {"katago_version": "mock", "backend": "mock", "running": True, "ready": True, "start_error": None,
                 "human_model": {"name": "mock-human", "loaded": self.human_model}}
 
     # -- heuristics

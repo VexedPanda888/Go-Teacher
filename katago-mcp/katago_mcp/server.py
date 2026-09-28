@@ -13,18 +13,26 @@ log = logging.getLogger("katago_mcp")
 
 
 def build_server(config_path: str | None = None, engine=None, start_engine: bool = True):
-    from mcp.server.fastmcp import FastMCP   # lazy: the mcp package is only needed to serve
+    try:
+        from mcp.server.fastmcp import FastMCP   # mcp 1.x (pinned in pyproject: mcp>=1.2,<2)
+    except ImportError:
+        try:
+            from mcp.server.mcpserver import MCPServer as FastMCP   # mcp 2.x renamed the class; API may differ
+            print("katago-mcp: running on mcp 2.x via the MCPServer fallback; if tools misbehave run "
+                  "`pip install 'mcp<2'`", file=sys.stderr)
+        except ImportError:
+            raise SystemExit("katago-mcp needs the mcp package (1.x): run `pip install 'mcp>=1.2,<2'` in the venv")
 
     cfg = load_config(config_path or os.environ.get("KATAGO_MCP_CONFIG"))
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO), stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     tools = Tools(cfg, engine=engine, start_engine=False)
-    if start_engine:
-        try:
-            tools.engine.start()
-            log.info("katago started (%s)", tools.engine.info())
-        except Exception as e:  # noqa: BLE001
-            log.error("katago failed to start: %s (tools will report engine_unavailable)", e)
+    if start_engine and cfg.katago.start_on_boot:
+        # Optional eager start. Default is lazy: Claude Desktop launches two server instances (chat and the
+        # Cowork/Code pool) and only the one that is used should load a model.
+        tools.start_engine_background()
+    log.info("katago-mcp %s serving; engine %s", __import__("katago_mcp").__version__,
+             "starting" if cfg.katago.start_on_boot else "starts on first use")
     server = FastMCP("katago-mcp", instructions=(
         "KataGo analysis for Go teaching. Coordinates are GTP (A1..T19, no I). Scores are points from the "
         "stated perspective; ownership is Black-positive. Call plan_budget before verification work."))
@@ -60,14 +68,14 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     @guarded
     def sgf_summary(sgf: str, student_username: str | None = None, boards_at: list | None = None,
                     ascii_options: dict | None = None) -> dict:
-        """Parse an SGF without engine use: players, rules, komi, handicap, result, move count, captures, tension events, ASCII boards, position refs."""
+        """Parse a game without engine use: players, rules, komi, handicap, result, move count, captures, tension events, ASCII boards, position refs. `sgf` is an OGS game link or id (fetched from online-go.com), the path/name of an .sgf file on this machine (games/ folder), or raw SGF text; prefer the link or the path over pasting text."""
         return tools.sgf_summary(sgf, student_username, boards_at, ascii_options)
 
     @server.tool()
     @guarded
     def start_game_analysis(sgf: str, budget: dict | None = None, student_username: str | None = None,
                             game_id: str | None = None, options: dict | None = None) -> dict:
-        """Start the asynchronous whole-game survey. budget: {visits_per_move} or {profile:'survey'} (from the active plan). Returns a job_id."""
+        """Start the asynchronous whole-game survey. `sgf`: OGS game link/id, .sgf file path, or SGF text (prefer link or path). budget: {visits_per_move} or {profile:'survey'} (from the active plan). Returns a job_id."""
         return tools.start_game_analysis(sgf, budget, student_username, game_id, options)
 
     @server.tool()
@@ -86,7 +94,7 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     @server.tool()
     @guarded
     def get_position_ref(job_id: str | None = None, sgf: str | None = None, move_number: int = 0) -> dict:
-        """Position reference for the position after move_number of a job or SGF."""
+        """Position reference for the position after move_number of a job, or of an SGF given as OGS link/id, file path, or text."""
         return tools.get_position_ref(job_id, sgf, move_number)
 
     @server.tool()

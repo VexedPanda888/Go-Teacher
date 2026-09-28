@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Go review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  --paper: #ECEDEA;
+  --panel: #FFFFFF;
+  --panel-2: #F5F5F2;
+  --ink: #1B1F24;
+  --muted: #646B76;
+  --rule: #D6D8D3;
+  --wood: #D9B26B;
+  --wood-edge: #B8924A;
+  --grid: #6B4F1D;
+  --accent: #2A6F77;
+  --accent-soft: rgba(42, 111, 119, 0.14);
+  --loss: #B23A2E;
+  --gain: #3E7D4A;
+  --stone-b: #1A1A1A;
+  --stone-w: #F4F2EC;
+  --focus: #2A6F77;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: "Literata", Georgia, "Iowan Old Style", "Times New Roman", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #14171C; --panel: #1C2027; --panel-2: #22272F; --ink: #E6E8EB; --muted: #9AA3AF; --rule: #2F353E;
+    --wood: #C9A45C; --wood-edge: #9E7C3A; --grid: #4E3A15; --accent: #5FB0B7; --accent-soft: rgba(95,176,183,0.18);
+    --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #14171C; --panel: #1C2027; --panel-2: #22272F; --ink: #E6E8EB; --muted: #9AA3AF; --rule: #2F353E;
+  --wood: #C9A45C; --wood-edge: #9E7C3A; --grid: #4E3A15; --accent: #5FB0B7; --accent-soft: rgba(95,176,183,0.18);
+  --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7;
+}
+html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; }
+*, *::before, *::after { box-sizing: inherit; }
+body {
+  margin: 0; min-height: 100%; background: var(--paper); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.45; font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+a { color: var(--accent); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 16px clamp(12px, 2.5vw, 28px) 40px; }
+
+/* header */
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 4px 0 14px; }
+.head h1 { font-family: var(--serif); font-weight: 600; font-size: clamp(20px, 2.4vw, 26px); margin: 0; letter-spacing: -0.01em; }
+.head .facts { color: var(--muted); font-size: 14px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.head .facts span + span::before { content: ""; }
+.head .spacer { flex: 1; }
+.iconbtn { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.iconbtn:hover { color: var(--ink); }
+
+/* main grid */
+.main { display: grid; grid-template-columns: minmax(0, 7fr) minmax(300px, 5fr); gap: 20px; align-items: start; }
+@media (max-width: 880px) { .main { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; }
+
+/* board column */
+.boardwrap { position: relative; }
+.goban { display: block; width: 100%; height: auto; border-radius: 6px; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.goban .pt { cursor: pointer; }
+.readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; padding: 12px 4px 6px; }
+.readout .movenum { font-size: 22px; font-weight: 500; }
+.readout .movenum small { color: var(--muted); font-size: 14px; font-weight: 400; }
+.readout .score { font-size: 15px; }
+.readout .score b { font-weight: 600; }
+.readout .who { color: var(--muted); }
+.controls { display: flex; align-items: center; gap: 8px; padding: 4px 0 2px; flex-wrap: wrap; }
+.controls .nav { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--panel); }
+.controls .nav button { border: 0; background: transparent; padding: 7px 12px; cursor: pointer; min-width: 40px; }
+.controls .nav button + button { border-left: 1px solid var(--rule); }
+.controls .nav button:hover { background: var(--panel-2); }
+.controls .nav button:disabled { color: var(--muted); cursor: default; background: transparent; }
+.controls .toggles { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.chip { border: 1px solid var(--rule); background: var(--panel); border-radius: 999px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
+.chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.chip:disabled { color: var(--muted); cursor: default; }
+.slider { width: 100%; margin: 10px 0 0; accent-color: var(--accent); }
+.strip { position: relative; height: 22px; margin: 2px 0 0; }
+.strip .ep { position: absolute; top: 4px; height: 14px; border-radius: 3px; background: var(--accent-soft); border: 1px solid var(--accent); cursor: pointer; font-size: 11px; line-height: 12px; color: var(--ink); padding: 0 4px; overflow: hidden; white-space: nowrap; }
+.strip .ep.active { background: var(--accent); color: #fff; }
+.strip .marker { position: absolute; top: 0; width: 2px; height: 22px; background: var(--loss); }
+.strip .marker.lc { background: var(--gain); }
+.varbar { display: none; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-soft); font-size: 14px; }
+.varbar.on { display: flex; flex-wrap: wrap; }
+.varbar .label { font-weight: 500; }
+.varbar .eval { margin-left: auto; }
+.varbar button { border: 1px solid var(--accent); background: var(--panel); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+
+/* right column */
+.graph { padding: 12px 12px 6px; }
+.graph h2, .lesson h2, .summary h2 { margin: 0 0 6px; font-size: 14px; font-weight: 500; color: var(--muted); }
+.graph svg { width: 100%; height: auto; display: block; cursor: crosshair; }
+.graph .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); padding: 4px 2px 0; flex-wrap: wrap; }
+.lesson { margin-top: 14px; padding: 14px 16px 16px; }
+.eplist { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
+.eplist button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 10px; cursor: pointer; text-align: left; font-size: 13px; line-height: 1.3; }
+.eplist button .r { color: var(--muted); display: block; font-size: 12px; }
+.eplist button.active { border-color: var(--accent); background: var(--accent-soft); }
+.lesson h3 { font-family: var(--serif); font-weight: 600; font-size: 20px; margin: 4px 0 2px; letter-spacing: -0.005em; }
+.lesson .meta { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+.lesson .meta .lost { color: var(--loss); }
+.commentary { font-family: var(--serif); font-size: 16.5px; line-height: 1.55; min-height: 3.2em; }
+.commentary p { margin: 0 0 8px; }
+.commentary .at { color: var(--muted); font-family: var(--sans); font-size: 12.5px; }
+.commentary .empty { color: var(--muted); font-style: italic; }
+.branches { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+.branches button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 7px 11px; cursor: pointer; font-size: 13.5px; }
+.branches button.active { border-color: var(--accent); background: var(--accent-soft); }
+.branches button small { color: var(--muted); display: block; font-size: 12px; }
+.principle { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel-2); border-radius: 0 6px 6px 0; font-family: var(--serif); font-size: 15.5px; }
+.principle .cue { font-family: var(--sans); font-size: 13px; color: var(--muted); margin-top: 4px; }
+.quiz { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.quiz .q { font-weight: 500; margin-bottom: 8px; }
+.quiz .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.quiz .opts button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 11px; cursor: pointer; }
+.quiz .opts button.picked { border-color: var(--accent); background: var(--accent-soft); }
+.quiz .result { margin-top: 10px; font-size: 14px; }
+.quiz table { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 6px; }
+.quiz td, .quiz th { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--rule); font-weight: 400; }
+.quiz th { color: var(--muted); font-size: 12.5px; }
+.quiz td.num { text-align: right; padding-right: 0; }
+.quiz .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-left: 4px; }
+.quiz .tag.you { color: var(--accent); border-color: var(--accent); }
+
+/* summary */
+.summary { margin-top: 20px; padding: 16px 18px 18px; }
+.summary .headline { font-family: var(--serif); font-size: 18px; line-height: 1.45; margin: 0 0 12px; }
+.summary .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px 24px; }
+.summary h4 { margin: 0 0 6px; font-size: 13.5px; font-weight: 500; color: var(--muted); }
+.summary ul { margin: 0; padding-left: 18px; }
+.summary li { margin-bottom: 5px; }
+.summary .fine { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.scrollx { overflow-x: auto; }
+@media (prefers-reduced-motion: no-preference) {
+  .goban .last { transition: cx 120ms ease, cy 120ms ease; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="head">
+    <h1 id="title">Go review</h1>
+    <div class="facts" id="facts"></div>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch color theme">Theme</button>
+  </header>
+
+  <div class="main">
+    <section class="boardcol" aria-label="Board and replay">
+      <div class="boardwrap">
+        <svg id="goban" class="goban" viewBox="0 0 800 800" role="img" aria-labelledby="gobanLabel"><title id="gobanLabel">Go board</title></svg>
+      </div>
+      <div class="readout">
+        <div class="movenum"><span id="moveNum">0</span> <small id="moveTotal">/ 0</small></div>
+        <div class="score">You: <b id="scoreNow">0.0</b> <span class="who" id="scoreWho"></span></div>
+        <div class="who" id="lastMove"></div>
+      </div>
+      <div class="controls">
+        <div class="nav" role="group" aria-label="Replay">
+          <button type="button" id="btnFirst" title="First move (Home)">|&#8249;</button>
+          <button type="button" id="btnPrev" title="Previous move (left arrow)">&#8249;</button>
+          <button type="button" id="btnNext" title="Next move (right arrow)">&#8250;</button>
+          <button type="button" id="btnLast" title="Last move (End)">&#8250;|</button>
+        </div>
+        <div class="toggles">
+          <button type="button" class="chip" id="tglOwn" aria-pressed="false">Territory estimate</button>
+          <button type="button" class="chip" id="tglNums" aria-pressed="false">Number this episode</button>
+        </div>
+      </div>
+      <input type="range" class="slider" id="slider" min="0" max="0" value="0" aria-label="Move number">
+      <div class="strip" id="strip" aria-label="Key moments"></div>
+      <div class="varbar" id="varbar">
+        <span class="label" id="varLabel"></span>
+        <span id="varPly"></span>
+        <span class="eval" id="varEval"></span>
+        <button type="button" id="varExit">Back to the game</button>
+      </div>
+    </section>
+
+    <aside class="sidecol">
+      <div class="panel graph">
+        <h2>Score, your perspective</h2>
+        <svg id="graph" viewBox="0 0 600 200" aria-label="Score graph"></svg>
+        <div class="legend" id="graphLegend"></div>
+      </div>
+      <div class="panel lesson" id="lesson">
+        <h2>Lessons</h2>
+        <ul class="eplist" id="eplist"></ul>
+        <div id="epbody"></div>
+      </div>
+    </aside>
+  </div>
+
+  <section class="panel summary" id="summary"></section>
+</div>
+<script id="data" type="application/json">{"__placeholder__": true}</script>
+<script id="core">
+// ---- pure replay logic (no DOM); also loaded by the node tests -------------------------------
+const Core = (() => {
+  const N = 19, COLS = "ABCDEFGHJKLMNOPQRST";
+  const EMPTY = 0, B = 1, W = 2;
+  function parseMove(m) {
+    const color = m[0] === "B" ? B : W;
+    const pt = m.slice(1);
+    if (pt.toLowerCase() === "pass") return { color, idx: null };
+    const c = COLS.indexOf(pt[0].toUpperCase());
+    const y = parseInt(pt.slice(1), 10);
+    if (c < 0 || !(y >= 1 && y <= N)) throw new Error("bad move " + m);
+    return { color, idx: (N - y) * N + c };
+  }
+  function pointIdx(pt) { return parseMove("B" + pt).idx; }
+  function gtp(idx) { if (idx === null || idx === undefined) return "pass"; const r = Math.floor(idx / N), c = idx % N; return COLS[c] + (N - r); }
+  function neighbors(idx) {
+    const r = Math.floor(idx / N), c = idx % N, out = [];
+    if (r > 0) out.push(idx - N); if (r < N - 1) out.push(idx + N); if (c > 0) out.push(idx - 1); if (c < N - 1) out.push(idx + 1);
+    return out;
+  }
+  function group(cells, idx) {
+    const color = cells[idx], stones = [idx], seen = new Set([idx]); let libs = 0;
+    for (let i = 0; i < stones.length; i++) {
+      for (const n of neighbors(stones[i])) {
+        if (cells[n] === EMPTY) libs++;
+        else if (cells[n] === color && !seen.has(n)) { seen.add(n); stones.push(n); }
+      }
+    }
+    return { stones, libs };
+  }
+  // play without legality checks (moves are engine-validated upstream); returns new cells + captured points
+  function play(cells, color, idx) {
+    const next = new Int8Array(cells);
+    if (idx === null) return { cells: next, captured: [] };
+    next[idx] = color;
+    const opp = color === B ? W : B, captured = [];
+    for (const n of neighbors(idx)) {
+      if (next[n] === opp) {
+        const g = group(next, n);
+        if (g.libs === 0) for (const s of g.stones) { next[s] = EMPTY; captured.push(s); }
+      }
+    }
+    const own = group(next, idx);
+    if (own.libs === 0) for (const s of own.stones) { next[s] = EMPTY; captured.push(s); }   // suicide (never expected)
+    return { cells: next, captured };
+  }
+  function replay(setup, moves) {
+    let cells = new Int8Array(N * N);
+    for (const p of (setup.AB || [])) cells[pointIdx(p)] = B;
+    for (const p of (setup.AW || [])) cells[pointIdx(p)] = W;
+    const positions = [cells], caps = [{ B: 0, W: 0 }], parsed = [];
+    for (const m of moves) {
+      const mv = parseMove(m); parsed.push(mv);
+      const r = play(cells, mv.color, mv.idx); cells = r.cells;
+      const prev = caps[caps.length - 1];
+      caps.push({ B: prev.B + (mv.color === B ? r.captured.length : 0), W: prev.W + (mv.color === W ? r.captured.length : 0) });
+      positions.push(cells);
+    }
+    return { positions, caps, parsed };
+  }
+  function playLine(cells, moves) {
+    const out = [cells], parsed = [];
+    for (const m of moves) { const mv = parseMove(m); parsed.push(mv); cells = play(cells, mv.color, mv.idx).cells; out.push(cells); }
+    return { positions: out, parsed };
+  }
+  function decodeOwnership(s) { const out = new Float32Array(s.length); for (let i = 0; i < s.length; i++) out[i] = (s.charCodeAt(i) - 97) / 10 - 1; return out; }
+  function starPoints() { const out = []; for (const r of [3, 9, 15]) for (const c of [3, 9, 15]) out.push(r * N + c); return out; }
+  function fmtScore(v) { if (v === null || v === undefined || Number.isNaN(v)) return "–"; const a = Math.abs(v).toFixed(1); return v > 0.05 ? "+" + a : v < -0.05 ? "−" + a : "0.0"; }
+  return { N, COLS, EMPTY, B, W, parseMove, pointIdx, gtp, neighbors, group, play, replay, playLine, decodeOwnership, starPoints, fmtScore };
+})();
+if (typeof module !== "undefined") module.exports = Core;
+</script>
+<script>
+(() => {
+  const raw = document.getElementById("data").textContent;
+  let D; try { D = JSON.parse(raw); } catch (e) { document.body.innerHTML = "<p style='padding:20px'>The review data could not be read.</p>"; return; }
+  if (D.__placeholder__) { document.getElementById("epbody").innerHTML = "<p class='commentary'><span class='empty'>This template has no review data yet. Build it with build_dashboard.py.</span></p>"; return; }
+
+  const { N, B, W, EMPTY } = Core;
+  const you = D.game.you === "W" ? W : B, youName = you === B ? "Black" : "White";
+  const M = D.moves.length;
+  const game = Core.replay(D.setup, D.moves);
+  const episodes = D.episodes || [];
+  const $ = (id) => document.getElementById(id);
+  const state = { move: 0, mode: "game", ep: episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false };
+
+  // ---------- theme ----------
+  const themeBtn = $("themeBtn");
+  const themes = ["auto", "light", "dark"];
+  let theme = "auto"; try { theme = localStorage.getItem("goreview-theme") || "auto"; } catch (e) {}
+  function applyTheme() {
+    if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
+    themeBtn.textContent = "Theme: " + theme;
+    try { localStorage.setItem("goreview-theme", theme); } catch (e) {}
+  }
+  themeBtn.addEventListener("click", () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; applyTheme(); });
+  applyTheme();
+
+  // ---------- header ----------
+  const opp = D.game.opponent || "opponent";
+  const oppRank = D.game.opponentRank ? " (" + D.game.opponentRank + ")" : "";
+  $("title").textContent = "You (" + youName + ") vs " + opp + oppRank;
+  document.title = "Go review: vs " + opp;
+  const facts = [];
+  if (D.game.date) facts.push(D.game.date);
+  facts.push(D.game.handicap >= 2 ? D.game.handicap + " handicap stones" : "even game");
+  facts.push("komi " + D.game.komi);
+  if (D.game.result) facts.push("result " + D.game.result);
+  if (D.meta && D.meta.visits_per_move) facts.push(D.meta.visits_per_move + " visits per move");
+  $("facts").innerHTML = facts.map((f) => "<span>" + esc(f) + "</span>").join("");
+  function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+  // ---------- goban ----------
+  const svg = $("goban"), NS = "http://www.w3.org/2000/svg";
+  const CELL = 40, OFF = 40, R = 18.6;
+  const xy = (idx) => [OFF + (idx % N) * CELL, OFF + Math.floor(idx / N) * CELL];
+  function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; }
+  function drawStatic() {
+    el("rect", { x: 4, y: 4, width: 792, height: 792, rx: 6, fill: "var(--wood)", stroke: "var(--wood-edge)", "stroke-width": 2 });
+    for (let i = 0; i < N; i++) {
+      el("line", { x1: OFF, y1: OFF + i * CELL, x2: OFF + (N - 1) * CELL, y2: OFF + i * CELL, stroke: "var(--grid)", "stroke-width": i === 0 || i === N - 1 ? 1.6 : 1 });
+      el("line", { x1: OFF + i * CELL, y1: OFF, x2: OFF + i * CELL, y2: OFF + (N - 1) * CELL, stroke: "var(--grid)", "stroke-width": i === 0 || i === N - 1 ? 1.6 : 1 });
+      const t1 = el("text", { x: OFF + i * CELL, y: 18, "text-anchor": "middle", "font-size": 13, fill: "var(--grid)", "font-family": "var(--sans)" }); t1.textContent = Core.COLS[i];
+      const t2 = el("text", { x: OFF + i * CELL, y: 792, "text-anchor": "middle", "font-size": 13, fill: "var(--grid)", "font-family": "var(--sans)" }); t2.textContent = Core.COLS[i];
+      const t3 = el("text", { x: 16, y: OFF + i * CELL + 4.5, "text-anchor": "middle", "font-size": 13, fill: "var(--grid)", "font-family": "var(--sans)" }); t3.textContent = N - i;
+      const t4 = el("text", { x: 784, y: OFF + i * CELL + 4.5, "text-anchor": "middle", "font-size": 13, fill: "var(--grid)", "font-family": "var(--sans)" }); t4.textContent = N - i;
+    }
+    for (const s of Core.starPoints()) { const [x, y] = xy(s); el("circle", { cx: x, cy: y, r: 3.6, fill: "var(--grid)" }); }
+  }
+  drawStatic();
+  const gOwn = el("g", { id: "own" }), gStones = el("g", { id: "stones" }), gMarks = el("g", { id: "marks" }), gLabels = el("g", { id: "labels" }), gHit = el("g", { id: "hit" });
+  for (let i = 0; i < N * N; i++) { const [x, y] = xy(i); const h = el("rect", { x: x - CELL / 2, y: y - CELL / 2, width: CELL, height: CELL, fill: "transparent", class: "pt" }, gHit); h.dataset.idx = i; }
+  gHit.addEventListener("click", (ev) => { const t = ev.target; if (t && t.dataset && t.dataset.idx !== undefined) onBoardClick(parseInt(t.dataset.idx, 10)); });
+
+  function clear(g) { while (g.firstChild) g.removeChild(g.firstChild); }
+  function currentCells() {
+    if (state.mode === "variation") return state.vpos.positions[state.vply];
+    return game.positions[state.move];
+  }
+  function currentLastIdx() {
+    if (state.mode === "variation") return state.vply > 0 ? state.vpos.parsed[state.vply - 1].idx : null;
+    if (state.mode === "quiz") return null;
+    return state.move > 0 ? game.parsed[state.move - 1].idx : null;
+  }
+  function drawStones() {
+    clear(gStones); clear(gMarks); clear(gLabels); clear(gOwn);
+    const cells = currentCells();
+    for (let i = 0; i < N * N; i++) {
+      if (cells[i] === EMPTY) continue;
+      const [x, y] = xy(i);
+      if (cells[i] === B) el("circle", { cx: x, cy: y, r: R, fill: "var(--stone-b)" }, gStones);
+      else el("circle", { cx: x, cy: y, r: R - 0.6, fill: "var(--stone-w)", stroke: "#8B8578", "stroke-width": 1 }, gStones);
+    }
+    const last = currentLastIdx();
+    const labelled = state.mode === "variation" || (state.mode === "game" && state.showNums && state.ep && state.move >= state.ep.moves[0] && state.move <= state.ep.moves[1]);
+    if (last !== null && last !== undefined && !labelled) {
+      const [x, y] = xy(last);
+      el("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: cells[last] === B ? "#E9E6DE" : "#1A1A1A", "stroke-width": 2.2, class: "last" }, gMarks);
+    }
+    // ownership overlay
+    const key = ownershipKey();
+    if (state.showOwn && key) {
+      const own = Core.decodeOwnership(D.ownership[key]);
+      for (let i = 0; i < N * N; i++) {
+        const v = own[i]; if (Math.abs(v) < 0.15) continue;
+        const [x, y] = xy(i); const size = cells[i] === EMPTY ? 26 : 14;
+        el("rect", { x: x - size / 2, y: y - size / 2, width: size, height: size, rx: 2, fill: v > 0 ? "#111" : "#fff", opacity: Math.min(0.85, Math.abs(v)) * 0.8 }, gOwn);
+      }
+    }
+    // labels: numbers for the episode or the variation
+    if (state.mode === "variation") {
+      for (let k = 0; k < state.vply; k++) { const mv = state.vpos.parsed[k]; if (mv.idx !== null && cells[mv.idx] === mv.color) label(mv.idx, String(k + 1), mv.color); }
+    } else if (state.mode === "game" && state.showNums && state.ep) {
+      const [a, b] = state.ep.moves;
+      for (let n = a; n <= Math.min(b, state.move); n++) { const mv = game.parsed[n - 1]; if (mv.idx !== null && cells[mv.idx] === mv.color) label(mv.idx, String(n), mv.color); }
+    }
+    if (state.mode === "quiz" && state.quiz) drawQuizMarks(cells);
+  }
+  function label(idx, text, color) {
+    const [x, y] = xy(idx);
+    const t = el("text", { x, y: y + 4.6, "text-anchor": "middle", "font-size": text.length > 2 ? 11.5 : 13.5, "font-weight": 500, fill: color === B ? "#F4F2EC" : "#1A1A1A", "font-family": "var(--sans)" }, gLabels);
+    t.textContent = text;
+  }
+  function ownershipKey() {
+    if (state.mode === "variation") return state.vply === state.vpos.positions.length - 1 && state.br.ownershipAtEnd && D.ownership[state.br.ownershipAtEnd] ? state.br.ownershipAtEnd : null;
+    const k = "m" + state.move; return D.ownership && D.ownership[k] ? k : null;
+  }
+
+  // ---------- readout / controls ----------
+  const slider = $("slider"); slider.max = M; $("moveTotal").textContent = "/ " + M;
+  $("scoreWho").textContent = "(points, " + youName + ")";
+  function renderReadout() {
+    const s = state.mode === "variation" ? (state.vply > 0 ? state.br.evals[state.vply - 1] : D.scoreSeries[state.br.fromMove]) : D.scoreSeries[state.move];
+    $("scoreNow").textContent = Core.fmtScore(s);
+    $("scoreNow").style.color = s > 0.05 ? "var(--gain)" : s < -0.05 ? "var(--loss)" : "inherit";
+    if (state.mode === "variation") {
+      $("moveNum").textContent = state.br.fromMove;
+      const mv = state.vply > 0 ? state.vpos.parsed[state.vply - 1] : null;
+      $("lastMove").textContent = mv ? "Variation move " + state.vply + ": " + (mv.color === B ? "Black" : "White") + " " + Core.gtp(mv.idx) : "Variation start";
+    } else {
+      $("moveNum").textContent = state.move;
+      const mv = state.move > 0 ? game.parsed[state.move - 1] : null;
+      $("lastMove").textContent = mv ? "Last: " + (mv.color === B ? "Black" : "White") + " " + Core.gtp(mv.idx) + (mv.color === you ? " (you)" : "") : (D.game.handicap >= 2 ? "Handicap stones placed" : "Empty board");
+    }
+    slider.value = state.mode === "variation" ? state.br.fromMove : state.move;
+    $("btnPrev").disabled = state.mode === "variation" ? state.vply === 0 : state.move === 0;
+    $("btnNext").disabled = state.mode === "variation" ? state.vply >= state.vpos.positions.length - 1 : state.move >= M;
+    $("tglOwn").disabled = !ownershipKey(); $("tglOwn").title = ownershipKey() ? "Engine territory estimate at this position" : "No estimate stored for this position";
+    $("tglOwn").setAttribute("aria-pressed", String(state.showOwn && !!ownershipKey()));
+    $("tglNums").disabled = state.mode !== "game" || !state.ep;
+    $("tglNums").setAttribute("aria-pressed", String(state.showNums));
+    const vb = $("varbar");
+    if (state.mode === "variation") {
+      vb.classList.add("on"); $("varLabel").textContent = state.br.label; $("varPly").textContent = "move " + state.vply + " of " + (state.vpos.positions.length - 1);
+      const base = D.scoreSeries[state.br.fromMove]; const d = state.vply > 0 ? state.br.evals[state.vply - 1] - base : 0;
+      $("varEval").textContent = state.vply > 0 ? "change since move " + state.br.fromMove + ": " + Core.fmtScore(d) : "";
+    } else vb.classList.remove("on");
+  }
+  function setMove(n) {
+    n = Math.max(0, Math.min(M, n));
+    if (state.mode === "variation") exitVariation(false);
+    if (state.mode === "quiz") { state.mode = "game"; state.quiz = null; }
+    state.move = n;
+    const covering = episodes.find((e) => n >= e.moves[0] - 1 && n <= e.moves[1]);
+    if (covering) state.ep = covering;
+    renderAll();
+  }
+  function step(d) {
+    if (state.mode === "variation") { state.vply = Math.max(0, Math.min(state.vpos.positions.length - 1, state.vply + d)); renderAll(); return; }
+    setMove((state.mode === "quiz" ? state.quiz.at - 1 : state.move) + d);
+  }
+  $("btnFirst").addEventListener("click", () => setMove(0)); $("btnLast").addEventListener("click", () => setMove(M));
+  $("btnPrev").addEventListener("click", () => step(-1)); $("btnNext").addEventListener("click", () => step(1));
+  slider.addEventListener("input", () => setMove(parseInt(slider.value, 10)));
+  $("tglOwn").addEventListener("click", () => { state.showOwn = !state.showOwn; renderAll(); });
+  $("tglNums").addEventListener("click", () => { state.showNums = !state.showNums; renderAll(); });
+  $("varExit").addEventListener("click", () => exitVariation(true));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName) && ev.target !== slider) return;
+    if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); } else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
+    else if (ev.key === "Home") { setMove(0); ev.preventDefault(); } else if (ev.key === "End") { setMove(M); ev.preventDefault(); }
+    else if (ev.key === "Escape" && state.mode === "variation") exitVariation(true);
+  });
+
+  // ---------- strip ----------
+  function renderStrip() {
+    const st = $("strip"); st.innerHTML = "";
+    for (const e of episodes) {
+      const a = (e.moves[0] - 1) / M * 100, b = Math.max((e.moves[1] - e.moves[0] + 2) / M * 100, 1.2);
+      const d = document.createElement("button"); d.type = "button"; d.className = "ep" + (state.ep === e ? " active" : ""); d.style.left = a + "%"; d.style.width = b + "%";
+      d.textContent = e.id; d.title = e.title + " (moves " + e.moves[0] + "–" + e.moves[1] + ")"; d.addEventListener("click", () => { state.ep = e; setMove(e.moves[0] - 1); });
+      st.appendChild(d);
+    }
+    if (D.decisive && D.decisive.move) { const m = document.createElement("span"); m.className = "marker"; m.style.left = D.decisive.move / M * 100 + "%"; m.title = "Decisive move " + D.decisive.move; st.appendChild(m); }
+    if (D.lastChance && D.lastChance.move) { const m = document.createElement("span"); m.className = "marker lc"; m.style.left = D.lastChance.move / M * 100 + "%"; m.title = "Last chance, move " + D.lastChance.move; st.appendChild(m); }
+  }
+
+  // ---------- graph ----------
+  const G = $("graph"), GW = 600, GH = 200, GL = 34, GR = 8, GT = 10, GB = 30;
+  const maxAbs = Math.max(10, ...D.scoreSeries.map((v) => Math.abs(v || 0)));
+  const gx = (n) => GL + n / Math.max(1, M) * (GW - GL - GR), gy = (v) => GT + (maxAbs - v) / (2 * maxAbs) * (GH - GT - GB);
+  function drawGraph() {
+    while (G.firstChild) G.removeChild(G.firstChild);
+    const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || G).appendChild(e); return e; };
+    for (const e of episodes) mk("rect", { x: gx(e.moves[0] - 1), y: GT, width: Math.max(2, gx(e.moves[1]) - gx(e.moves[0] - 1)), height: GH - GT - GB, fill: "var(--accent-soft)" });
+    mk("line", { x1: GL, y1: gy(0), x2: GW - GR, y2: gy(0), stroke: "var(--rule)", "stroke-width": 1 });
+    for (const v of [maxAbs, 0, -maxAbs]) { const t = mk("text", { x: GL - 6, y: gy(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": "var(--sans)" }); t.textContent = Core.fmtScore(v); }
+    const ph = D.phases || {};
+    for (const name of ["middlegame", "endgame"]) { const r = ph[name]; if (r) { mk("line", { x1: gx(r[0] - 1), y1: GT, x2: gx(r[0] - 1), y2: GH - GB, stroke: "var(--rule)", "stroke-dasharray": "3 3" }); const t = mk("text", { x: gx(r[0] - 1) + 3, y: GH - GB + 13, "font-size": 10.5, fill: "var(--muted)", "font-family": "var(--sans)" }); t.textContent = name; } }
+    const t0 = mk("text", { x: gx(0), y: GH - GB + 13, "font-size": 10.5, fill: "var(--muted)", "font-family": "var(--sans)" }); t0.textContent = "opening";
+    const path = D.scoreSeries.map((v, n) => (n ? "L" : "M") + gx(n).toFixed(1) + " " + gy(v || 0).toFixed(1)).join(" ");
+    mk("path", { d: path, fill: "none", stroke: "var(--accent)", "stroke-width": 1.8, "stroke-linejoin": "round" });
+    if (D.decisive && D.decisive.move) mk("circle", { cx: gx(D.decisive.move), cy: gy(D.scoreSeries[D.decisive.move] || 0), r: 4.5, fill: "var(--loss)" });
+    if (D.lastChance && D.lastChance.move) mk("circle", { cx: gx(D.lastChance.move), cy: gy(D.scoreSeries[D.lastChance.move] || 0), r: 4.5, fill: "none", stroke: "var(--gain)", "stroke-width": 2 });
+    const cur = state.mode === "variation" ? state.br.fromMove : state.mode === "quiz" ? state.quiz.at - 1 : state.move;
+    mk("line", { x1: gx(cur), y1: GT, x2: gx(cur), y2: GH - GB, stroke: "var(--ink)", "stroke-width": 1.2 });
+    const tm = mk("text", { x: Math.min(gx(cur) + 4, GW - 40), y: GT + 12, "font-size": 11, fill: "var(--ink)", "font-family": "var(--sans)" }); tm.textContent = "move " + cur;
+    const leg = [];
+    if (D.decisive && D.decisive.move) leg.push("<span>● decisive move " + D.decisive.move + (D.decisive.by === "student" ? " (yours)" : " (opponent)") + "</span>");
+    if (D.lastChance && D.lastChance.move) leg.push("<span>○ last chance at move " + D.lastChance.move + ", " + esc(D.lastChance.best) + " instead of " + esc(D.lastChance.played) + "</span>");
+    leg.push("<span>shaded: lessons</span>");
+    $("graphLegend").innerHTML = leg.join("");
+  }
+  G.addEventListener("click", (ev) => {
+    const pt = G.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; const p = pt.matrixTransform(G.getScreenCTM().inverse());
+    const n = Math.round((p.x - GL) / (GW - GL - GR) * M); setMove(n);
+  });
+
+  // ---------- lesson panel ----------
+  function renderEpList() {
+    const ul = $("eplist"); ul.innerHTML = "";
+    for (const e of episodes) {
+      const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = state.ep === e ? "active" : "";
+      b.innerHTML = esc(e.id) + " " + esc(e.title || "") + "<span class='r'>moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", " + (+e.pointsLost).toFixed(1) + " points" : "") + "</span>";
+      b.addEventListener("click", () => { state.ep = e; setMove(e.moves[0] - 1); });
+      li.appendChild(b); ul.appendChild(li);
+    }
+  }
+  function renderEpBody() {
+    const body = $("epbody"); const e = state.ep;
+    if (!e) { body.innerHTML = "<p class='commentary'><span class='empty'>No lessons in this review.</span></p>"; return; }
+    const cur = state.mode === "quiz" ? state.quiz.at - 1 : state.mode === "variation" ? state.br.fromMove : state.move;
+    const inRange = cur >= e.moves[0] - 1 && cur <= e.moves[1];
+    let html = "<h3>" + esc(e.title || e.id) + "</h3><div class='meta'>" + (e.category ? esc(e.category) + ", " : "") + "moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", <span class='lost'>" + (+e.pointsLost).toFixed(1) + " points lost</span>" : "") + "</div>";
+    html += "<div class='commentary'>";
+    if (state.mode === "variation") {
+      html += "<p><span class='at'>Variation: " + esc(state.br.label) + "</span><br>" + esc(variationText()) + "</p>";
+    } else {
+      const entries = (e.commentary || []).filter((c) => c.atMove <= (state.mode === "quiz" ? cur : cur));
+      if (!inRange) html += "<p><span class='empty'>This lesson starts at move " + (e.moves[0] - 1) + ". </span><button type='button' class='chip' data-jump='" + (e.moves[0] - 1) + "'>Go there</button></p>";
+      else if (!entries.length) html += "<p><span class='empty'>Step forward for the commentary.</span></p>";
+      else { const c = entries[entries.length - 1]; html += "<p><span class='at'>at move " + c.atMove + "</span><br>" + esc(c.text) + "</p>"; }
+    }
+    html += "</div>";
+    if (e.branches && e.branches.length) {
+      html += "<div class='branches'>" + e.branches.map((br, i) => "<button type='button' data-br='" + i + "' class='" + (state.br === br ? "active" : "") + "'>" + esc(br.label) + "<small>from move " + br.fromMove + ", " + br.moves.length + (br.moves.length === 1 ? " move" : " moves") + (br.evals && br.evals.length ? ", ends " + Core.fmtScore(br.evals[br.evals.length - 1]) : "") + "</small></button>").join("") + "</div>";
+    }
+    if (e.principle) html += "<div class='principle'>" + esc(e.principle) + (e.cue ? "<div class='cue'>Cue: " + esc(e.cue) + "</div>" : "") + "</div>";
+    if (e.quiz) html += renderQuizHtml(e);
+    body.innerHTML = html;
+    body.querySelectorAll("[data-jump]").forEach((b) => b.addEventListener("click", () => setMove(parseInt(b.dataset.jump, 10))));
+    body.querySelectorAll("[data-br]").forEach((b) => b.addEventListener("click", () => enterVariation(e, e.branches[parseInt(b.dataset.br, 10)])));
+    body.querySelectorAll("[data-quiz]").forEach((b) => b.addEventListener("click", () => startQuiz(e)));
+    body.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => answerQuiz(b.dataset.pick)));
+  }
+  function variationText() {
+    const br = state.br; if (state.vply === 0) return "Use the arrows to play the line. The score after each move is the engine's, from your perspective.";
+    const mv = state.vpos.parsed[state.vply - 1]; const base = D.scoreSeries[br.fromMove]; const s = br.evals[state.vply - 1];
+    return (mv.color === you ? "You play " : "Opponent plays ") + Core.gtp(mv.idx) + ". Score " + Core.fmtScore(s) + " (" + Core.fmtScore(s - base) + " since move " + br.fromMove + ")." + (state.vply === br.moves.length ? " End of the line." : "");
+  }
+
+  // ---------- variations ----------
+  function showBoardOnPhones() {
+    if (window.innerWidth >= 880) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    svg.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }
+  function enterVariation(e, br) {
+    state.ep = e; state.br = br; state.mode = "variation"; state.quiz = null;
+    state.vpos = Core.playLine(game.positions[br.fromMove], br.moves); state.vply = Math.min(1, br.moves.length);
+    renderAll(); showBoardOnPhones();
+  }
+  function exitVariation(render) { const fm = state.br ? state.br.fromMove : state.move; state.mode = "game"; state.br = null; state.vpos = null; state.vply = 0; state.move = fm; if (render) renderAll(); }
+
+  // ---------- quiz ----------
+  function renderQuizHtml(e) {
+    const q = e.quiz; const active = state.mode === "quiz" && state.quiz && state.quiz.ep === e;
+    let html = "<div class='quiz'>";
+    if (q.type === "status") {
+      html += "<div class='q'>Is the group at " + esc(q.status && q.status.groupPoint || "?") + " alive, dead, or unsettled?</div>";
+      if (!active) html += "<div class='opts'><button type='button' data-quiz='1'>Take the quiz</button></div>";
+      else if (!state.quiz.picked) html += "<div class='opts'>" + ["alive", "dead", "unsettled"].map((o) => "<button type='button' data-pick='" + o + "'>" + o + "</button>").join("") + "</div>";
+      else { const ans = q.status.answer; html += "<div class='result'>You said <b>" + esc(state.quiz.picked) + "</b>. The engine's playouts say <b>" + esc(ans) + "</b>" + (q.status.confidence ? " (" + esc(q.status.confidence) + " confidence)" : "") + ". Use the variations above to see why.</div>"; }
+    } else {
+      html += "<div class='q'>Move " + q.atMove + ": where would you play?</div>";
+      if (!active) html += "<div class='opts'><button type='button' data-quiz='1'>Try it on the board</button></div>";
+      else if (!state.quiz.picked) html += "<div class='result'>Click a point on the board" + (q.candidates.length ? ", or pick one of the moves the engine evaluated: " : ".") + "</div>" + (q.candidates.length ? "<div class='opts'>" + q.candidates.map((c) => "<button type='button' data-pick='" + esc(c.move) + "'>" + esc(c.move) + "</button>").join("") + "</div>" : "");
+      else {
+        const picked = state.quiz.picked; const cand = q.candidates.find((c) => c.move === picked);
+        html += "<div class='result'>" + (cand ? "You chose <b>" + esc(picked) + "</b>: " + (cand.pointsLost <= 0.5 ? "as good as the engine's best." : "loses " + (+cand.pointsLost).toFixed(1) + " points against the engine's best.") : "<b>" + esc(picked) + "</b> was not among the evaluated moves; the engine's answers are below.") + "</div>";
+        const rows = q.candidates.slice().sort((a, b) => a.pointsLost - b.pointsLost);
+        html += "<table><tr><th>Move</th><th></th><th class='num'>Points lost</th></tr>" + rows.map((c) => "<tr><td>" + esc(c.move) + (c.move === picked ? "<span class='tag you'>your pick</span>" : "") + "</td><td>" + (c.labels || []).map((l) => "<span class='tag'>" + esc(l === "actual" ? "played in the game" : l === "peer" ? "typical 7k move" : l === "best" ? "engine's best" : l) + "</span>").join("") + (c.note ? " " + esc(c.note) : "") + "</td><td class='num'>" + (+c.pointsLost).toFixed(1) + "</td></tr>").join("") + "</table>";
+      }
+    }
+    return html + "</div>";
+  }
+  function startQuiz(e) { const q = e.quiz; state.ep = e; state.mode = "quiz"; state.br = null; state.quiz = { ep: e, at: q.atMove, picked: null }; state.move = q.atMove - 1; renderAll(); showBoardOnPhones(); }
+  function answerQuiz(pick) { if (!state.quiz) return; state.quiz.picked = pick; renderAll(); }
+  function onBoardClick(idx) { if (state.mode === "quiz" && state.quiz && !state.quiz.picked && state.quiz.ep.quiz.type !== "status" && currentCells()[idx] === EMPTY) answerQuiz(Core.gtp(idx)); }
+  function drawQuizMarks(cells) {
+    const q = state.quiz.ep.quiz;
+    if (q.type === "status" && q.status && q.status.groupPoint) { const i = Core.pointIdx(q.status.groupPoint); const [x, y] = xy(i); el("rect", { x: x - 12, y: y - 12, width: 24, height: 24, fill: "none", stroke: "var(--accent)", "stroke-width": 3 }, gMarks); return; }
+    if (!state.quiz.picked) return;
+    const letters = "ABCDEFGH"; const rows = q.candidates.slice().sort((a, b) => a.pointsLost - b.pointsLost);
+    rows.forEach((c, k) => { const i = Core.pointIdx(c.move); const [x, y] = xy(i); el("circle", { cx: x, cy: y, r: 15, fill: c.pointsLost <= 0.5 ? "var(--gain)" : "var(--loss)", opacity: 0.85 }, gMarks); const t = el("text", { x, y: y + 5, "text-anchor": "middle", "font-size": 14, "font-weight": 600, fill: "#fff", "font-family": "var(--sans)" }, gLabels); t.textContent = letters[k] || "·"; });
+    const pi = Core.pointIdx(state.quiz.picked); if (!q.candidates.some((c) => c.move === state.quiz.picked)) { const [x, y] = xy(pi); el("circle", { cx: x, cy: y, r: 15, fill: "none", stroke: "var(--accent)", "stroke-width": 3 }, gMarks); }
+  }
+
+  // ---------- summary ----------
+  function renderSummary() {
+    const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
+    if (S.headline) html += "<p class='headline'>" + esc(S.headline) + "</p>";
+    html += "<div class='cols'>";
+    const lessons = S.lessons && S.lessons.length ? S.lessons : episodes.filter((e) => e.principle).map((e) => ({ episodeId: e.id, title: e.title, principle: e.principle, cue: e.cue }));
+    if (lessons.length) html += "<div><h4>Take with you</h4><ul>" + lessons.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.principle || "") + (l.cue ? " <span style='color:var(--muted)'>Cue: " + esc(l.cue) + "</span>" : "") + "</li>").join("") + "</ul></div>";
+    if (S.strengths && S.strengths.length) html += "<div><h4>What went well</h4><ul>" + S.strengths.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
+    if (S.selfReview && ((S.selfReview.agreements || []).length || (S.selfReview.blindSpots || []).length)) {
+      html += "<div><h4>Your self-review against the engine</h4><ul>" + (S.selfReview.agreements || []).map((s) => "<li>Agreed: " + esc(s) + "</li>").join("") + (S.selfReview.blindSpots || []).map((s) => "<li>Blind spot: " + esc(s) + "</li>").join("") + "</ul></div>";
+    }
+    if (S.nextGame) html += "<div><h4>For the next game</h4><p style='margin:0'>" + esc(S.nextGame) + "</p></div>";
+    html += "</div>";
+    const meta = D.meta || {};
+    html += "<p class='fine'>" + (S.reliability ? esc(S.reliability) + " " : "") + "Every variation on this page was checked and evaluated by KataGo" + (meta.visits_per_move ? " (survey at " + meta.visits_per_move + " visits per move)" : "") + ". Game " + esc(D.game.id || "") + (meta.exported_at ? ", exported " + esc(meta.exported_at) : "") + ".</p>";
+    box.innerHTML = html;
+  }
+
+  function renderAll() { drawStones(); renderReadout(); renderStrip(); drawGraph(); renderEpList(); renderEpBody(); }
+  renderSummary();
+  const startEp = episodes[0];
+  if (startEp) { state.ep = startEp; state.move = startEp.moves[0] - 1; }
+  renderAll();
+})();
+</script>
+</body>
+</html>

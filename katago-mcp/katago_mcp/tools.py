@@ -8,6 +8,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import re
+import urllib.error
+import urllib.request
+import threading
 import time
 from pathlib import Path
 
@@ -51,7 +56,7 @@ class Tools:
         self.engine = engine or KataGoEngine(cfg.katago.binary, cfg.katago.analysis_config, cfg.katago.model,
                                             cfg.katago.human_model, cfg.katago.perspective,
                                             cfg.katago.human_profile_key, cfg.katago.startup_timeout,
-                                            cfg.katago.query_timeout, cfg.katago.report_every)
+                                            cfg.katago.query_timeout, cfg.katago.report_every, cwd=cfg.root_dir)
         self.store = store or Store(cfg.reviews_dir)
         self.jobs = JobManager(cfg, self.engine, self.store)
         self.vps: float = cfg.vps
@@ -60,8 +65,47 @@ class Tools:
         self.human_cache: dict[tuple[str, str], list[float]] = {}
         self.solve_results: dict[str, dict] = {}   # query_id -> local_solve result
         self._load_throughput_sidecar()
+        self._start_thread: threading.Thread | None = None
         if start_engine:
             self.engine.start()
+
+    # ---------------------------------------------------------------- engine lifecycle
+    def start_engine_background(self) -> None:
+        """Start KataGo in a daemon thread if it is not running, starting, or permanently failed."""
+        eng = self.engine
+        if eng.running or getattr(eng, "starting", False) or getattr(eng, "start_error", None):
+            return
+        if self._start_thread is not None and self._start_thread.is_alive():
+            return
+
+        def _run():
+            try:
+                eng.start()
+            except EngineError:
+                pass   # recorded in eng.start_error; tools report it
+
+        self._start_thread = threading.Thread(target=_run, daemon=True, name="katago-start")
+        self._start_thread.start()
+
+    def _ensure_engine(self) -> None:
+        """Called before any engine work: start if needed, wait a bounded time, else ask the caller to retry."""
+        eng = self.engine
+        if getattr(eng, "ready", True) and eng.running:
+            return
+        if getattr(eng, "start_error", None) and not eng.running:
+            raise ToolError("engine_unavailable", eng.start_error, recoverable=False,
+                            suggestion="fix [katago] paths in the config and restart the server")
+        self.start_engine_background()
+        deadline = time.time() + self.cfg.katago.first_call_wait_seconds
+        while time.time() < deadline:
+            if getattr(eng, "ready", False):
+                return
+            if getattr(eng, "start_error", None):
+                raise ToolError("engine_unavailable", eng.start_error, recoverable=False,
+                                suggestion="fix [katago] paths in the config and restart the server")
+            time.sleep(0.5)
+        raise ToolError("engine_unavailable", "katago is still starting (loading the network; the first OpenCL start "
+                        "can take several minutes)", recoverable=True, suggestion="call the tool again in a minute")
 
     # ================================================================ infrastructure
     def _load_throughput_sidecar(self) -> None:
@@ -101,11 +145,68 @@ class Tools:
                                        "seconds": round(seconds, 2), "cached": cached, "result": result or {}})
         return qid
 
+    # ---------------------------------------------------------------- SGF input
+    _OGS_RE = re.compile(r"online-go\.com/(?:api/v1/games/|game/)?(?:view/)?(\d+)")
+
+    def _resolve_sgf(self, sgf: str | None) -> tuple[str, str | None, dict]:
+        """Accept SGF text, a path to an .sgf file on this machine, or an OGS game id / link.
+
+        Returns (sgf_text, game_id_hint, source).  Pasting SGF through the chat is error-prone (the model
+        retypes it into the tool call), so paths and OGS ids are the preferred forms.
+        """
+        s = (sgf or "").strip()
+        if not s:
+            raise ToolError("bad_request", "sgf is required: SGF text, a path to an .sgf file on this machine, "
+                            "or an OGS game id or link")
+        if s.startswith("(") or s.startswith("\ufeff("):
+            return s.lstrip("\ufeff"), None, {"kind": "text", "chars": len(s)}
+        m = self._OGS_RE.search(s) or re.fullmatch(r"(\d{3,12})", s)
+        if m and not os.path.exists(s):
+            return self._fetch_ogs(m.group(1))
+        p = Path(s).expanduser()
+        roots = [Path(self.cfg.games_dir), Path(self.cfg.root_dir or "."), Path.cwd(), Path.home()]
+        candidates = [p] if p.is_absolute() else [r / p for r in roots]
+        for c in candidates:
+            if c.is_file():
+                text = c.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+                mm = re.match(r"ogs_?(\d+)", c.stem)
+                hint = f"ogs_{mm.group(1)}" if mm else None
+                if hint is None:
+                    mm = re.search(r"online-go\.com/game/(?:view/)?(\d+)", text)
+                    hint = f"ogs_{mm.group(1)}" if mm else None
+                return text, hint, {"kind": "file", "path": str(c)}
+        raise ToolError("bad_request", f"sgf is neither SGF text, an existing file, nor an OGS game id: {s[:80]!r}",
+                        suggestion=f"put the .sgf file in {self.cfg.games_dir} and pass its file name, or pass the OGS game link")
+
+    def _fetch_ogs(self, gid: str) -> tuple[str, str | None, dict]:
+        games = Path(self.cfg.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        cache = games / f"ogs_{gid}.sgf"
+        if cache.is_file():
+            return cache.read_text(encoding="utf-8", errors="replace"), f"ogs_{gid}", {"kind": "ogs", "cached": str(cache)}
+        if not self.cfg.ogs.enabled:
+            raise ToolError("bad_request", "OGS downloads are disabled in the config ([ogs].enabled = false)",
+                            suggestion="download the SGF from online-go.com and pass its path")
+        url = f"{self.cfg.ogs.base_url}/api/v1/games/{gid}/sgf"
+        req = urllib.request.Request(url, headers={"User-Agent": f"katago-mcp/{__version__} (Go teacher review server)"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.cfg.ogs.timeout) as resp:
+                data = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            raise ToolError("ogs_fetch_failed", f"online-go.com answered HTTP {e.code} for game {gid}",
+                            suggestion="check the game id; private games must be downloaded by hand into games/")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise ToolError("ogs_fetch_failed", f"could not reach online-go.com: {e}",
+                            suggestion="check the network, or download the SGF and pass its path")
+        if not data.lstrip("\ufeff").lstrip().startswith("("):
+            raise ToolError("ogs_fetch_failed", f"online-go.com did not return an SGF for game {gid} (login required or wrong id)")
+        cache.write_text(data, encoding="utf-8")
+        return data.lstrip("\ufeff"), f"ogs_{gid}", {"kind": "ogs", "url": url, "saved_to": str(cache)}
+
     # ---------------------------------------------------------------- positions
-    def _resolve_position(self, spec: dict | None, persist: bool = True) -> PositionRecord:
-        if not isinstance(spec, dict):
-            raise ToolError("bad_request", "position must be an object (see contract §0.2)")
-        then = spec.get("then") or []
+    def _resolve_position(self, spec, persist: bool = True) -> PositionRecord:
+        spec = norm_position(spec)
+        then = norm_list(spec.get("then")) or []
         try:
             if "ref" in spec:
                 rec = self.store.get_position(spec["ref"])
@@ -121,7 +222,8 @@ class Tools:
                 base = self.jobs._spec(job.game, mn)
                 game_id = job.game_id
             elif "sgf" in spec:
-                game = parse(spec["sgf"])
+                text, _hint, _src = self._resolve_sgf(spec["sgf"])
+                game = parse(text)
                 mn = int(spec.get("move_number", len(game.moves)))
                 if not 0 <= mn <= len(game.moves):
                     raise ToolError("bad_request", f"move_number must be 0..{len(game.moves)}")
@@ -187,8 +289,8 @@ class Tools:
             return self.plans[job_id]
         return self.last_plan
 
-    def _budget_visits(self, budget: dict | None, job_id: str | None = None, default_profile: str = "root") -> int:
-        budget = budget or {"profile": default_profile}
+    def _budget_visits(self, budget, job_id: str | None = None, default_profile: str = "root") -> int:
+        budget = norm_budget(budget) or {"profile": default_profile}
         if "visits" in budget:
             v = int(budget["visits"])
             if v < 1:
@@ -249,6 +351,7 @@ class Tools:
             a = cached
             hit = True
         else:
+            self._ensure_engine()
             try:
                 a = self.engine.analyze(rec.spec, visits, include_ownership=ownership, include_ownership_stdev=ownership_stdev,
                                         include_policy=policy, pv_len=pv_len, wide_root_noise=wide_root_noise,
@@ -268,6 +371,7 @@ class Tools:
         key = (rec.ref, profile)
         if key in self.human_cache:
             return self.human_cache[key]
+        self._ensure_engine()
         try:
             pol = self.engine.human_policy(rec.spec, profile)
         except EngineError as e:
@@ -321,6 +425,8 @@ class Tools:
     def engine_info(self, refresh_benchmark: bool = False) -> dict:
         if refresh_benchmark:
             self.benchmark()
+        else:
+            self.start_engine_background()      # Phase 0 calls this first: get the model loading now
         info = self.engine.info()
         job = self.jobs.active
         prof = resolve_profiles(self.cfg, None, None)
@@ -332,7 +438,8 @@ class Tools:
             "throughput": {"visits_per_second_cold": self.cfg.throughput.visits_per_second_cold,
                            "visits_per_second_sustained": self.vps, "measured_at": self.cfg.throughput.measured_at,
                            "method": "timed_query" if self.cfg.throughput.measured_at else "unmeasured"},
-            "engine_status": "ready" if info.get("running") else "starting",
+            "engine_status": "ready" if info.get("ready") else ("failed: " + info["start_error"]) if info.get("start_error")
+            else ("starting (the first tool that needs the engine waits for it)" if info.get("running") or getattr(self.engine, "starting", False) else "not started"),
             "active_job": None if job is None or job.state not in ("queued", "running") else
             {"job_id": job.job_id, "progress": job.status()["progress"]},
             "active_plan": None if not self.last_plan else {"total_minutes": self.last_plan["total_minutes"],
@@ -345,6 +452,7 @@ class Tools:
         """Timed query on a middlegame position; updates sustained visits/s."""
         moves = ["BQ16", "WD4", "BQ4", "WD16", "BR14", "WC14", "BF3", "WC6", "BO3", "WK17", "BF17", "WK3"]
         rec = self._resolve_position({"moves": moves, "rules": "japanese", "komi": 6.5}, persist=False)
+        self._ensure_engine()
         try:
             a = self.engine.analyze(rec.spec, 10_000_000, include_ownership=False, include_policy=False,
                                     max_seconds=seconds, priority=20)
@@ -402,6 +510,7 @@ class Tools:
     # ================================================================ 1.3 sgf_summary
     def sgf_summary(self, sgf: str, student_username: str | None = None, boards_at: list | None = None,
                     ascii_options: dict | None = None) -> dict:
+        sgf, gid_hint, source = self._resolve_sgf(sgf)
         try:
             game = parse(sgf)
         except SgfError as e:
@@ -414,7 +523,7 @@ class Tools:
         if sc is None:
             warnings.append(f"student username {username!r} not found in PB/PW; confirm the color")
         from .jobs import game_id_of
-        gid = game_id_of(game, sgf)
+        gid = gid_hint or game_id_of(game, sgf)
         # replay for capture and tension events
         board = Board(19, to_move=game.first_to_move)
         for i in game.setup_black:
@@ -453,9 +562,11 @@ class Tools:
         opp_color = None if sc is None else opponent(sc)
         res = game.result()
         last_mv = game.moves[-1] if game.moves else None
+        ogs_id = game.ogs_game_id or (gid[4:] if gid.startswith("ogs_") else None)
         out = {
             "game_id": gid,
-            "source": {"ogs_game_id": game.ogs_game_id, "url": f"https://online-go.com/game/{game.ogs_game_id}" if game.ogs_game_id else None,
+            "input": source,
+            "source": {"ogs_game_id": ogs_id, "url": f"https://online-go.com/game/{ogs_id}" if ogs_id else None,
                        "date": game.date, "event": game.game_name},
             "board_size": 19,
             "players": game.players,
@@ -482,6 +593,8 @@ class Tools:
     def start_game_analysis(self, sgf: str, budget: dict | None = None, student_username: str | None = None,
                             game_id: str | None = None, options: dict | None = None) -> dict:
         options = options or {}
+        sgf, gid_hint, _source = self._resolve_sgf(sgf)
+        game_id = game_id or gid_hint
         try:
             game = parse(sgf)
         except SgfError as e:
@@ -494,6 +607,7 @@ class Tools:
         else:
             plan = self.last_plan
             visits = int(plan["profiles"]["survey"]) if plan else self._default_survey_visits(len(game.moves) or 1)
+        self._ensure_engine()
         try:
             job = self.jobs.start(sgf, visits, student_username, game_id, options)
         except EngineError as e:
@@ -631,23 +745,24 @@ class Tools:
                 return (a2.candidates[0].move if a2.candidates else None), a2
             return (a.candidates[0].move if a.candidates else None), a
 
-        steps = list(line) + [{"engine": True}] * int(follow_pv_plies)
-        for ply, step in enumerate(steps, 1):
+        steps = list(norm_list(line) or []) + [{"engine": True}] * int(follow_pv_plies)
+        for ply, raw_step in enumerate(steps, 1):
             color = cur.to_move
-            if isinstance(step, dict) and step.get("engine"):
-                if "color" in step and CHAR_COLOR.get(step["color"]) != color:
+            step = norm_line_step(raw_step, color, size)
+            if step.get("engine"):
+                if step.get("color") and CHAR_COLOR.get(step["color"]) != color:
                     raise ToolError("bad_request", f"step {ply}: color {step['color']} is not to move", {"ply": ply})
                 mv, cur_a = engine_move(cur, cur_a, ply)
                 forced = False
                 alternatives = [{"move": idx_to_gtp(c.move), "score_lead": self._pv_score(c.score_lead, persp), "visits": c.visits}
                                 for c in cur_a.candidates[:3]]
             else:
-                if "color" in step and CHAR_COLOR.get(step["color"]) != color:
+                if CHAR_COLOR.get(step["color"]) != color:
                     raise ToolError("bad_request", f"step {ply}: {step['color']} is not to move ({COLOR_CHAR[color]} is)", {"ply": ply},
                                     suggestion="insert a pass, or start from the position before the opponent's reply")
                 try:
                     mv = gtp_to_idx(step["move"], size)
-                except (CoordError, KeyError) as e:
+                except CoordError as e:
                     raise ToolError("bad_request", f"step {ply}: {e}", {"ply": ply})
                 forced = True
                 alternatives = None
@@ -714,6 +829,7 @@ class Tools:
         o = options or {}
         rec = self._resolve_position(position)
         job = self._job_for_game(rec.game_id)
+        player = norm_color(player)
         color = CHAR_COLOR.get(player)
         if color is None:
             raise ToolError("bad_request", "player must be 'B' or 'W'")
@@ -768,6 +884,7 @@ class Tools:
     # ================================================================ 1.11 swing_value
     def swing_value(self, position: dict, points: list, budget: dict | None = None, options: dict | None = None) -> dict:
         o = options or {}
+        points = norm_list(points) or []
         if not points or len(points) > 6:
             raise ToolError("bad_request", "points must have 1..6 entries")
         rec = self._resolve_position(position)
@@ -996,7 +1113,8 @@ class Tools:
     def human_move_distribution(self, position: dict, profiles: list | None = None, moves_of_interest: list | None = None,
                                 top_n: int = 8) -> dict:
         rec = self._resolve_position(position)
-        prof = self._profiles(profiles or ["peer", "target", "horizon", "opponent"], rec)
+        prof = self._profiles(norm_list(profiles) or ["peer", "target", "horizon", "opponent"], rec)
+        moves_of_interest = norm_list(moves_of_interest)
         size = rec.spec.size
         t0 = time.time()
         out_p = {}
@@ -1026,7 +1144,7 @@ class Tools:
         size = rec.spec.size
         last = rec.spec.moves[-1] if rec.spec.moves else None
         try:
-            hl = {gtp_to_idx(p, size) for p in o.get("highlight", [])}
+            hl = {gtp_to_idx(p, size) for p in (norm_list(o.get("highlight")) or [])}
         except CoordError as e:
             raise ToolError("bad_request", str(e))
         box = None
@@ -1174,7 +1292,9 @@ class Tools:
                             errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"bad candidate {pt}"})
                             continue
                         c = next((c for c in before.candidates if c.move == ci), None)
-                        if c is not None:
+                        if ci == actual_idx:
+                            sc = ga.positions[at].score_lead          # same definition as the survey's points lost
+                        elif c is not None:
                             sc = c.score_lead
                         else:
                             spec = self.jobs._spec(job.game, at - 1)
@@ -1246,6 +1366,82 @@ class Tools:
             self.engine.stop()
         except Exception:
             pass
+
+
+# ==================================================================== lenient inputs
+def norm_color(c) -> str | None:
+    """'B'/'W' from 'b', 'black', 'White', 1/2, etc."""
+    if c is None:
+        return None
+    if isinstance(c, int):
+        return {1: "B", 2: "W"}.get(c)
+    t = str(c).strip().lower()
+    return {"b": "B", "black": "B", "w": "W", "white": "W"}.get(t)
+
+
+def norm_position(spec) -> dict:
+    """Accept a dict, a 'pos_…' ref string, an OGS id/link or file path (-> sgf), or raw SGF text."""
+    if isinstance(spec, dict):
+        return spec
+    if isinstance(spec, str):
+        t = spec.strip()
+        if t.startswith("pos_"):
+            return {"ref": t}
+        if t.startswith("job_"):
+            return {"job_id": t, "move_number": 0}
+        return {"sgf": t}
+    raise ToolError("bad_request", "position must be an object such as {\"ref\": …} or {\"job_id\": …, \"move_number\": n}")
+
+
+def norm_budget(b) -> dict | None:
+    """Accept {visits}/{seconds}/{profile}, a bare number (visits), or a profile name string."""
+    if b is None or isinstance(b, dict):
+        return b
+    if isinstance(b, bool):
+        return None
+    if isinstance(b, (int, float)):
+        return {"visits": int(b)}
+    if isinstance(b, str):
+        t = b.strip()
+        if t.isdigit():
+            return {"visits": int(t)}
+        return {"profile": t.lower()}
+    raise ToolError("bad_request", "budget must be an object like {\"profile\": \"root\"} or {\"visits\": 1000}")
+
+
+def norm_list(x) -> list | None:
+    if x is None:
+        return None
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    if isinstance(x, str):
+        parts = [p for p in re.split(r"[,\s]+", x.strip()) if p]
+        return parts
+    return [x]
+
+
+def norm_line_step(step, to_move: int, size: int = 19) -> dict:
+    """A line step may be {'color','move'}, {'engine': true}, 'engine', 'BQ7', 'WQ7', 'Q7', 'pass', ['B','Q7']."""
+    if isinstance(step, dict):
+        if step.get("engine") or step.get("type") == "engine":
+            return {"engine": True, **({"color": norm_color(step["color"])} if step.get("color") else {})}
+        color = norm_color(step.get("color")) or COLOR_CHAR[to_move]
+        mv = step.get("move") or step.get("point")
+        if mv is None:
+            raise ToolError("bad_request", f"line step needs a move: {step!r}")
+        return {"color": color, "move": str(mv).strip()}
+    if isinstance(step, (list, tuple)) and len(step) == 2:
+        return {"color": norm_color(step[0]) or COLOR_CHAR[to_move], "move": str(step[1]).strip()}
+    if isinstance(step, str):
+        t = step.strip()
+        if t.lower() in ("engine", "*", "?", "best", "engine_reply", "reply"):
+            return {"engine": True}
+        m = re.fullmatch(r"([BbWw])\s*[:\-]?\s*([A-Ta-t](?:1[0-9]|[1-9])|pass)", t)
+        if m:
+            return {"color": norm_color(m.group(1)), "move": m.group(2)}
+        if re.fullmatch(r"[A-Ta-t](?:1[0-9]|[1-9])|pass", t, re.I):
+            return {"color": COLOR_CHAR[to_move], "move": t}
+    raise ToolError("bad_request", f"cannot read line step {step!r}; use {{\"color\": \"B\", \"move\": \"Q7\"}} or {{\"engine\": true}}")
 
 
 # ==================================================================== helpers

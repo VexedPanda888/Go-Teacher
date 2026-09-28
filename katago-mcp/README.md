@@ -100,16 +100,33 @@ dashboard export and its checksum, job reuse across a server restart, and a hand
   "mcpServers": {
     "katago": {
       "command": "/ABS/PATH/katago-mcp/.venv/bin/katago-mcp",
-      "args": ["serve", "--config", "/ABS/PATH/katago-mcp/config/m5pro.toml"],
-      "cwd": "/ABS/PATH/katago-mcp"
+      "args": ["serve", "--config", "/ABS/PATH/katago-mcp/config/m5pro.toml"]
     }
   }
 }
 ```
 
+Or let the repo write it, with absolute paths and without disturbing other servers:
+
+```bash
+python3 install/register_claude_desktop.py --config config/m5pro.toml
+```
+
+The config lives in your home Library (`~/Library/Application Support/Claude/`, hidden in Finder:
+use ⌘⇧G, or Settings → Developer → Edit Config inside the app), not in the app bundle, so it works
+wherever Claude Desktop is installed — `~/Applications` is fine when `/Applications` needs admin rights.
+Keep the repo itself out of `~/Desktop`, `~/Documents` and `~/Downloads`: macOS guards those folders, and a
+server launched from Claude fails there with `/bin/sh: …: Operation not permitted` unless Claude has been
+granted access to the folder (on managed Macs that grant may not be possible). `~/GitHub/…` is a good home.
 On Windows use `C:\\...\\.venv\\Scripts\\katago-mcp.exe` and `config\\r5700xt.toml`.
-Paths inside the TOML (`analysis_config`, `model`, `reviews_dir`) are relative to the working
-directory, so keep `cwd` at the repo root or make them absolute.
+Relative paths inside the TOML (`analysis_config`, `model`, `reviews_dir`) resolve against the repo
+root (the parent of `config/`), and KataGo runs with the repo root as its working directory, so the
+server works no matter where Claude Desktop launches it from. KataGo starts in the background right
+after the handshake; a tool called before it is ready answers `engine_unavailable: katago is still
+starting` — wait a few seconds and call again.
+
+Logs: Claude Desktop writes the server's stderr to `~/Library/Logs/Claude/mcp-server-katago.log`
+(macOS) or `%APPDATA%\\Claude\\logs\\` (Windows). KataGo's own logs go to `analysis_logs/` in the repo.
 
 **Claude Code**
 
@@ -117,15 +134,46 @@ directory, so keep `cwd` at the repo root or make them absolute.
 claude mcp add katago -- /ABS/PATH/.venv/bin/katago-mcp serve --config /ABS/PATH/config/m5pro.toml
 ```
 
-The engine starts when the server starts (10–60 s; OpenCL first run longer). Until it is ready,
-tools answer with `engine_unavailable`.
+KataGo starts on the first tool call that needs it, not when the server boots: Claude Desktop launches
+two instances of every server (one for chat, one for its Cowork/Code pool), and only the one in use
+should load a model. `engine_info` kicks the start off, so Phase 0's first call gets the model loading;
+a tool called while KataGo is still loading waits up to 45 s and then answers
+`engine_unavailable: katago is still starting` — call it again. Set `[katago].start_on_boot = true`
+for eager starting. The server needs `mcp` 1.x (`mcp>=1.2,<2` in `pyproject.toml`); on `mcp` 2.x the
+import fails with a message that says to run `pip install 'mcp<2'`.
+
+## 4b. First live test on the Pro (what to look at)
+
+1. `katago-mcp benchmark --config config/m5pro.toml` prints visits/second and writes
+   `config/m5pro.throughput.json`. Expect a few hundred visits/s for b18 on an M5 Pro; the exact number
+   only changes the plan, not the correctness.
+2. `katago-mcp selfcheck --config config/m5pro.toml --sgf ~/Downloads/some-ogs-game.sgf --visits 200`
+   - `engine_info` JSON: `engine_status: ready`, `human_model.loaded: true`, a `katago_version`.
+   - `corner ownership (should be clearly positive): +0.9x` — if it prints a *negative* number the
+     perspective convention is inverted: set `[katago].perspective = "SIDETOMOVE"` and re-run.
+   - `human model ok: [...]` lists three plausible moves; a `human_model_unavailable` error means
+     `-human-model` did not load (path, or KataGo < 1.15).
+   - the survey progress line, then the digest excerpt: `reconciliation.status` should be `ok` for a
+     game decided by counting (`n/a` for resignations); `mismatch` means komi/rules/handicap were
+     read wrongly — send me the SGF header.
+   - episodes: `(id, [from, to], points_lost, tags)` — sanity, not truth, at 200 visits.
+3. Register the server (§4), restart Claude Desktop, open a plain chat (no project yet) and ask, in
+   turn: "call engine_info", "here is an SGF … run sgf_summary", "start_game_analysis with 300 visits
+   per move, then poll job_status", "job_results", "analyze_position for the position after move 60 and
+   render_board it", "analyze_line the best move for 4 plies". Each answer should quote numbers that
+   appear in the tool results.
+
+If anything fails, the useful things to send back are: the selfcheck output, the last 40 lines of
+`~/Library/Logs/Claude/mcp-server-katago.log`, and `katago version`.
 
 ## 5. Using it (what Claude does)
 
 The review flow is the project's; the server only makes it cheap and honest:
 
 1. `sgf_summary` (no engine) → confirm colour, rules, komi, handicap; `plan_budget(total_minutes)`
-   → survey visits, episode count, per-episode search sizes.
+   → survey visits, episode count, per-episode search sizes. Give the game as an **OGS link or id**
+   (the server downloads the SGF from online-go.com and caches it in `games/`) or as the **name of a
+   file in `games/`**; raw SGF text is accepted but pasting it through the chat mangles long records.
 2. `start_game_analysis` with `{"profile": "survey"}` → job runs while the student does the blind
    self-review; `job_status` to poll.
 3. `job_results` → digest ≤ 4 k tokens: phases, points lost, episodes with signatures, candidate
@@ -138,7 +186,21 @@ The review flow is the project's; the server only makes it cheap and honest:
 
 Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that the ledger cites.
 
-## 6. Deviations from tool contract v0.1 (to fold into v0.2)
+## 5b. Seeding memory from past games (WS8)
+
+```bash
+katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ --visits 500
+```
+
+Surveys every `.sgf` in the folder (finished surveys are reused on re-runs), then writes
+`seed/seed_summary.json` and `seed/seed_summary.md`. Paste the `.md` into a conversation in the Go-teacher
+project and ask for the calibration pass: it checks reconciliation per game, reviews the tag frequencies
+and the top episodes, proposes threshold changes for `config/*.toml` (`[thresholds]`), and writes the
+seeded episodes into memory with `verdict: "SURVEY"` (unverified; half weight in recurrence).
+Twenty games at 500 visits/move take roughly `20 × 200 × 500 / vps` seconds — about 50 minutes at
+650 visits/s. Run it on the Pro and leave it.
+
+## 6. Deviations from tool contract v0.1 (folded into contract v0.2)
 
 | # | Contract | Implementation |
 |---|----------|----------------|

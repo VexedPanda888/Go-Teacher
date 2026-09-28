@@ -2,7 +2,7 @@
 name = "m5pro"
 
 [katago]
-binary = "/opt/homebrew/bin/katago"          # or the path of a Metal build
+binary = "/opt/homebrew/bin/katago"
 analysis_config = "config/analysis.cfg"
 model = "models/kata1-b18c384nbt-latest.bin.gz"
 human_model = "models/b18c384nbt-humanv0.bin.gz"

@@ -4,6 +4,7 @@
 # Re-run safely; every step is idempotent.  Verify afterwards with:  katago-mcp selfcheck --config config/<machine>.toml
 set -euo pipefail
 cd "$(dirname "$0")/.."
+case "$(pwd)" in *"/.Trash/"*) echo "This folder is inside the Trash ($(pwd)). Move the repo out first."; exit 1;; esac
 MACHINE="${1:-m5pro}"                 # m5pro | m2air
 THREADS="${2:-}"                      # override numSearchThreadsPerAnalysisThread
 
@@ -31,12 +32,23 @@ if [ ! -f models/b18c384nbt-humanv0.bin.gz ]; then
   echo "   https://github.com/lightvector/KataGo/releases  -> save as models/b18c384nbt-humanv0.bin.gz"
 fi
 
+# Python >= 3.11 (tomllib).  Xcode's python3 is often 3.9; Homebrew's is fine.
+PY=""
+for cand in python3.13 python3.12 python3.11 python3; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then PY="$cand"; break; fi
+done
+if [ -z "$PY" ]; then
+  echo "Python 3.11+ not found. Install one:  brew install python@3.12   then re-run."; exit 1
+fi
+echo ">> python: $($PY --version) ($PY)"
 if [ ! -d .venv ]; then
-  echo ">> creating venv"; python3 -m venv .venv
+  echo ">> creating venv"; "$PY" -m venv .venv
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
+python -m pip install -q --upgrade pip
 pip install -q -e ".[dev]"
+echo ">> installed: $(katago-mcp --help 2>/dev/null | head -1 || echo 'katago-mcp entry point missing')"
 
 if [ -z "$THREADS" ]; then
   case "$MACHINE" in
