@@ -97,7 +97,8 @@ variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget`
 worked examples of contract §1.2.3, all 21 tools end to end on synthetic games including the
 dashboard export and its checksum, job reuse across a server restart, and a handicap game. It also
 checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
-that `docs/tool-contract.md` matches the skill's copy.
+that the header of the tool contract (`skills/go-teacher-flow/references/tool-contract.md`) names the
+code's versions.
 
 ## 4. Registering the server
 
@@ -176,21 +177,11 @@ If anything fails, look first at the selfcheck output, the last 40 lines of
 
 ## 5. Using it (what Claude does)
 
-The review flow is the project's; the server only makes it cheap and honest:
-
-1. `sgf_summary` (no engine) → confirm colour, rules, komi, handicap; `plan_budget(total_minutes)`
-   → survey visits, episode count, per-episode search sizes. Give the game as an **OGS link or id**
-   (the server downloads the SGF from online-go.com and caches it in `games/`) or as the **name of a
-   file in `games/`**; raw SGF text is accepted but pasting it through the chat mangles long records.
-2. `start_game_analysis` with `{"profile": "survey"}` → job runs while the student does the blind
-   self-review; `job_status` to poll.
-3. `job_results` → digest ≤ 4 k tokens: phases, points lost, episodes with signatures, candidate
-   tags, human probabilities, decisive move, last chance.
-4. `plan_budget(job_id, selected=[…])` → re-plan for the chosen episodes; then per episode:
-   `analyze_position` (root), `analyze_line` ×3 (played / teachable / student's fix), `pass_probe`,
-   `swing_value`, `local_solve`, `ownership_diff`, `human_move_distribution` as the hypothesis needs.
-5. `validate_variations` → the dashboard data blob and its SHA-256, saved as `reviews/<game>/export-N.json`;
-   `scripts/verify_export.py` re-checks the file.
+The review flow lives in the skills, not here: `skills/go-teacher-flow` (phase order, handoff files) and
+`skills/katago-analysis` (budget steps, the belief protocol, tool recipes). The tool contract is
+`skills/go-teacher-flow/references/tool-contract.md`. Give the game as an **OGS link or id** (the server
+downloads the SGF from online-go.com and caches it in `games/`) or as the **name of a file in `games/`**;
+raw SGF text is accepted but pasting it through the chat mangles long records.
 
 Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that the ledger cites.
 
@@ -220,8 +211,8 @@ katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ --visits 500
 ```
 
 Surveys every `.sgf` in the folder (finished surveys are reused on re-runs), then writes
-`seed/seed_summary.json` and `seed/seed_summary.md`. Paste the `.md` into a conversation in the Go-teacher
-project and ask for the calibration pass: it checks reconciliation per game, reviews the tag frequencies
+`seed/seed_summary.json` and `seed/seed_summary.md`. Paste the `.md` into a plain Claude Desktop chat
+(project chats cannot reach the local server) and ask for the calibration pass: it checks reconciliation per game, reviews the tag frequencies
 and the top episodes, proposes threshold changes for `config/*.toml` (`[thresholds]`), and writes the
 seeded episodes into memory with `verdict: "SURVEY"` (unverified; half weight in recurrence).
 Twenty games at 500 visits/move take roughly `20 × 200 × 500 / vps` seconds — about 50 minutes at
@@ -234,21 +225,7 @@ says so ("3 of your 5 biggest probed losses share the belief 'needs_defending': 
 about 8 searches, so this adds a few seconds per episode (estimated at roughly 10 minutes for 20 games
 on the Pro). These beliefs are survey grade: inferred at low visits, never stated by the student.
 
-## 6. Deviations from tool contract v0.1 (folded into contract v0.2)
-
-| # | Contract | Implementation |
-|---|----------|----------------|
-| 1 | survey cap 500 visits/move | **1000** (approved in review) — `[budget].survey_cap` |
-| 2 | `pass_probe.urgency[]` = `opponent_best_there`, `threat` | `best_move_there`, `value`: the **player's** best move confined to each region and its value over passing (the direct "urgent vs big" ranking); nine restricted searches at ⅓ of the root budget |
-| 3 | `analyze_line.summary.vs_best` | root estimate of the best first move (`score_after_best_root_estimate`, `gap_vs_first_step`); the played-out contrast is a second `analyze_line` |
-| 4 | verification queries at lower KataGo priority during a job | **higher** priority (10 vs 0), so interactive calls return promptly |
-| 5 | phases always three ranges | `middlegame` / `endgame` may be `null` (short or resigned games) |
-| 6 | — | superko is checked positionally for every superko ruleset; KataGo remains the arbiter of legality inside searches |
-| 7 | `validate_variations` quiz candidates | each candidate carries `labels` ⊆ {`actual`,`peer`,`best`} instead of separate fields |
-| 8 | `Budget.seconds` | requires a measured throughput; otherwise `budget_infeasible` |
-| 9 | — | chain clustering also caps a chain at 24 plies / 6 student moves (`cluster_max_span`, `cluster_max_moves`) |
-
-## 7. Known limits
+## 6. Known limits
 
 - 19×19 only (`unsupported_board_size` otherwise).
 - One job at a time; a second `start_game_analysis` while a survey runs answers `engine_busy`.

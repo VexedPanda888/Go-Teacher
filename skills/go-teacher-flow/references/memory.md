@@ -47,6 +47,8 @@ never progress or improvement.
  "lesson_ids": ["ogs_12345678-L1", "ogs_12345678-L2"], "lesson_titles": ["…", "…"],
  "self_review": {"agreements": 2, "misjudged": 1, "blind_spots": 1}, "dashboard_url": "https://claude.ai/artifact/…"}
 ```
+`self_review` counts the Phase 3 comparison (go-teaching §4.1); `misjudged` there is a count, not an
+awareness value.
 
 `episodes/<game_id>-<Eid>` — one per CONFIRMED episode (taught or not):
 
@@ -58,6 +60,7 @@ never progress or improvement.
  "style": "slack", "awareness": "blind_spot", "pattern_hash": "ph_3f9a…", "pattern_hash_5": "ph5_…",
  "teachable_move": "R8", "played": "Q7", "verdict": "CONFIRMED", "taught": true, "query_ids": ["q_ogs_12345678_0042"]}
 ```
+`awareness` is `blind_spot`, `seen` or `diagnosed` (go-teaching §1, §4.1).
 
 `lessons/<game_id>-L<n>` — one per lesson delivered:
 
@@ -69,8 +72,7 @@ never progress or improvement.
 `status` becomes `"retired"` when the category has not appeared in the last five reviewed games.
 Lessons written before v0.3 have `principle` instead of `rule_check`, and no `belief`; read either.
 
-`belief` is one of `needs_defending`, `group_is_safe`, `is_sente`, `behind_must_invade`,
-`ahead_can_coast`, `sequence_works`, `biggest_move` (go-teaching §1), or `null` when the probes found none.
+`belief` is one of the seven `intent_probe` belief ids (go-teaching §1), or `null` when the probes found none.
 `belief_source` is `stated` (the student said it in the interview, `belief_statement` quotes them),
 `inferred` (from `intent_probe` in a verified review) or `probe_survey` (from `katago-mcp-seed --probes`:
 low visits, never verified). `misread` comes from `expectation_probe`; omit it when there was none.
@@ -95,7 +97,7 @@ seeded game is later reviewed properly, replace its SURVEY episodes with the CON
 One call: ArtifactData `get` with `collection: "profile"`, `doc_id: "main"`. Note the `version`.
 Copy `watch`, `belief_insight` and the `recurring` and `beliefs` entries with `recurring: true` into
 `intake.md`; a recurring belief is a hypothesis to test first in Phase 4. Pull individual
-episodes or patterns only when the survey digest shows a matching category or pattern hash
+episodes or patterns only when the survey digest shows a matching category, belief or pattern hash
 (`read_db` `query` on `episodes` with `where: [["category","eq","2"]]`, or `get` on `patterns/<hash>`).
 
 ## Phase 6: write

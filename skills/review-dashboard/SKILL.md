@@ -12,7 +12,7 @@ blob whose checksum does not match, so nothing unverified can reach the student.
 
 ## Steps
 
-1. Finish the lesson text first (`lesson.md`): titles, commentary per move, principle, cue, quiz choice, summary.
+1. Finish the lesson text first (`lesson.md`): titles, commentary per move, `rule_check`, `cue`, quiz choice, summary.
 2. Call `validate_variations(job_id, episodes, summary)` with the input shape below. Fix any `errors` it
    reports (illegal move, wrong colour, bad range, unknown solve query) by correcting the episode input —
    not by dropping the check. A `warnings` entry like "never diverges from the game" is fine for an
@@ -21,7 +21,7 @@ blob whose checksum does not match, so nothing unverified can reach the student.
    note the `sha256`. The server also saved `reviews/<game_id>/export-N.json`.
 4. Build: `python3 <skill>/scripts/build_dashboard.py --blob blob.json --sha <sha256> --out review.html`
    (or `--export reviews/<game_id>/export-N.json` when that file is reachable).
-5. Publish `review.html` with the Artifact tool (favicon ⚫, title "Review: vs <opponent>, <date>").
+5. Publish `review.html` with the Artifact tool (icon `go`, title "Review: vs <opponent>, <date>").
    That link is the deliverable; the student can also open it on a phone.
 6. If the text needs a change after publishing, change the episode input, re-run `validate_variations`,
    rebuild, and republish the same artifact URL. Never patch the HTML or the blob by hand.
@@ -87,7 +87,7 @@ blob whose checksum does not match, so nothing unverified can reach the student.
   "strengths": ["a correct move that was hard for your level, with its move number"],
   "selfReview": {"agreements": ["…"], "blindSpots": ["…"]},
   "nextGame": "one concrete thing to try once per game",
-  "reliability": "how deep the verification went, e.g. 'E1 and E2 checked at 6,000 visits with 12-ply lines; E3 at 1,000.'"
+  "reliability": "how deep the verification went, e.g. 'E1 and E2 checked at 6,000 visits with 8-ply lines; E3 at 1,000.'"
 }
 ```
 
@@ -97,7 +97,7 @@ blob whose checksum does not match, so nothing unverified can reach the student.
   paragraph of 1–3 sentences in plain language for a 7-kyu player. Name points as on the board (Q7).
 - Commentary follows the lesson template (go-teaching §3): at the root, what the student was trying to
   do; at the divergence, the move they did not consider; at the end of the chain, what is different
-  from the better line's end. No concept word without its consequence; no "the engine ranks/prefers".
+  from the better line's end. Concept words and "the engine ranks/prefers": go-teaching §3.
 - Put the "what to notice" cue in `cue`, the check in `rule_check`. One sentence each.
 - Label branches by what they are for the student: "As played", "What you expected", "Where it breaks
   (move k)", "Better: forced line", "If White resists at X", "Your fix (P8)". Never "Engine's line".

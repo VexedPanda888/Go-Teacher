@@ -7,11 +7,11 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 |---|---|
 | [katago-mcp/](katago-mcp/README.md) | The local MCP server that runs KataGo and computes every derived metric. Install, benchmark, register and test instructions are in its README. |
 | [skills/go-teacher-flow/](skills/go-teacher-flow/SKILL.md) | The full review procedure, phase by phase, for a plain Claude Desktop chat. Also holds the memory schema and the canonical tool contract. |
-| [skills/katago-analysis/](skills/katago-analysis/SKILL.md) | How to use the tools: budget, survey digest, verification recipes, the ledger. |
-| [skills/go-teaching/](skills/go-teaching/SKILL.md) | What to teach: taxonomy, triage, lesson format, blind self-review questions. |
+| [skills/katago-analysis/](skills/katago-analysis/SKILL.md) | How to use the tools: budget, survey digest, the belief protocol and proof tree, the ledger. |
+| [skills/go-teaching/](skills/go-teaching/SKILL.md) | What to teach: beliefs and taxonomy, triage, lesson format, self-review and interview questions, rules of conduct. |
 | [skills/review-dashboard/](skills/review-dashboard/SKILL.md) | The dashboard template and the build script that only accepts engine-validated data. |
 | [docs/plan.md](docs/plan.md) | The build plan, decisions and current status. |
-| [docs/tool-contract.md](docs/tool-contract.md) | The tool contract (kept identical to the copy in `skills/go-teacher-flow/references/`). |
+| [skills/go-teacher-flow/references/tool-contract.md](skills/go-teacher-flow/references/tool-contract.md) | The tool contract (the only copy; skills must be self-contained). |
 
 `seed/` holds the local seed games and calibration notes and is not in git.
 

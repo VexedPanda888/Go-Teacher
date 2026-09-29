@@ -1,3 +1,5 @@
+> Archived: built; open items moved to docs/plan.md.
+
 # Causal lessons — plan (v0.1)
 
 **Status:** built, 29 Sep 2026 (katago-mcp 0.2.0, contract v0.3.0), steps 1–7 of §4 in seven commits.

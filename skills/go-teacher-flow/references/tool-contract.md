@@ -1,8 +1,8 @@
 # katago-mcp — Tool Contract (v0.3.0, as implemented in katago-mcp 0.2.1)
 
-**Status:** draft. The canonical copy is `skills/go-teacher-flow/references/tool-contract.md` (skills must be self-contained); `docs/tool-contract.md` is kept identical and a test checks it. This is the document WS2 is built from and WS3 quotes. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
+**Status:** current; describes the implemented server, 21 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
-Two refinements surfaced while writing this and are reflected in the plan (v0.3):
+Two design points worth knowing up front:
 1. The self-review minutes are part of the total time you give, so the budget formula reserves them (§1.2).
 2. Numeric dashboard data cannot pass through Claude by retyping without error, so `validate_variations` also assembles the complete dashboard data blob and returns it with a checksum (§1.17, §5).
 
@@ -44,6 +44,7 @@ type Budget =
   | { seconds: number }                                        // converted with sustained visits/s
   | { profile: "survey" | "root" | "line_node" | "stability" | "local_solve" | "quick" }
 ```
+- A bare number is read as `{ visits }`, a profile name string as `{ profile }`.
 - Profiles resolve to visit counts from the **active plan** for the job (§1.2). Without an active plan they resolve to the base unit (§1.2.3). `quick` is always 200 visits, for ownership snapshots and group status.
 - `root`, `stability` and `local_solve` searches stop early when stable (§0.7). Every response reports `visits_used` and `seconds_used`.
 
@@ -77,7 +78,9 @@ type ErrorCode =
   | "engine_unavailable" | "engine_busy" | "human_model_unavailable" | "timeout" | "internal"
   | "invalid_sgf" | "unsupported_board_size" | "illegal_move" | "unknown_ref" | "bad_region" | "no_group_at_point"
   | "job_not_found" | "job_not_finished" | "budget_infeasible" | "validation_failed"
+  | "bad_request" | "ogs_fetch_failed"
 ```
+`bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.3). `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
 `suggestion` is written for Claude to act on ("start the engine with `katago-mcp serve`", "the job is 62% done; call job_status again in ~90 s").
 
 ---
@@ -277,7 +280,7 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
 
 **Inputs.**
 ```ts
-{ sgf: string; budget: { visits_per_move: number } | { profile: "survey" };
+{ sgf: string; budget?: { visits_per_move: number } | Budget = { profile: "survey" };   // normalized like every other budget (§0.4): bare number, { visits }, { seconds }
   student_username?: string; game_id?: string;      // reuse an existing id (re-analysis)
   options?: { human_profiles?: string[] = ["peer","target","horizon","opponent"];
               ownership: "all" = "all";              // ownership at every position (needed for phases and tags)
@@ -295,14 +298,14 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
 ---
 
 ### 1.5 `job_status`
-**Inputs.** `{ job_id: string; action?: "status" | "cancel" = "status" }`
+**Inputs.** `{ job_id: string; action?: "status" | "cancel" | "release" = "status" }`
 **Output.**
 ```ts
 { job_id: string; state: "queued" | "running" | "done" | "failed" | "cancelled";
   positions_done: number; positions_total: number; progress: number; current_move: number;
   elapsed_seconds: number; eta_seconds: number | null; partial_results_available: boolean; error?: Error["error"] }
 ```
-`cancel` stops the engine work; partial results stay available. **Errors.** `job_not_found`.
+`cancel` stops the engine work; partial results stay available. `release` frees a finished job's memory; its results stay in `reviews/<game_id>/` and are reused. **Errors.** `job_not_found`.
 
 ---
 
@@ -401,7 +404,7 @@ type CaptureRace = { groups: { label: string; anchor: Point; color: Color; liber
 ---
 
 ### 1.9 `analyze_line`
-**Purpose.** Play out a sequence — forced moves, engine replies, or a mix — and report what happens. The verification tool for the three-line contrast and for plan tests.
+**Purpose.** Play out a sequence — forced moves, engine replies, or a mix — and report what happens. The general line tool: plan tests (`restrict`), ad-hoc continuations and punishability (`refutation_probability`). Proof lines for a lesson use `forced_line` (§1.19); the belief protocol uses `intent_probe` and `expectation_probe` (§1.20–1.21).
 
 **Inputs.**
 ```ts
@@ -457,7 +460,7 @@ type LineNode = { ply: number; color: Color; move: Point | "pass"; forced: boole
   score_after_best: { move: Point; score: number };
   local_value: { played: number | null; best: number };  // score_after_X − score_if_pass
   urgency?: { region: string; label: string; best_move_there: Point; value: number }[];   // the player's best move confined to the region, and its value over passing; sorted by value
-  visits_used: number; query_id: string;
+  visits_used: number; seconds_used: number; query_id: string;
 }
 ```
 **Behavior.** `score_if_pass` is the root evaluation of the position after a forced pass. `urgency` (when `rank_regions` is true) runs nine searches at one third of the root budget, each confining the *player's* move to one standard region with `allowMoves`; `value = score_after_best_in_region − score_if_pass` from the player's perspective, so a region where a group is in danger scores high because passing would lose it. This is the direct urgent-vs-big ranking. Interpretation is Claude's: a large `local_value.best` in the region you left is the "urgent before big" signature; a top-ranked region far from the played move is the "slow" signature.
@@ -479,7 +482,7 @@ type LineNode = { ply: number; color: Color; move: Point | "pass"; forced: boole
              swing: number;                                          // black_first.score_after − white_first.score_after (Black-positive), then perspective-adjusted
              sente_gote: { for_black: "sente" | "gote" | "unclear"; for_white: "sente" | "gote" | "unclear" } }[];
   ranked: Point[];                                                   // by swing, descending
-  visits_used: number; query_id: string }
+  visits_used: number; seconds_used: number; query_id: string }
 ```
 **Behavior.** Two searches per point (Black plays there / White plays there). `reply_is_local` = the best reply lies within `local_radius` (Chebyshev) of the point; local reply → the move was sente for the mover. `unclear` when the reply's evaluation gap to the best non-local move is under 0.5 points.
 **Cost.** `2 × points × budget`. **Errors.** `illegal_move` (a point occupied or illegal for either color is skipped with a note), `unknown_ref`.
@@ -504,7 +507,7 @@ type LineNode = { ply: number; color: Color; move: Point | "pass"; forced: boole
   status: "alive" | "dead" | "unsettled" | "unclear";   // alive/alive → alive; dead/dead → dead; alive/dead → unsettled; either run unclear → unclear
   confidence: "high" | "medium" | "low";               // from ownership margins beyond the thresholds and early-stop stability
   caveats: string[];                                    // "group touches the region boundary at …: outside liberties may matter", "ko present", "seki-like ownership near 0"
-  visits_used: number; query_id: string;
+  visits_used: number; seconds_used: number; query_id: string;
 }
 type SolveRun = { sequence: Move[]; final_position_ref: PositionRef; final_group_ownership: number; final_status: "alive" | "unsettled" | "dead"; plies: number; stopped_reason: "stable" | "max_plies" | "group_captured" | "both_passed" };
 ```
@@ -613,7 +616,7 @@ type DashboardSummary = {                              // the shape the review-d
   sha256?: string; size_bytes?: number; query_id: string }
 ```
 **Behavior.** A branch with `from_branch` is expanded to the parent's first `at_ply` moves followed by its own, from the parent's `from_move`, and exported with `parentBranch` and `branchPly` (plies in errors count from the parent's start). With `comparison`, both branch ends get `terminal_features` from the student's perspective and the episode exports `comparison: { a, b, aLabel, bLabel, scoreDiff, groups, territory, territoryTotal, sente, nextMove, weakGroups }`; `rule_check`, `belief` and each branch's `kind` are exported as `ruleCheck`, `belief`, `kind`. For each branch: the position after `from_move` is taken from the job; every move is legality-checked with alternating colors from that position's side to move; evaluations per node come from cache or new searches at `budget`. Quiz candidates get `pointsLost` relative to the best move (the actual move's from the survey's after-position score, the same definition as §3.1) and `labels ⊆ {actual, peer, best}`; `status` quizzes pull the verdict from the cited `local_solve` query. Ownership is encoded at episode roots and branch ends. Game metadata, moves, setup, score series (student perspective) and the episodes' numeric fields come from the server's records; all text fields are copied verbatim from the inputs. On any error, nothing is exported. Claude writes `dashboard_data` verbatim to `data.json`; `build_dashboard.py` recomputes the checksum and refuses to build on mismatch.
-**Cost.** Searches for uncached branch nodes only. **Errors.** `job_not_found`, `validation_failed` (details in `errors`).
+**Cost.** Searches for uncached branch nodes only. **Errors.** `job_not_found`; validation problems are returned as `valid: false` with the details in `errors` (§0.9).
 
 ---
 
@@ -632,7 +635,7 @@ type DashboardSummary = {                              // the shape the review-d
     territory_total: { a: Side; b: Side };
     sente: { a: "you" | "opponent"; b: "you" | "opponent"; changed: boolean };
     tempo: { a: Tempo; b: Tempo }; weak_groups: { a: Side; b: Side } };
-  visits_used: number; query_id: string }
+  visits_used: number; seconds_used: number; query_id: string }
 type Side = { you: number; opponent: number };
 type Tempo = { side_to_move: Color; best_move: Point; value: number; region: string };   // value = best move − pass, for the side to move
 type Features = { position_ref: PositionRef; to_move: Color; perspective: Color; score_lead: number;
@@ -730,7 +733,7 @@ Beliefs, in this order (the first is `belief`):
 ```ts
 { position: Position /* before the move */; move: Point | string; budget?: Budget = { profile: "line_node" };
   options?: { expected_line?: (string | LineStep)[];     // the student's line after the move, opponent first ("WD10", "BC10", …)
-              plies?: number = 6;                          // imagined moves after the move; the plan's expectation_plies
+              plies?: number = active plan's per_episode.expectation_plies (6 base, 8 after ladder step L4);   // imagined moves after the move
               profile?: string = "peer";                  // who fills in the moves after expected_line runs out (both sides)
               misread_margin?: number = 3; refutation_plies?: number = 4; perspective?: Color } }
 ```
@@ -757,9 +760,9 @@ Beliefs, in this order (the first is `belief`):
 
 | Mechanic (from the plan) | Tools |
 |---|---|
-| Three-line contrast; plan tests | `analyze_line` |
-| Proof lines (must-moves, natural resistance) and what differs at their ends | `forced_line`, `terminal_features` |
-| The belief behind a move; the misread and the move never considered | `intent_probe`, `expectation_probe` |
+| Plan tests; ad-hoc continuations; punishability | `analyze_line` |
+| Proof tree: must-move lines (played and better move, natural resistance) and what differs at their ends | `forced_line`, `terminal_features` |
+| Belief protocol: the belief behind a move; the misread and the move never considered | `intent_probe`, `expectation_probe` |
 | Pass probe for urgency | `pass_probe` |
 | Swing counting; sente/gote | `swing_value` |
 | Local solve (alive / dead / unsettled) | `local_solve` |
@@ -799,7 +802,7 @@ Seeds: the student's moves with `points_lost ≥ episode_min_loss` (2.0). Two se
 Student perspective series `w'_k = w_k` (Black) or `1 − w_k` (White). If the student lost: `decisive` = the first student move `n` with `w'_n ≤ decided_winrate` (0.15) and `w'_j ≤ recovery_winrate` (0.35) for all `j > n`. If the student won: the first opponent move `n` with `w'_n ≥ 1 − decided_winrate` and `w'_j ≥ 1 − recovery_winrate` thereafter, reported as `by: "opponent"`. In handicap games (or whenever `w'` is below 0.05 or above 0.95 for the first 30 moves) the same rule is applied to score with `decided_score_handicap` (−15) and `recovery_score_handicap` (−8), and `basis: "score"`. `last_chance` = the last student move `n` before `decisive` such that the best move at `P_{n−1}` evaluates to `w' ≥ recovery_winrate` (or score ≥ recovery score), with that counterfactual evaluation reported.
 
 ### 3.7 Search-signature candidate tags
-Computed at each episode root (taxonomy ids from the plan, WS4). Up to three tags, in this order of precedence:
+Computed at each episode root (taxonomy ids from `go-teaching` §1). Up to three tags, in this order of precedence:
 Thresholds calibrated in WS8 (20 seed games; notes in `seed/calibration.md`, which stays local because `seed/` is not in git). "Plausible" uses the human model's peer-rank probabilities (`human.played.peer`, `human.best.peer`), falling back to KataGo's policy priors when the human model is unavailable: KataGo's policy almost always prefers the best move, so the policy-only rule never fired.
 - **13 Failure to punish**: the opponent's previous move lost ≥ `tag_punish_min_loss` (5) points and the student's move gives back ≥ `got_away_ratio` (0.6) of it.
 - **3 / 4 / 5**: peer(played) ≥ `tag_plausible_min_peer` (0.20), peer(played) ≥ `tag_plausible_ratio` (1.5) × peer(best) and `points_lost ≥ tag_plausible_min_loss` (2) (search refutes a move the student's rank plays) → 3 if the student's own group status falls after the played move, 4 if the opponent's group status rises after the best move (missed attack), else 5.
@@ -869,13 +872,13 @@ All 361-element arrays are row-major from `A19` to `T19`, then `A18` … down to
 
 ## 5. Dashboard data export (from `validate_variations`)
 
-The exported JSON follows the plan's WS5 schema with these encodings, chosen so Claude can copy the blob verbatim:
+The exported JSON is what `validate_variations` assembles (§1.17) and what the `review-dashboard` template reads, with these encodings, chosen so Claude can copy the blob verbatim:
 - `moves`: array of `Move` values as `"BQ7"` strings (color letter + point, `"Bpass"` for a pass).
 - `scoreSeries`: numbers rounded to one decimal, student perspective, index = move number (index 0 = after setup).
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.2.1", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.3.0", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
@@ -992,7 +995,7 @@ reviews/
 
 | # | Question | Decision |
 |---|----------|----------|
-| 1 | Ladder order | Kept: root_3000 → line_600 → stability_16x → plies_12 → solve_4000_all_ld → root_6000 → line_1000 |
+| 1 | Ladder order | Kept: root_3000 → line_600 → stability_16x → plies_8 (was plies_12 before v0.3) → solve_4000_all_ld → root_6000 → line_1000 |
 | 2 | Survey cap | Raised to **1000** visits/move |
 | 3 | Tag rules | Kept as hints; WS8 seeding calibrates them |
 | 4 | `pass_probe.rank_regions` | Off by default; the urgent-vs-big and slow recipes turn it on |
@@ -1011,7 +1014,7 @@ Changes from v0.1 to v0.2 (all reflected in the sections above):
 9. Legality inside the server checks positional superko for all superko rulesets; KataGo remains the arbiter inside searches (§0.1).
 10. The survey persists `analysis.json` before the job reports `done`; a restarted server reuses a finished survey from disk (`reuse_existing`).
 
-Changes from v0.2 to v0.3 (causal evidence; the plan is `docs/plan-causal-lessons.md`):
+Changes from v0.2 to v0.3 (causal evidence; the archived plan is `docs/archive/plan-causal-lessons.md`):
 
 1. Liberty counts leave the default outputs: `Group.liberties` is optional (capture races, explicit requests), `sgf_summary.tension_events` and `local_solve.target` drop the count, `render_board.label_low_liberties` defaults to false; new `capture_races` (§3.16) on `analyze_position`, `analyze_line.end` and `group_status`.
 2. Tag 2 fires on an unsettled group in the best move's region instead of a group with ≤ 3 liberties (§3.7).

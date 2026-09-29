@@ -33,8 +33,10 @@ Then:
    name of an `.sgf` in the server's `games/` folder. Never retype SGF text into a tool call: long
    records get mangled. Use the same `sgf` value for `start_game_analysis`.
 3. `plan_budget(total_minutes, move_count)` — returns survey visits, how many episodes fit, and the
-   per-episode search sizes. If `feasible` is false, tell the student the minimum
-   (`minimum_minutes_for_three_episodes`) and let them choose: extend, or accept fewer episodes.
+   per-episode search sizes; it reserves the blind self-review and the episode interviews. If
+   `feasible` is false, tell the student the minimum (`minimum_minutes_for_three_episodes`) and let them
+   choose: extend, or accept fewer episodes. Rigor per episode is fixed; never lower visits to keep the
+   count.
 4. Start the survey with `budget: {"profile": "survey"}`; from then on use `{"profile": "root"}`,
    `"line_node"`, `"stability"`, `"local_solve"`, `"quick"` — never invent visit counts unless the plan is
    unlimited and you have a reason.
@@ -93,17 +95,17 @@ selected episode, from `position_ref_before`, with the played move G and the tea
    position's features.
 4. **What differs at the ends.** `terminal_features({ref: end of G line}, compare_to: {ref: end of E
    line})` → `comparison`: groups whose status differs, territory by region, who holds sente, and the
-   tempo price. This is the *why* of the lesson; the score difference is only its size.
+   tempo price. This comparison is what the lesson teaches (the *why*: go-teaching §3).
 5. **Supporting tests** when the belief needs them:
 
-| Belief / category | Supporting test | What it adds |
+| Belief (go-teaching §1) / category | Supporting test | What it adds |
 |---|---|---|
-| `needs_defending` (14, 2) | `local_solve` on the defended group | the living sequence against the feared attack |
-| `group_is_safe` (3, 2) | `local_solve` on the group left behind | the killing sequence; why there was no second eye |
-| `is_sente` (11, 15) | `swing_value([follow-up, the opponent's tenuki point])` | the follow-up vs what they took, counted |
-| `biggest_move` (1, 15, 11) | `swing_value([G, E])`, or `pass_probe` with `rank_regions` | both moves counted as swings |
-| `behind_must_invade` / `ahead_can_coast` (9, 8) | `human_move_distribution` (horizon), `local_solve` on an invading group | what stronger players choose; the invasion dies / the calm line still wins |
-| `sequence_works` (5, 4, 3, 9) | `expectation_probe` is the test; `local_solve` when a group's life is at stake | the refutation and the tactic |
+| `needs_defending` | `local_solve` on the defended group | the living sequence against the feared attack |
+| `group_is_safe` | `local_solve` on the group left behind | the killing sequence; why there was no second eye |
+| `is_sente` | `swing_value([follow-up, the opponent's tenuki point])` | the follow-up vs what they took, counted |
+| `biggest_move` | `swing_value([G, E])`, or `pass_probe` with `rank_regions` | both moves counted as swings |
+| `behind_must_invade` / `ahead_can_coast` | `human_move_distribution` (horizon), `local_solve` on an invading group | what stronger players choose; the invasion dies / the calm line still wins |
+| `sequence_works` | `expectation_probe` is the test; `local_solve` when a group's life is at stake | the refutation and the tactic |
 | Joseki (7) | `forced_line` from the first deviation | the standard line's end vs the played one |
 | Ko (12) | `analyze_line` with the ko sequence forced | who has the threats |
 | Failure to punish (13) | `expectation_probe` from the opponent's mistake | the punishment and whether a 4k finds it (`human_move_distribution`) |
@@ -114,7 +116,7 @@ not need: after a pass and P9 they stay above 0.7"). Human probabilities: `peer`
 (how natural the played move was), `target` = 3 stones stronger (is the fix learnable now?), `horizon` =
 1d, `opponent` = the opponent's rank (would they find the refutation?).
 
-## 4. The proof tree (replaces the three-line contrast)
+## 4. The proof tree
 
 A human proof is a narrow tree of must-moves ending in a position the student can evaluate:
 
@@ -125,9 +127,8 @@ A human proof is a narrow tree of must-moves ending in a position the student ca
 - `resistance` on an opponent node is the move a player of the opponent's rank would most likely try,
   with its refutation — the answer to "what if he doesn't cooperate?". Show it when it differs from the
   forced move.
-- The end of each line has `end` features. Teach the *comparison* of the two ends, never the delta:
-  "After E your corner is 14 points and you keep sente; after G it is 9 and White uses the tempo for
-  K16, worth 8."
+- The end of each line has `end` features; the lesson teaches the comparison of the two ends
+  (go-teaching §3, part 5).
 - A contrast smaller than 2 points (`comparison.score_diff`) is not a lesson. A teachable line must not
   depend on an opponent mistake: if its `resistance` refutation shows the opponent does better, say so
   or drop it.
@@ -174,5 +175,5 @@ may be the right practical choice; say both. `decisive` in the digest already us
 - `budget_infeasible`: throughput unknown → `engine_info(refresh_benchmark=true)`.
 - `illegal_move` / `wrong_color`: fix the move list; never guess a coordinate.
 - Resigned games end at the resignation; do not analyse "what would have happened after".
-- Do not run verification queries while the student is still writing the blind self-review — the
-  survey result is sealed until `self_review.md` exists.
+- Sealed results (go-teaching §6): no verification queries while the student is still writing the
+  blind self-review; nothing about an episode is shown before its interview answer is saved.

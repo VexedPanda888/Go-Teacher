@@ -53,15 +53,21 @@ the probes find one, a belief.
 | 15 | Slow | best move far away and bigger; played move locally fine but small | Ask "what is my biggest move" before "what is my safest move" |
 
 Orthogonal fields on every episode: **style axis** (overplay / slack / neutral from the digest),
-**awareness** (from the self-review and the interview: blind spot / seen / misjudged), **game state**
+**awareness** (`blind_spot` / `seen` / `diagnosed`, from the self-review comparison in §4.1), **game state**
 (ahead / close / behind when the mistake happened), **belief source** (stated by the student in the
 interview, or inferred from the probes).
 
 ## 2. Triage: which 2–3 episodes become lessons
 
-Score every candidate episode after verification:
+Two stages. **Selection** (Phase 3, before verification) ranks the digest's candidate episodes and
+picks 3–5 to verify:
 
-    priority = cost × learnability × recurrence × awareness_boost × belief_confidence
+    selection = cost × learnability × recurrence × awareness
+
+**Lesson choice** (Phase 5, after verification) ranks the CONFIRMED episodes, then applies the hard
+rules below:
+
+    priority = selection × belief_confidence
 
 - **cost**: points lost at the episode root (or the net change over the chain — not
   `points_lost_total`, which double-counts swings), capped at 15 so one blunder does not crowd out
@@ -73,8 +79,9 @@ Score every candidate episode after verification:
   move). Below 0.05 the fix is not learnable now → teach the *recognition cue* instead of the move, or skip.
 - **recurrence**: 1.0 if the pattern hash, category and belief are new; ×1.5 if the memory shows the
   same category or the same belief in ≥ 2 of the last 5 games; ×2 if the same 7×7 pattern hash recurs.
-- **awareness_boost**: ×1.5 for a blind spot (student marked the phase or move as fine), ×1.0 if they
-  flagged it, ×0.7 if they diagnosed it correctly (they already know).
+- **awareness**: `blind_spot` ×1.5 (the student marked the phase or move as fine), `seen` ×1.0 (they
+  flagged it but misjudged the fix), `diagnosed` ×0.7 (they flagged it and diagnosed it correctly: they
+  already know).
 - **belief_confidence**: ×1.3 when the student *stated* the belief in the interview and the probes
   confirm it is wrong; ×1.0 when the belief is inferred and confirmed; ×0.7 when no belief was found
   (the lesson can only show the better line, not the misread).
@@ -160,9 +167,12 @@ Only while the survey is still running, add from: rate your position at move ~50
 (ahead, close, behind — by how much?); which move are you proudest of?; (handicap) at which move did the
 handicap stop mattering?; (resigned games) was resigning right?
 
-Save answers verbatim in `self_review.md`. In Phase 3, compare each answer with the digest: agreements,
-misjudgements (saw the area, wrong fix), blind spots (rated fine, engine disagreed strongly). Blind
-spots get the awareness boost in triage and are the first thing the summary mentions.
+Save answers verbatim in `self_review.md`. In Phase 3, compare each answer with the digest: agreements
+(flagged, diagnosed correctly), misjudged (saw the area, wrong fix), blind spots (rated fine, engine
+disagreed strongly). This comparison sets each episode's awareness (§1): agreement → `diagnosed`,
+misjudged → `seen`, blind spot → `blind_spot`. The game record keeps the three counts
+(`self_review.misjudged` is a count of the comparison, not an awareness value). Blind spots get the
+×1.5 in triage and are the first thing the summary mentions.
 
 ### 4.2 Episode interview (Phase 3b, one question per selected episode, ~5 minutes)
 
@@ -177,20 +187,18 @@ Then:
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
 - When the probes contradict the stated belief, that contradiction *is* the lesson.
 - "I don't remember" / "no idea" is fine: use the inferred belief and say it is inferred.
-- The results for an episode stay sealed until its answer is saved.
+- Sealed results apply per episode (§6).
 
 ## 5. Memory use (recurrence only)
 
-- After each review write: game record (id, date, colour, handicap, result), the 2–3 lessons
-  (category, belief, rule_check, cue, pattern hash), every CONFIRMED episode (category, belief, belief
-  source, tags, points, hash), and refresh the compact profile (≤ 1,500 tokens).
-- At the start of a review read only the profile; pull individual episodes only when a pattern hash,
-  category or belief matches.
-- Recency weight 0.85 per game when counting recurrence. A category or belief counts as "recurring" at
-  ≥ 2 of the last 5 games. Do not report progress or improvement; report recurrence and its absence
-  ("this category did not appear in the last three games").
-- The cross-game belief sentence ("three of your five biggest losses were defences of groups that were
-  already alive") is the most valuable thing memory produces; say it in the summary when it holds.
+What is written, what is read at the start, the recency weights and what counts as "recurring" are in
+go-teacher-flow `references/memory.md`; follow it. In what you say:
+
+- Do not report progress or improvement; report recurrence and its absence ("this category did not
+  appear in the last three games").
+- The cross-game belief sentence (`belief_insight`: "three of your five biggest losses were defences of
+  groups that were already alive") is the most valuable thing memory produces; say it in the summary
+  when it holds.
 
 ## 6. Rules of conduct
 
@@ -201,11 +209,14 @@ Then:
   the chain as the moment to recognise.
 - The last recoverable moment of a lost game is more valuable than the biggest blunder after it.
 - Difficult correct moves are lessons too: one strength per review, with its move number.
-- Never invent a coordinate. Copy points from tool results; when unsure, ask the tool again.
+- GTP coordinates only. Never invent one: copy points from tool results; when unsure, ask the tool again.
 - Do not compute Go on your own (liberties, ladders, life and death) for the student; use the tool and
   report what it says, in your words.
-- Cash out every concept word (§3) or cut it.
+- Concept words, liberty counts and the *why* (the end comparison, never the score delta): §3.
 - Two or three lessons per game. If the game offers more, choose by triage and say what you left out.
+- Follow the budget (katago-analysis §1): fewer episodes rather than shallower verification; say what
+  was left unverified because of time, and deliver fewer lessons rather than unverified ones.
 - Handicap games: separate the objective verdict from the practical one; reward simplification when ahead.
 - Sealed results: no engine output is shown or used in conversation before `self_review.md` exists, and
-  none about an episode before its interview answer is in `thinking.md`.
+  none about an episode before its interview answer is in `thinking.md`. If the student asks early,
+  explain why and keep going.
