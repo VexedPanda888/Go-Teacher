@@ -193,6 +193,45 @@ class MockToolsTest(unittest.TestCase):
             self.tools.analyze_line(pos, [{"color": "W", "move": "K10"}], {"visits": 20})
         self.assertEqual(cm.exception.code, "bad_request")
 
+    def test_forced_line_and_terminal_features(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        a = self.tools.analyze_position(pos, {"visits": 100})
+        best = a["candidates"][0]["move"]
+        # every reply counts as forced: the line runs to max_plies, with legible choices and resistance
+        fl = self.tools.forced_line(pos, best, {"visits": 60}, {"max_plies": 4, "forced_margin": -100})
+        self.assertEqual(fl["line"][0], "B" + best)
+        self.assertEqual(fl["stop_reason"], "max_plies")
+        self.assertEqual(len(fl["nodes"]), 4)
+        self.assertEqual(len(fl["line"]), 5)
+        self.assertEqual([n["color"] for n in fl["nodes"]], ["W", "B", "W", "B"])
+        self.assertTrue(all(n["chosen_by"] in ("engine", "human") for n in fl["nodes"]))
+        self.assertTrue(any("resistance" in n for n in fl["nodes"] if n["color"] == "W"))
+        end = fl["end"]
+        self.assertEqual(len(end["territory"]), 9)
+        self.assertIn(end["sente"]["holder"], ("you", "opponent"))
+        self.assertIsInstance(end["tempo"]["value"], float)
+        self.assertTrue(all("stones" not in g for g in end["groups"]))
+        # extend "forced" stops at the first reply that is not forced
+        fl2 = self.tools.forced_line(pos, a["candidates"][-1]["move"], {"visits": 60},
+                                     {"max_plies": 4, "forced_margin": 100, "extend": "forced"})
+        self.assertEqual(fl2["stop_reason"], "not_forced")
+        self.assertEqual(fl2["nodes"], [])
+        self.assertEqual(fl2["free_at_end"]["side"], "W")
+        self.assertEqual(fl2["end"]["sente"]["holder"], "opponent")      # W to move and free
+        # extend "local" (default) keeps following local best moves, marked not forced, until a quiet move
+        fl3 = self.tools.forced_line(pos, best, {"visits": 60}, {"max_plies": 3, "forced_margin": 100})
+        self.assertIn(fl3["stop_reason"], ("quiet", "max_plies", "pass"))
+        self.assertTrue(all(n["forced"] is False for n in fl3["nodes"]))
+        # endpoint comparison
+        tf = self.tools.terminal_features({"ref": fl2["end"]["position_ref"]}, {"ref": end["position_ref"]}, {"visits": 60})
+        c = tf["comparison"]
+        for key in ("score_diff", "groups_changed", "territory_changed", "sente", "tempo", "weak_groups"):
+            self.assertIn(key, c)
+        self.assertAlmostEqual(c["score_diff"], tf["b"]["score_lead"] - tf["a"]["score_lead"], places=1)
+        with self.assertRaises(ToolError) as cm:
+            self.tools.forced_line(pos, "W" + best, {"visits": 20})
+        self.assertEqual(cm.exception.code, "bad_request")
+
     def test_pass_probe_and_regions(self):
         pos = {"job_id": self.job_id, "move_number": 40}
         r = self.tools.pass_probe(pos, "B", None, {"visits": 60}, {"rank_regions": True})

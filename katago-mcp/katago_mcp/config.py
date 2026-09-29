@@ -79,6 +79,10 @@ class Thresholds:
     race_max_liberties: int = 4              # capture race: adjacent unsettled groups, each at most this many liberties
     local_radius: int = 4                    # a reply within this Chebyshev distance of the move is "local"
     sharp_margin: float = 3.0                # local reply beats the best tenuki by this much -> "local_sharp"
+    forced_margin: float = 3.0               # forced_line: a reply is forced when the second-best loses more than this
+    human_margin: float = 1.0                # forced_line: a human-profile move within this of the best replaces it
+    territory_diff_min: float = 2.0          # terminal comparison: report regions that differ by at least this
+    group_change_min: float = 0.2            # terminal comparison: a status change needs this much ownership movement
 
 
 @dataclass

@@ -256,6 +256,25 @@ def capture_races(board: Board, ownership: list[float] | None, th: Thresholds, m
     return races
 
 
+def territory_by_region(board: Board, ownership: list[float], persp: int) -> dict[str, dict]:
+    """Expected points per standard region for each side: ownership summed over the points that are not
+    the owner's own stones (empty points and the other side's stones, which count as dead)."""
+    s = sign_of(persp)
+    own_color = persp
+    opp_color = WHITE if persp == BLACK else BLACK
+    out = {}
+    for code, idxs in standard_partition(board.size).items():
+        you = opp = 0.0
+        for i in idxs:
+            v = s * ownership[i]
+            if v > 0 and board.cells[i] != own_color:
+                you += v
+            elif v < 0 and board.cells[i] != opp_color:
+                opp -= v
+        out[code] = {"label": LABELS[code], "you": round(you, 1), "opponent": round(opp, 1)}
+    return out
+
+
 def race_anchor_set(races: list[dict], board_size: int) -> set[int]:
     return {gtp_to_idx(g["anchor"], board_size) for r in races for g in r["groups"]}
 

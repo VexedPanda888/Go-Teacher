@@ -601,11 +601,77 @@ type DashboardSummary = {                              // the shape the review-d
 
 ---
 
+### 1.18 `terminal_features`
+**Purpose.** Say what an end position *is*, and what is concretely different between two end positions — the "why" of a lesson, instead of a score delta.
+
+**Inputs.** `{ position: Position; compare_to?: Position; budget?: Budget = { profile: "line_node" }; options?: { perspective?: Color } }`
+
+**Output.**
+```ts
+{ a: Features; b?: Features;                                // b and comparison only with compare_to
+  comparison?: {
+    score_diff: number;                                     // b − a, perspective (the size, not the reason)
+    groups_changed: { group: string; anchor: Point; in_a: string; in_b: string; ownership_a: number | null; ownership_b: number | null }[];
+    territory_changed: { region: string; label: string; a: Side; b: Side; you_diff: number; opponent_diff: number }[];
+    territory_total: { a: Side; b: Side };
+    sente: { a: "you" | "opponent"; b: "you" | "opponent"; changed: boolean };
+    tempo: { a: Tempo; b: Tempo }; weak_groups: { a: Side; b: Side } };
+  visits_used: number; query_id: string }
+type Side = { you: number; opponent: number };
+type Tempo = { side_to_move: Color; best_move: Point; value: number; region: string };   // value = best move − pass, for the side to move
+type Features = { position_ref: PositionRef; to_move: Color; perspective: Color; score_lead: number;
+  groups: { label: string; anchor: Point; color: Color; size: number; status: string; mean_ownership: number; liberties?: number }[];   // ≥ 2 stones
+  weak_groups: Side;                                        // unsettled groups per side
+  territory: Record<string, { label: string; you: number; opponent: number }>;   // nine standard regions
+  territory_total: Side;
+  sente: { holder: "you" | "opponent"; holder_color: Color; side_to_move_must_answer: boolean };
+  tempo: Tempo; capture_races?: CaptureRace[] };
+```
+**Behavior.** One search with ownership plus one after a pass by the side to move, at `budget`. `territory` sums ownership over the points that are not the owner's own stones (empty points, and the other side's stones counted as dead). `tempo.value` is the price of the move: what the side to move gains by playing its best move instead of passing. `sente.holder` is the side to move — it chooses freely — unless the caller knows it still has to answer (`forced_line` passes that when a line is cut off by `max_plies` while forced); a big local best move is not treated as an answer, because it may be an attack. In the comparison a group is matched by its stones; a status change is reported only when its ownership moved by ≥ `group_change_min` (0.2) or the group was captured; regions are reported when either side's territory differs by ≥ `territory_diff_min` (2). Convention: `a` = the end of the played line, `b` = the end of the better line.
+**Cost.** 2 searches per position. **Errors.** `unknown_ref`, `illegal_move`.
+
+---
+
+### 1.19 `forced_line`
+**Purpose.** A human proof: from a move, the narrow line of must-moves ending in a position the student can evaluate, with the opponent's natural resistance and its refutation.
+
+**Inputs.**
+```ts
+{ position: Position;                                       // before the move
+  move: Point | string;                                     // "Q7" or "BQ7"; must be the side to move
+  budget?: Budget = { profile: "line_node" };
+  options?: { max_plies?: number = plan's forced_line_plies (8);
+              extend?: "local" | "forced" = "local";        // "forced": stop at the first reply that is not forced;
+                                                            // "local": also follow non-forced best moves while they stay local (≤ local_radius of the last three moves)
+              forced_margin?: number = 3;                   // a reply is forced when the second-best loses more than this
+              human_margin?: number = 1;                    // a legible-profile move within this of the best replaces it
+              legible_profile?: string = "target"; resistance_profile?: string = "opponent";
+              resistance_nodes?: number = 2; refutation_plies?: number = 3; perspective?: Color } }
+```
+**Output.**
+```ts
+{ start: { position_ref: PositionRef; to_move: Color; score_lead: number; best_move: Point };
+  move: { color: Color; move: Point; score_after: number; loss_vs_best: number };
+  perspective: Color; line: string[];                       // ["BQ7","WR8",…] — ready for a dashboard branch
+  nodes: { ply: number; color: Color; move: Point; forced: boolean; chosen_by: "engine" | "human"; engine_best: Point;
+           gap_to_second: number | null; second_best: Point | null; score_after: number; legible_probability: number;
+           resistance?: { move: Point; probability: number; loss_for_resister?: number; refutation?: string[]; score_end?: number; note?: string } }[];
+  stop_reason: "not_forced" | "quiet" | "max_plies" | "pass";
+  free_at_end: null | { side: Color; who: "you" | "opponent"; best_move: Point; second_best: Point; gap: number; best_is_local: boolean };
+  end: Features;                                            // §1.18
+  visits_used: number; seconds_used: number; query_id: string }
+```
+**Behavior.** At each node the position is searched, then searched again with the top move avoided (`avoidMoves`, `untilDepth` 1) so the second-best has real visits; `gap_to_second` is how much the best beats it for the side to move, and the reply is `forced` when the gap exceeds `forced_margin`. The move played is the engine's best, replaced by the `legible_profile` human model's favourite among candidates within `human_margin` (lines stay human-legible, not full of probes). At the first `resistance_nodes` opponent nodes, the `resistance_profile` model's most likely move, when different, is played and refuted by `refutation_plies` engine moves. `extend: "local"` exists because in fights the best reply is often only 1–3 points better than the second: a strictly forced line stops after one move, before any group's fate is visible; the local extension follows the fight until the best move is elsewhere (`quiet`), with `forced: false` on the nodes that were a choice. Run it from the better move E and from the played move G, then `terminal_features(end of G, compare_to: end of E)`.
+**Cost.** About 2 searches per node, plus 2 + `refutation_plies` per resistance, plus 2 for the end features (1 more when cut off by `max_plies`). **Errors.** `bad_request` (wrong colour, bad point), `illegal_move`, `unknown_ref`.
+
+---
+
 ## 2. Tool × mechanic map
 
 | Mechanic (from the plan) | Tools |
 |---|---|
 | Three-line contrast; plan tests | `analyze_line` |
+| Proof lines (must-moves, natural resistance) and what differs at their ends | `forced_line`, `terminal_features` |
 | Pass probe for urgency | `pass_probe` |
 | Swing counting; sente/gote | `swing_value` |
 | Local solve (alive / dead / unsettled) | `local_solve` |
@@ -793,6 +859,10 @@ stability_margin = 0.5
 race_max_liberties = 4                    # §3.16
 local_radius = 4                          # §3.15: a reply this close to the move is local
 sharp_margin = 3.0                        # §3.15
+forced_margin = 3.0                       # §1.19
+human_margin = 1.0                        # §1.19
+territory_diff_min = 2.0                  # §1.18
+group_change_min = 0.2                    # §1.18
 
 [paths]
 reviews_dir = "reviews"
@@ -848,3 +918,4 @@ Changes from v0.2 to v0.3 (causal evidence; the plan is `docs/plan-causal-lesson
 1. Liberty counts leave the default outputs: `Group.liberties` is optional (capture races, explicit requests), `sgf_summary.tension_events` and `local_solve.target` drop the count, `render_board.label_low_liberties` defaults to false; new `capture_races` (§3.16) on `analyze_position`, `analyze_line.end` and `group_status`.
 2. Tag 2 fires on an unsettled group in the best move's region instead of a group with ≤ 3 liberties (§3.7).
 3. Digest episodes carry `best_reply` (§3.15).
+4. New `terminal_features` (§1.18) and `forced_line` (§1.19); thresholds `forced_margin`, `human_margin`, `territory_diff_min`, `group_change_min`.

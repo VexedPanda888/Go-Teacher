@@ -58,6 +58,11 @@ first non-forced node or `max_plies`. Prefer the `target`-profile move when it i
 of the engine's best (legible lines, no probes). At each opponent node include the `opponent`-profile
 top move if it differs ("natural resistance") and its short refutation. Returns the tree and
 `terminal_features` at each endpoint. Run from E and from G; compare the endpoints.
+*As built:* on real games a strictly forced line often stops after one move (in fights the second-best
+reply is usually within 1–3 points), before any group's fate shows. `extend: "local"` (the default) also
+follows non-forced best moves while they stay local, marked `forced: false`, until the best move is
+elsewhere. On ogs_91122267 move 114 this turns "D11 misses the key point" into "after D11 D10 your F12
+group is unsettled (0.52); after E10 it is alive (0.83) and Black's F10 stones fall to 0.37".
 
 **A4. `intent_probe(position, move)`** (~5 searches). Threat value: after G the opponent passes, the
 player's best follow-up F and v_F. Defensive value: the player passes, the opponent is restricted with

@@ -1,4 +1,4 @@
-"""The seventeen tools of the contract, as plain Python (no MCP types here).
+"""The tools of the contract, as plain Python (no MCP types here).
 
 `Tools` owns the engine, the store and the job manager.  Every public method
 takes JSON-like inputs and returns a JSON-like dict, or raises ToolError.
@@ -24,7 +24,8 @@ from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, pa
 from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
 from .jobs import Job, JobManager, game_id_of, resolve_profiles, student_color_of
 from .metrics import (acceptable_set, capture_races, classify_local, decisive_and_last_chance, group_changes, group_records,
-                      group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution, sign_of)
+                      group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution,
+                      reply_character, sign_of, territory_by_region)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
 from .sgf import SgfError, parse, rank_to_profile
@@ -1198,6 +1199,277 @@ class Tools:
             out["overlay_ascii"] = render_overlay(a.policy[:size * size], size, "policy")
         if o.get("label_low_liberties", False):
             out["low_liberty_groups"] = low_liberty_groups(rec.board, 3, 1)[:8]
+        return out
+
+    # ================================================================ causal evidence: shared helpers
+    def _human_top(self, rec: PositionRecord, profile: str, exclude: set | None = None) -> tuple[int | None, float | None]:
+        """The legal move a player of `profile` most likely plays here (never pass), and its probability."""
+        pol = self._human_policy(rec, profile)
+        size = rec.spec.size
+        for i in sorted(range(size * size), key=lambda k: -pol[k]):
+            if pol[i] <= 0:
+                break
+            if exclude and i in exclude:
+                continue
+            try:
+                rec.board.play(rec.to_move, i, rec.spec.rules)
+            except IllegalMove:
+                continue
+            return i, round(pol[i], 4)
+        return None, None
+
+    def _second_best_gap(self, rec: PositionRecord, a: Analysis, visits: int) -> tuple[float | None, str | None, int]:
+        """Re-search with the top move avoided so the second-best has real visits; returns (how much the
+        best beats it for the side to move, the second-best move, visits)."""
+        top = a.candidates[0]
+        x = rec.to_move
+        a2, _ = self._analyze(rec, visits, ownership=False, policy=False,
+                              avoid=[{"player": COLOR_CHAR[x], "moves": [idx_to_gtp(top.move)], "untilDepth": 1}])
+        if not a2.candidates:
+            return None, None, a2.visits
+        return round(sign_of(x) * (a.score_lead - a2.score_lead), 2), idx_to_gtp(a2.candidates[0].move), a2.visits
+
+    def _own_move(self, move, rec: PositionRecord) -> int | None:
+        """A move for the side to move at rec, given as 'Q7', 'BQ7', {'color','move'} …; checks the colour."""
+        step = norm_line_step(move, rec.to_move, rec.spec.size)
+        if step.get("engine"):
+            raise ToolError("bad_request", "move must be a point, not 'engine'")
+        if CHAR_COLOR.get(step["color"]) != rec.to_move:
+            raise ToolError("bad_request", f"{step['color']} is not to move at this position ({COLOR_CHAR[rec.to_move]} is)",
+                            suggestion="pass the position before the move in question")
+        try:
+            return gtp_to_idx(step["move"], rec.spec.size)
+        except CoordError as e:
+            raise ToolError("bad_request", str(e))
+
+    def _play(self, rec: PositionRecord, move: int | None, color: int | None = None) -> PositionRecord:
+        return self._resolve_position({"ref": rec.ref, "then": [[COLOR_CHAR[color if color is not None else rec.to_move], idx_to_gtp(move)]]})
+
+    def _engine_continuation(self, rec: PositionRecord, plies: int, visits: int) -> tuple[list[str], PositionRecord, Analysis | None, int]:
+        """Engine-vs-engine for `plies` moves from rec. Returns (moves as 'BQ7', end record, end analysis, visits)."""
+        moves, total, cur, a = [], 0, rec, None
+        for _ in range(plies):
+            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
+            total += 0 if hit else a.visits
+            if not a.candidates or a.candidates[0].move is None:
+                break
+            mv = a.candidates[0].move
+            moves.append(f"{COLOR_CHAR[cur.to_move]}{idx_to_gtp(mv)}")
+            cur = self._play(cur, mv)
+            a = None
+        if a is None:
+            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
+            total += 0 if hit else a.visits
+        return moves, cur, a, total
+
+    def _features(self, rec: PositionRecord, visits: int, persp: int, must_answer: bool = False) -> tuple[dict, list[dict], int]:
+        """Terminal features of one position (contract §1.18). Returns (public dict, groups with stones, visits)."""
+        th = self.cfg.thresholds
+        size = rec.spec.size
+        total = 0
+        a, hit = self._analyze(rec, visits, ownership=True, policy=False)
+        total += 0 if hit else a.visits
+        sp = sign_of(persp)
+        races = capture_races(rec.board, a.ownership, th)
+        groups = group_records(rec.board, a.ownership, th, min_size=2, race_anchors=race_anchor_set(races, size))
+        you, opp = COLOR_CHAR[persp], COLOR_CHAR[opponent(persp)]
+        weak = {"you": sum(1 for g in groups if g["color"] == you and g["status"] == "unsettled"),
+                "opponent": sum(1 for g in groups if g["color"] == opp and g["status"] == "unsettled")}
+        terr = territory_by_region(rec.board, a.ownership, persp)
+        tot = {"you": round(sum(r["you"] for r in terr.values()), 1), "opponent": round(sum(r["opponent"] for r in terr.values()), 1)}
+        # tempo price: what the side to move gains by playing its best move instead of passing
+        mover = rec.to_move
+        pass_rec = self._play(rec, None, mover)
+        ap, hp = self._analyze(pass_rec, visits, ownership=False, policy=False)
+        total += 0 if hp else ap.visits
+        best = a.candidates[0] if a.candidates else None
+        tempo = {"side_to_move": COLOR_CHAR[mover], "best_move": idx_to_gtp(best.move) if best else None,
+                 "value": round(sign_of(mover) * (a.score_lead - ap.score_lead), 2),
+                 "region": LABELS[standard_code(best.move, size)] if best and best.move is not None else None}
+        # sente: the side to move chooses freely, unless the caller knows it still has to answer
+        # (a forced line cut off by max_plies). A big local best move is not an answer: it may be an attack.
+        holder = opponent(mover) if must_answer else mover
+        sente = {"holder": "you" if holder == persp else "opponent", "holder_color": COLOR_CHAR[holder],
+                 "side_to_move_must_answer": must_answer}
+        pub = {"position_ref": rec.ref, "to_move": COLOR_CHAR[mover], "perspective": you,
+               "score_lead": round(sp * a.score_lead, 2),
+               "groups": [{k: g[k] for k in ("label", "anchor", "color", "size", "status", "mean_ownership", "liberties") if k in g}
+                          for g in groups],
+               "weak_groups": weak, "territory": terr, "territory_total": tot, "sente": sente, "tempo": tempo}
+        if races:
+            pub["capture_races"] = races
+        return pub, groups, total
+
+    @staticmethod
+    def _compare_features(fa: dict, ga_: list[dict], fb: dict, gb: list[dict], th) -> dict:
+        """What is concretely different between two endpoints (a = e.g. after the played line, b = after
+        the better line), from the perspective both were computed in."""
+        def owner_group(groups, color, stone):
+            for g in groups:
+                if g["color"] == color and stone in g["stones"]:
+                    return g
+            return None
+
+        changes, seen_b = [], set()
+        for g in ga_:
+            h = next((h for s in g["stones"] if (h := owner_group(gb, g["color"], s)) is not None), None)
+            if h is not None:
+                seen_b.add(h["id"])
+            st_b = h["status"] if h else "captured"
+            moved = h is None or abs(h["mean_ownership"] - g["mean_ownership"]) >= th.group_change_min
+            if (st_b != g["status"] and moved) or h is None:
+                changes.append({"group": g["label"], "anchor": g["anchor"], "in_a": g["status"], "in_b": st_b,
+                                "ownership_a": g["mean_ownership"], "ownership_b": h["mean_ownership"] if h else None})
+        for h in gb:
+            if h["id"] not in seen_b and not any(owner_group(ga_, h["color"], s) for s in h["stones"]) and h["size"] >= 3:
+                changes.append({"group": h["label"], "anchor": h["anchor"], "in_a": "absent", "in_b": h["status"],
+                                "ownership_a": None, "ownership_b": h["mean_ownership"]})
+        regions = []
+        for code, ra in fa["territory"].items():
+            rb = fb["territory"][code]
+            dy, do = round(rb["you"] - ra["you"], 1), round(rb["opponent"] - ra["opponent"], 1)
+            if abs(dy) >= th.territory_diff_min or abs(do) >= th.territory_diff_min:
+                regions.append({"region": code, "label": ra["label"], "a": {"you": ra["you"], "opponent": ra["opponent"]},
+                                "b": {"you": rb["you"], "opponent": rb["opponent"]}, "you_diff": dy, "opponent_diff": do})
+        regions.sort(key=lambda r: -(abs(r["you_diff"]) + abs(r["opponent_diff"])))
+        return {"score_diff": round(fb["score_lead"] - fa["score_lead"], 2),
+                "groups_changed": changes, "territory_changed": regions,
+                "territory_total": {"a": fa["territory_total"], "b": fb["territory_total"]},
+                "sente": {"a": fa["sente"]["holder"], "b": fb["sente"]["holder"], "changed": fa["sente"]["holder"] != fb["sente"]["holder"]},
+                "tempo": {"a": fa["tempo"], "b": fb["tempo"]},
+                "weak_groups": {"a": fa["weak_groups"], "b": fb["weak_groups"]}}
+
+    # ================================================================ 1.18 terminal_features
+    def terminal_features(self, position: dict, compare_to: dict | None = None, budget: dict | None = None,
+                          options: dict | None = None) -> dict:
+        o = options or {}
+        rec = self._resolve_position(position)
+        job = self._job_for_game(rec.game_id)
+        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        persp = self._perspective(o.get("perspective"), rec)
+        t0 = time.time()
+        fa, ga_, total = self._features(rec, visits, persp)
+        out = {"a": fa}
+        if compare_to is not None:
+            rb = self._resolve_position(compare_to)
+            fb, gb, tb = self._features(rb, visits, persp)
+            total += tb
+            out["b"] = fb
+            out["comparison"] = self._compare_features(fa, ga_, fb, gb, self.cfg.thresholds)
+        out["visits_used"] = total
+        out["query_id"] = self._log(rec.game_id, "terminal_features", {"ref": rec.ref, "compare_to": compare_to}, total,
+                                    time.time() - t0, False, {"score_a": fa["score_lead"],
+                                                              "score_b": out.get("b", {}).get("score_lead")})
+        return out
+
+    # ================================================================ 1.19 forced_line
+    def forced_line(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        o = options or {}
+        th = self.cfg.thresholds
+        start = self._resolve_position(position)
+        job = self._job_for_game(start.game_id)
+        jid = job.job_id if job else None
+        visits = self._budget_visits(budget, jid, "line_node")
+        persp = self._perspective(o.get("perspective"), start)
+        sp = sign_of(persp)
+        plan = self._active_plan(jid)
+        default_plies = plan["verification"]["per_episode"].get("forced_line_plies", 8) if plan else 8
+        max_plies = int(o.get("max_plies", default_plies))
+        forced_margin = float(o.get("forced_margin", th.forced_margin))
+        human_margin = float(o.get("human_margin", th.human_margin))
+        resistance_nodes = int(o.get("resistance_nodes", 2))
+        refute_plies = int(o.get("refutation_plies", 3))
+        extend = o.get("extend", "local")
+        if extend not in ("forced", "local"):
+            raise ToolError("bad_request", "extend must be 'forced' or 'local'")
+        prof = self._profiles([o.get("legible_profile", "target"), o.get("resistance_profile", "opponent")], start)
+        legible_prof = prof[o.get("legible_profile", "target")]
+        resist_prof = prof[o.get("resistance_profile", "opponent")]
+        size = start.spec.size
+        t0 = time.time()
+        total = 0
+        a0, h0 = self._analyze(start, visits, ownership=False, policy=False)
+        total += 0 if h0 else a0.visits
+        mover = start.to_move
+        mv0 = self._own_move(move, start)
+        cur = self._play(start, mv0, mover)
+        line = [f"{COLOR_CHAR[mover]}{idx_to_gtp(mv0)}"]
+        played_idx = [mv0]
+        nodes: list[dict] = []
+        stop_reason, free = "max_plies", None
+        resist_used = 0
+        first_eval = None
+        for ply in range(1, max_plies + 1):
+            x = cur.to_move
+            sx = sign_of(x)
+            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
+            total += 0 if hit else a.visits
+            if first_eval is None:
+                first_eval = a.score_lead
+            if not a.candidates or a.candidates[0].move is None:
+                stop_reason = "pass"
+                break
+            top = a.candidates[0]
+            gap, alt, tv = self._second_best_gap(cur, a, visits)
+            total += tv
+            is_forced = gap is None or gap > forced_margin
+            recent = [m for m in played_idx[-3:] if m is not None]
+            local = any(chebyshev(top.move, m, size) <= th.local_radius for m in recent)
+            if not is_forced and not (extend == "local" and local):
+                stop_reason = "not_forced" if extend == "forced" else "quiet"
+                free = {"side": COLOR_CHAR[x], "who": "you" if x == persp else "opponent", "best_move": idx_to_gtp(top.move),
+                        "second_best": alt, "gap": gap, "best_is_local": local}
+                break
+            # the legible choice: the human-profile move among near-best candidates
+            pol = self._human_policy(cur, legible_prof)
+            chosen, by = top, "engine"
+            floor = sx * top.score_lead - human_margin
+            for c in a.candidates[1:]:
+                if c.move is not None and c.visits >= th.acceptable_min_visit_share * max(1, a.visits) \
+                        and sx * c.score_lead >= floor and pol[c.move] > pol[chosen.move]:
+                    chosen, by = c, "human"
+            node = {"ply": ply, "color": COLOR_CHAR[x], "move": idx_to_gtp(chosen.move), "forced": is_forced, "chosen_by": by,
+                    "engine_best": idx_to_gtp(top.move), "gap_to_second": gap, "second_best": alt,
+                    "score_after": round(sp * chosen.score_lead, 2), "legible_probability": round(pol[chosen.move], 4)}
+            if x != persp and resist_used < resistance_nodes:
+                r, rp = self._human_top(cur, resist_prof)
+                if r is not None and r != chosen.move:
+                    resist_used += 1
+                    rrec = self._play(cur, r)
+                    ar, hr = self._analyze(rrec, visits, ownership=False, policy=False)
+                    total += 0 if hr else ar.visits
+                    ref_moves, _end, aend, tv = self._engine_continuation(rrec, refute_plies, visits)
+                    total += tv
+                    node["resistance"] = {"move": idx_to_gtp(r), "probability": rp,
+                                          "loss_for_resister": round(sx * (a.score_lead - ar.score_lead), 2),
+                                          "refutation": ref_moves, "score_end": round(sp * aend.score_lead, 2) if aend else None}
+                elif r is not None:
+                    node["resistance"] = {"move": idx_to_gtp(r), "probability": rp, "note": "the natural reply is the forced one"}
+            nodes.append(node)
+            line.append(f"{COLOR_CHAR[x]}{idx_to_gtp(chosen.move)}")
+            played_idx.append(chosen.move)
+            cur = self._play(cur, chosen.move, x)
+        must_answer = False
+        if stop_reason == "max_plies":
+            ae, he = self._analyze(cur, visits, ownership=False, policy=False)
+            total += 0 if he else ae.visits
+            if ae.candidates and ae.candidates[0].move is not None:
+                g_end, _alt, tv = self._second_best_gap(cur, ae, visits)
+                total += tv
+                must_answer = g_end is None or g_end > forced_margin
+        end, _g, tf = self._features(cur, visits, persp, must_answer=must_answer)
+        total += tf
+        best0 = a0.candidates[0] if a0.candidates else None
+        out = {"start": {"position_ref": start.ref, "to_move": COLOR_CHAR[mover], "score_lead": round(sp * a0.score_lead, 2),
+                         "best_move": idx_to_gtp(best0.move) if best0 else None},
+               "move": {"color": COLOR_CHAR[mover], "move": idx_to_gtp(mv0),
+                        "score_after": None if first_eval is None else round(sp * first_eval, 2),
+                        "loss_vs_best": None if first_eval is None or best0 is None else
+                        round(max(0.0, sign_of(mover) * (best0.score_lead - first_eval)), 2)},
+               "perspective": COLOR_CHAR[persp], "line": line, "nodes": nodes, "stop_reason": stop_reason, "free_at_end": free,
+               "end": end, "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
+        out["query_id"] = self._log(start.game_id, "forced_line", {"ref": start.ref, "move": move, "max_plies": max_plies}, total,
+                                    time.time() - t0, False, {"line": line, "stop": stop_reason, "score_end": end["score_lead"]})
         return out
 
     # ================================================================ 1.17 validate_variations

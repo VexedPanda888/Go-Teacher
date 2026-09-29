@@ -154,8 +154,21 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     @server.tool()
     @guarded
     def render_board(position: dict, options: dict | None = None) -> dict:
-        """ASCII board with last move, highlights, region box, low-liberty groups; optional ownership/policy overlay."""
+        """ASCII board with last move, highlights, region box; optional ownership/policy overlay and low-liberty groups."""
         return tools.render_board(position, options)
+
+    @server.tool()
+    @guarded
+    def terminal_features(position: dict, compare_to: dict | None = None, budget: dict | None = None,
+                          options: dict | None = None) -> dict:
+        """What an end position looks like (group statuses, weak groups, territory by region, who holds sente, what the next move is worth) and, with compare_to, what is concretely different between two end positions."""
+        return tools.terminal_features(position, compare_to, budget, options)
+
+    @server.tool()
+    @guarded
+    def forced_line(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Play a move and extend the line while each reply is forced (the second-best loses more than forced_margin), preferring human-legible moves; adds the opponent's natural resistance with its refutation and the terminal features of the end position."""
+        return tools.forced_line(position, move, budget, options)
 
     @server.tool()
     @guarded
