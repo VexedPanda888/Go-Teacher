@@ -368,6 +368,40 @@ class MockToolsTest(unittest.TestCase):
         labels = {c["move"]: c["labels"] for c in e1["quiz"]["candidates"]}
         self.assertIn("actual", labels[ep["root"]["played"]])
         self.assertTrue(any("peer" in l for l in labels.values()))
+        # a branch off another branch, a comparison of two branch ends, rule_check and belief
+        fl = self.tools.forced_line({"job_id": self.job_id, "move_number": n - 1}, best, {"visits": 40},
+                                    {"max_plies": 3, "forced_margin": -100})
+        nested = [{
+            "id": "E1", "moves": ep["moves"], "title": "Nested", "category": "14", "tags": [], "points_lost": 1.0,
+            "commentary": [], "rule_check": "Name the attack you fear and read your answer.",
+            "belief": {"id": "needs_defending", "source": "stated"},
+            "branches": [
+                {"id": "B1", "label": "Better: forced line", "kind": "better", "from_move": n - 1, "moves": fl["line"]},
+                {"id": "B2", "label": "As played", "kind": "as_played", "from_move": n - 1, "moves": [f"B{ep['root']['played']}"]},
+                {"id": "B3", "label": "If White resists", "kind": "resistance", "from_branch": "B1", "at_ply": 1,
+                 "moves": fl["line"][1:2]},
+            ],
+            "comparison": {"a": "B2", "b": "B1"},
+        }]
+        r3 = self.tools.validate_variations(self.job_id, nested, {"headline": "x"})
+        self.assertTrue(r3["valid"], r3["errors"])
+        e3 = json.loads(r3["dashboard_data"])["episodes"][0]
+        b3 = e3["branches"][2]
+        self.assertEqual(b3["parentBranch"], "B1")
+        self.assertEqual(b3["branchPly"], 1)
+        self.assertEqual(b3["fromMove"], n - 1)
+        self.assertEqual(b3["moves"], fl["line"][:2])
+        self.assertEqual(len(b3["evals"]), 2)
+        self.assertEqual(e3["branches"][0]["kind"], "better")
+        self.assertEqual(e3["ruleCheck"], "Name the attack you fear and read your answer.")
+        self.assertEqual(e3["belief"]["id"], "needs_defending")
+        cmp_ = e3["comparison"]
+        self.assertEqual((cmp_["a"], cmp_["b"], cmp_["aLabel"]), ("B2", "B1", "As played"))
+        for key in ("scoreDiff", "groups", "territory", "sente", "nextMove", "weakGroups"):
+            self.assertIn(key, cmp_)
+        bad_nested = [{**nested[0], "branches": [nested[0]["branches"][2]], "comparison": {"a": "B1", "b": "B9"}}]
+        r4 = self.tools.validate_variations(self.job_id, bad_nested)
+        self.assertEqual({e["code"] for e in r4["errors"]}, {"bad_branch_parent", "bad_comparison"})
         # illegal branch and wrong color are reported, not exported
         bad = [{"id": "E2", "moves": ep["moves"], "branches": [
             {"id": "B1", "from_move": n - 1, "moves": ["WK10"]},

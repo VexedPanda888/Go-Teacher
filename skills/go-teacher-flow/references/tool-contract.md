@@ -586,14 +586,18 @@ type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" 
 type DashboardEpisodeSpec = {
   id: string; moves: [number, number]; title: string; category: string; tags: string[]; points_lost: number;
   commentary: { at_move: number; text: string }[];
-  branches: { id: string; label: string; from_move: number; moves: Move[]; ledger_ref: string }[];
+  branches: { id: string; label: string; from_move?: number; moves: Move[]; ledger_ref?: string;
+              kind?: "as_played" | "expected" | "misread" | "better" | "resistance" | "fix";
+              from_branch?: string; at_ply?: number }[];   // from_branch: start after at_ply moves of an earlier branch (then from_move is the parent's)
+  comparison?: { a: string; b: string };                    // two branch ids; the server compares their end positions (§1.18)
+  rule_check?: string; belief?: { id: string; source: "stated" | "inferred"; statement?: string };
   quiz?: { at_move: number; type: "move" | "status"; candidates?: Point[];            // the server always adds the actual move and the peer move
            status?: { group_point: Point; solve_query_id: string } };
-  principle: string; cue: string;
+  principle?: string; cue: string;                         // principle: kept for pre-v0.3 reviews; rule_check replaces it
 };
 type DashboardSummary = {                              // the shape the review-dashboard skill writes and the template reads
   headline?: string;
-  lessons?: { episodeId: string; title: string; principle: string; cue: string }[];
+  lessons?: { episodeId: string; title: string; ruleCheck?: string; principle?: string; cue: string }[];
   strengths?: string[];
   selfReview?: { agreements?: string[]; blindSpots?: string[] };
   nextGame?: string;
@@ -603,12 +607,12 @@ type DashboardSummary = {                              // the shape the review-d
 **Output.**
 ```ts
 { valid: boolean;
-  errors: { episode_id: string; branch_id?: string; ply?: number; move?: string; code: "illegal_move" | "wrong_color" | "bad_from_move" | "unknown_query" | "bad_quiz"; message: string }[];
+  errors: { episode_id: string; branch_id?: string; ply?: number; move?: string; code: "illegal_move" | "wrong_color" | "bad_from_move" | "unknown_query" | "bad_quiz" | "bad_branch_parent" | "bad_comparison"; message: string }[];
   warnings: string[];                                            // e.g. "branch B2 of E3 never diverges from the game"
   dashboard_data?: string;                                       // compact JSON per §5, only when valid
   sha256?: string; size_bytes?: number; query_id: string }
 ```
-**Behavior.** For each branch: the position after `from_move` is taken from the job; every move is legality-checked with alternating colors from that position's side to move; evaluations per node come from cache or new searches at `budget`. Quiz candidates get `pointsLost` relative to the best move (the actual move's from the survey's after-position score, the same definition as §3.1) and `labels ⊆ {actual, peer, best}`; `status` quizzes pull the verdict from the cited `local_solve` query. Ownership is encoded at episode roots and branch ends. Game metadata, moves, setup, score series (student perspective) and the episodes' numeric fields come from the server's records; all text fields are copied verbatim from the inputs. On any error, nothing is exported. Claude writes `dashboard_data` verbatim to `data.json`; `build_dashboard.py` recomputes the checksum and refuses to build on mismatch.
+**Behavior.** A branch with `from_branch` is expanded to the parent's first `at_ply` moves followed by its own, from the parent's `from_move`, and exported with `parentBranch` and `branchPly` (plies in errors count from the parent's start). With `comparison`, both branch ends get `terminal_features` from the student's perspective and the episode exports `comparison: { a, b, aLabel, bLabel, scoreDiff, groups, territory, territoryTotal, sente, nextMove, weakGroups }`; `rule_check`, `belief` and each branch's `kind` are exported as `ruleCheck`, `belief`, `kind`. For each branch: the position after `from_move` is taken from the job; every move is legality-checked with alternating colors from that position's side to move; evaluations per node come from cache or new searches at `budget`. Quiz candidates get `pointsLost` relative to the best move (the actual move's from the survey's after-position score, the same definition as §3.1) and `labels ⊆ {actual, peer, best}`; `status` quizzes pull the verdict from the cited `local_solve` query. Ownership is encoded at episode roots and branch ends. Game metadata, moves, setup, score series (student perspective) and the episodes' numeric fields come from the server's records; all text fields are copied verbatim from the inputs. On any error, nothing is exported. Claude writes `dashboard_data` verbatim to `data.json`; `build_dashboard.py` recomputes the checksum and refuses to build on mismatch.
 **Cost.** Searches for uncached branch nodes only. **Errors.** `job_not_found`, `validation_failed` (details in `errors`).
 
 ---
@@ -1015,3 +1019,4 @@ Changes from v0.2 to v0.3 (causal evidence; the plan is `docs/plan-causal-lesson
 4. New `terminal_features` (§1.18) and `forced_line` (§1.19); thresholds `forced_margin`, `human_margin`, `territory_diff_min`, `group_change_min`.
 5. New `intent_probe` (§1.20) and `expectation_probe` (§1.21) with their thresholds.
 6. `plan_budget`: the per-episode unit counts the probes instead of three lines (≈ 2.3× the old base unit); the plies step of the ladder is 6 → 8; the blind self-review (5) and the episode interviews (5) are reserved separately, and the survey is sized by `survey_minutes_target` (10) so the shorter blind review does not cut its visits.
+7. `validate_variations`: branches off branches (`from_branch`, `at_ply`), branch `kind`, a server-computed end comparison of two branches, `rule_check` and `belief` (§1.17); the dashboard shows the comparison table and the check.

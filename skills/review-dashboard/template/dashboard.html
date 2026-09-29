@@ -133,6 +133,13 @@ a { color: var(--accent); }
 .quiz td, .quiz th { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--rule); font-weight: 400; }
 .quiz th { color: var(--muted); font-size: 12.5px; }
 .quiz td.num { text-align: right; padding-right: 0; }
+.compare { margin-top: 14px; }
+.compare h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.compare table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.compare td, .compare th { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--rule); font-weight: 400; }
+.compare th { color: var(--muted); font-size: 12.5px; }
+.compare td:first-child { color: var(--muted); font-size: 13px; width: 32%; }
+.principle .check { font-family: var(--sans); font-size: 14px; font-weight: 500; margin-bottom: 4px; }
 .quiz .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-left: 4px; }
 .quiz .tag.you { color: var(--accent); border-color: var(--accent); }
 
@@ -525,15 +532,30 @@ if (typeof module !== "undefined") module.exports = Core;
     }
     html += "</div>";
     if (e.branches && e.branches.length) {
-      html += "<div class='branches'>" + e.branches.map((br, i) => "<button type='button' data-br='" + i + "' class='" + (state.br === br ? "active" : "") + "'>" + esc(br.label) + "<small>from move " + br.fromMove + ", " + br.moves.length + (br.moves.length === 1 ? " move" : " moves") + (br.evals && br.evals.length ? ", ends " + Core.fmtScore(br.evals[br.evals.length - 1]) : "") + "</small></button>").join("") + "</div>";
+      const byId = {}; e.branches.forEach((b) => { byId[b.id] = b; });
+      const origin = (br) => br.parentBranch && byId[br.parentBranch] ? "branches off “" + byId[br.parentBranch].label + "” after " + br.branchPly + (br.branchPly === 1 ? " move" : " moves") : "from move " + br.fromMove;
+      html += "<div class='branches'>" + e.branches.map((br, i) => "<button type='button' data-br='" + i + "' class='" + (state.br === br ? "active" : "") + "'>" + esc(br.label) + "<small>" + esc(origin(br)) + ", " + br.moves.length + (br.moves.length === 1 ? " move" : " moves") + (br.evals && br.evals.length ? ", ends " + Core.fmtScore(br.evals[br.evals.length - 1]) : "") + "</small></button>").join("") + "</div>";
     }
-    if (e.principle) html += "<div class='principle'>" + esc(e.principle) + (e.cue ? "<div class='cue'>Cue: " + esc(e.cue) + "</div>" : "") + "</div>";
+    if (e.comparison) html += renderComparison(e.comparison);
+    if (e.ruleCheck || e.principle) html += "<div class='principle'>" + (e.ruleCheck ? "<div class='check'>Check at the board: " + esc(e.ruleCheck) + "</div>" : "") + (e.principle ? esc(e.principle) : "") + (e.cue ? "<div class='cue'>Cue: " + esc(e.cue) + "</div>" : "") + "</div>";
     if (e.quiz) html += renderQuizHtml(e);
     body.innerHTML = html;
     body.querySelectorAll("[data-jump]").forEach((b) => b.addEventListener("click", () => setMove(parseInt(b.dataset.jump, 10))));
     body.querySelectorAll("[data-br]").forEach((b) => b.addEventListener("click", () => enterVariation(e, e.branches[parseInt(b.dataset.br, 10)])));
     body.querySelectorAll("[data-quiz]").forEach((b) => b.addEventListener("click", () => startQuiz(e)));
     body.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => answerQuiz(b.dataset.pick)));
+  }
+  function renderComparison(c) {
+    const side = (w) => w === "you" ? "you" : "your opponent";
+    const terr = (t) => "you " + (+t.you).toFixed(0) + ", opponent " + (+t.opponent).toFixed(0);
+    const next = (n) => n && n.move ? (n.side === D.game.you ? "you" : "your opponent") + " at " + esc(n.move) + ", worth " + (+n.value).toFixed(1) : "";
+    let rows = "";
+    (c.groups || []).forEach((g) => { rows += "<tr><td>" + esc(g.group) + "</td><td>" + esc(g.a) + "</td><td>" + esc(g.b) + "</td></tr>"; });
+    (c.territory || []).forEach((t) => { rows += "<tr><td>" + esc(t.label) + "</td><td>" + terr(t.a) + "</td><td>" + terr(t.b) + "</td></tr>"; });
+    if (c.sente) rows += "<tr><td>Next to play freely</td><td>" + side(c.sente.a) + "</td><td>" + side(c.sente.b) + "</td></tr>";
+    if (c.nextMove) rows += "<tr><td>Next biggest move</td><td>" + next(c.nextMove.a) + "</td><td>" + next(c.nextMove.b) + "</td></tr>";
+    if (c.weakGroups) rows += "<tr><td>Weak groups</td><td>" + terr(c.weakGroups.a) + "</td><td>" + terr(c.weakGroups.b) + "</td></tr>";
+    return "<div class='compare'><h4>What is different at the end of the two lines</h4><table><tr><th></th><th>" + esc(c.aLabel || c.a) + "</th><th>" + esc(c.bLabel || c.b) + "</th></tr>" + rows + "</table></div>";
   }
   function variationText() {
     const br = state.br; if (state.vply === 0) return "Use the arrows to play the line. The score after each move is the engine's, from your perspective.";
@@ -549,7 +571,7 @@ if (typeof module !== "undefined") module.exports = Core;
   }
   function enterVariation(e, br) {
     state.ep = e; state.br = br; state.mode = "variation"; state.quiz = null;
-    state.vpos = Core.playLine(game.positions[br.fromMove], br.moves); state.vply = Math.min(1, br.moves.length);
+    state.vpos = Core.playLine(game.positions[br.fromMove], br.moves); state.vply = Math.min((br.branchPly || 0) + 1, br.moves.length);
     renderAll(); showBoardOnPhones();
   }
   function exitVariation(render) { const fm = state.br ? state.br.fromMove : state.move; state.mode = "game"; state.br = null; state.vpos = null; state.vply = 0; state.move = fm; if (render) renderAll(); }
@@ -593,8 +615,8 @@ if (typeof module !== "undefined") module.exports = Core;
     const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
     if (S.headline) html += "<p class='headline'>" + esc(S.headline) + "</p>";
     html += "<div class='cols'>";
-    const lessons = S.lessons && S.lessons.length ? S.lessons : episodes.filter((e) => e.principle).map((e) => ({ episodeId: e.id, title: e.title, principle: e.principle, cue: e.cue }));
-    if (lessons.length) html += "<div><h4>Take with you</h4><ul>" + lessons.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.principle || "") + (l.cue ? " <span style='color:var(--muted)'>Cue: " + esc(l.cue) + "</span>" : "") + "</li>").join("") + "</ul></div>";
+    const lessons = S.lessons && S.lessons.length ? S.lessons : episodes.filter((e) => e.ruleCheck || e.principle).map((e) => ({ episodeId: e.id, title: e.title, ruleCheck: e.ruleCheck, principle: e.principle, cue: e.cue }));
+    if (lessons.length) html += "<div><h4>Take with you</h4><ul>" + lessons.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.ruleCheck || l.principle || "") + (l.cue ? " <span style='color:var(--muted)'>Cue: " + esc(l.cue) + "</span>" : "") + "</li>").join("") + "</ul></div>";
     if (S.strengths && S.strengths.length) html += "<div><h4>What went well</h4><ul>" + S.strengths.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
     if (S.selfReview && ((S.selfReview.agreements || []).length || (S.selfReview.blindSpots || []).length)) {
       html += "<div><h4>Your self-review against the engine</h4><ul>" + (S.selfReview.agreements || []).map((s) => "<li>Agreed: " + esc(s) + "</li>").join("") + (S.selfReview.blindSpots || []).map((s) => "<li>Blind spot: " + esc(s) + "</li>").join("") + "</ul></div>";

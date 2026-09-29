@@ -1789,9 +1789,25 @@ class Tools:
             own_key_for_move(root_n - 1)
             own_key_for_move(root_n)
             branches_out = []
+            branch_ends: dict[str, PositionRecord] = {}
             for br in ep.get("branches", []):
                 bid = br.get("id", "B?")
-                fm = int(br.get("from_move", root_n - 1))
+                parent, at_ply, prefix = None, None, []
+                if br.get("from_branch"):
+                    parent = next((b for b in branches_out if b["id"] == br["from_branch"]), None)
+                    if parent is None:
+                        errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
+                                       "message": f"from_branch {br['from_branch']!r} is not an earlier valid branch of {eid}"})
+                        continue
+                    at_ply = int(br.get("at_ply", 0))
+                    if not 0 <= at_ply <= len(parent["moves"]):
+                        errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
+                                       "message": f"at_ply {at_ply} outside 0..{len(parent['moves'])} of {parent['id']}"})
+                        continue
+                    fm = parent["fromMove"]
+                    prefix = parent["moves"][:at_ply]
+                else:
+                    fm = int(br.get("from_move", root_n - 1))
                 if not 0 <= fm <= M:
                     errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_from_move", "message": f"from_move {fm} outside 0..{M}"})
                     continue
@@ -1799,7 +1815,7 @@ class Tools:
                 board = ga.boards[fm]
                 cur = self.store.put_position(spec, job.game_id, fm, persist=False)
                 evals, moves_out, ok = [], [], True
-                for ply, m in enumerate(br.get("moves", []), 1):
+                for ply, m in enumerate(prefix + list(br.get("moves", [])), 1):
                     try:
                         color, idx = parse_move(m, size)
                     except CoordError as e:
@@ -1832,17 +1848,43 @@ class Tools:
                     moves_out.append(f"{COLOR_CHAR[color]}{idx_to_gtp(idx, size)}")
                 if not ok:
                     continue
-                if not moves_out:
+                if len(moves_out) <= len(prefix):
                     errors.append({"episode_id": eid, "branch_id": bid, "code": "illegal_move", "message": "branch has no moves"})
                     continue
                 game_cont = [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves[fm:fm + len(moves_out)]]
-                if game_cont == moves_out:
+                if game_cont == moves_out and parent is None:
                     warnings.append(f"branch {bid} of {eid} never diverges from the game")
                 if a is not None and a.ownership is not None:
                     ownership_out[f"{eid}:{bid}:end"] = encode_ownership(a.ownership)
-                branches_out.append({"id": bid, "label": br.get("label", bid), "fromMove": fm, "moves": moves_out, "evals": evals,
-                                     "ownershipAtEnd": f"{eid}:{bid}:end" if a is not None and a.ownership is not None else None,
-                                     "ledgerRef": br.get("ledger_ref")})
+                bo = {"id": bid, "label": br.get("label", bid), "fromMove": fm, "moves": moves_out, "evals": evals,
+                      "ownershipAtEnd": f"{eid}:{bid}:end" if a is not None and a.ownership is not None else None,
+                      "ledgerRef": br.get("ledger_ref"), "kind": br.get("kind")}
+                if parent is not None:
+                    bo["parentBranch"], bo["branchPly"] = parent["id"], at_ply
+                branches_out.append(bo)
+                branch_ends[bid] = cur
+            comparison_out = None
+            cmp_spec = ep.get("comparison")
+            if cmp_spec:
+                ids = (cmp_spec.get("a"), cmp_spec.get("b"))
+                missing = [i for i in ids if i not in branch_ends]
+                if missing:
+                    errors.append({"episode_id": eid, "code": "bad_comparison",
+                                   "message": f"comparison names {missing}, which are not valid branches of {eid}"})
+                else:
+                    fa, ga_g, ta = self._features(branch_ends[ids[0]], visits, student)
+                    fb, gb_g, tb = self._features(branch_ends[ids[1]], visits, student)
+                    total += ta + tb
+                    c = self._compare_features(fa, ga_g, fb, gb_g, th)
+                    labels = {b["id"]: b["label"] for b in branches_out}
+                    comparison_out = {
+                        "a": ids[0], "b": ids[1], "aLabel": labels[ids[0]], "bLabel": labels[ids[1]],
+                        "scoreDiff": c["score_diff"],
+                        "groups": [{"group": g["group"], "a": g["in_a"], "b": g["in_b"]} for g in c["groups_changed"]],
+                        "territory": [{"label": r["label"], "a": r["a"], "b": r["b"]} for r in c["territory_changed"]],
+                        "territoryTotal": c["territory_total"], "sente": {"a": c["sente"]["a"], "b": c["sente"]["b"]},
+                        "nextMove": {k: {"side": v["side_to_move"], "move": v["best_move"], "value": v["value"]} for k, v in c["tempo"].items()},
+                        "weakGroups": c["weak_groups"]}
             quiz_out = None
             q = ep.get("quiz")
             if q:
@@ -1906,7 +1948,8 @@ class Tools:
             eps_out.append({"id": eid, "moves": ep.get("moves"), "title": ep.get("title", ""), "category": ep.get("category", ""),
                             "tags": ep.get("tags", []), "pointsLost": ep.get("points_lost"),
                             "commentary": [{"atMove": int(c["at_move"]), "text": c["text"]} for c in ep.get("commentary", [])],
-                            "branches": branches_out, "quiz": quiz_out, "principle": ep.get("principle", ""), "cue": ep.get("cue", "")})
+                            "branches": branches_out, "quiz": quiz_out, "principle": ep.get("principle", ""), "cue": ep.get("cue", ""),
+                            "ruleCheck": ep.get("rule_check", ""), "belief": ep.get("belief"), "comparison": comparison_out})
         valid = not errors
         out = {"valid": valid, "errors": errors, "warnings": warnings, "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
         if valid:

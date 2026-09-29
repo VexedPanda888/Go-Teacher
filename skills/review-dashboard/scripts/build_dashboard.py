@@ -49,6 +49,13 @@ def check_shape(data: dict) -> list[str]:
     for e in data["episodes"]:
         if not (isinstance(e.get("moves"), list) and len(e["moves"]) == 2 and 1 <= e["moves"][0] <= e["moves"][1] <= M):
             problems.append(f"episode {e.get('id')} has a bad moves range")
+        ids = {br.get("id") for br in e.get("branches", [])}
+        for br in e.get("branches", []):
+            if br.get("parentBranch") and br["parentBranch"] not in ids:
+                problems.append(f"branch {br.get('id')} of {e.get('id')}: parentBranch {br['parentBranch']!r} not in the episode")
+        cmp_ = e.get("comparison")
+        if cmp_ and not {cmp_.get("a"), cmp_.get("b")} <= ids:
+            problems.append(f"episode {e.get('id')}: comparison names a branch that is not in the episode")
         for br in e.get("branches", []):
             if len(br.get("evals", [])) != len(br.get("moves", [])):
                 problems.append(f"branch {br.get('id')} of {e.get('id')}: evals and moves differ in length")
