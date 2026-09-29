@@ -196,12 +196,22 @@ Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that
 
 ## 5a. Memory over long sessions
 
-KataGo's NN cache is capped at 2^19 entries in `analysis.cfg` (about 1–1.5 GB); the old 2^21 setting grew to
-~6 GB over a seeding run and made a 24 GB machine swap, each game slower than the last. The server keeps at
-most 4,000 analyses in RAM (a few hundred MB) and restarts KataGo before a survey once 6,000 queries have run
-since its start (`[katago].restart_after_queries`, ~30 s on Metal). `job_status(job_id, "release")` frees a
-finished job's memory; its results stay in `reviews/<game_id>/` and are reused. The seeding command restarts
-KataGo every four games (`--restart-every`) and releases each game as it finishes.
+Back-to-back games used to get slower one after another, for two reasons. Both are fixed, so the server
+does not need periodic restarts:
+
+- **KataGo's NN cache** is a fixed-size table, capped at 2^19 entries in `analysis.cfg` (about 1–1.5 GB).
+  Once full it stops growing. The old 2^21 setting reached ~6 GB and made a 24 GB machine swap.
+- **The server's own cache** keeps at most 4,000 analyses in RAM (a few hundred MB), evicting the least
+  recently used, and looks them up by position. It used to be unbounded and scanned in full on every lookup.
+
+`job_status(job_id, "release")` frees a finished job's memory; its results stay in `reviews/<game_id>/` and
+are reused. The seeding command releases each game as it finishes.
+
+As a guard, `start_game_analysis` restarts KataGo if its resident memory is above
+`[katago].restart_above_mb` (default 4000; 0 disables). A restart reloads the model (~30 s on Metal). In
+normal use memory levels off near 2 GB, so the guard does not fire; if you see its warning in the server log,
+check `nnCacheSizePowerOfTwo`. The check uses `ps`, so it is skipped on Windows. `katago-mcp-seed
+--restart-every N` still forces a restart every N games if you want one (default 0, off).
 
 ## 5b. Seeding memory from past games (WS8)
 

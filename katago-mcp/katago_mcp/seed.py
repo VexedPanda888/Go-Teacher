@@ -178,7 +178,9 @@ def main() -> int:
     ap.add_argument("--probes", action="store_true", help="run intent_probe on each game's top episodes (beliefs)")
     ap.add_argument("--probe-episodes", type=int, default=5)
     ap.add_argument("--probe-visits", type=int, default=200)
-    ap.add_argument("--restart-every", type=int, default=4, help="restart KataGo every N games to drop its NN cache (0 = never)")
+    ap.add_argument("--restart-every", type=int, default=0,
+                    help="also restart KataGo every N games (0 = never; the default). Not needed normally: each survey "
+                         "already restarts KataGo if its memory is above [katago].restart_above_mb")
     args = ap.parse_args()
     cfg = load_config(args.config)
     t = Tools(cfg, engine=MockEngine() if args.mock else None, start_engine=not args.mock)

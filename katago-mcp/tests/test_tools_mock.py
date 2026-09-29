@@ -457,6 +457,38 @@ class HandicapDigestTest(unittest.TestCase):
             t.close()
 
 
+class RestartGuardTest(unittest.TestCase):
+    """A survey restarts KataGo only when its memory is above [katago].restart_above_mb."""
+
+    def _start(self, memory_mb, limit=4000):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config()
+            cfg.reviews_dir = os.path.join(tmp, "reviews")
+            cfg.katago.restart_above_mb = limit
+            eng = MockEngine()
+            eng.fake_memory_mb = memory_mb
+            t = Tools(cfg, engine=eng, start_engine=True)
+            r = t.start_game_analysis(synthetic_game(20, seed=5), {"visits_per_move": 20})
+            for _ in range(400):
+                if t.job_status(r["job_id"])["state"] in ("done", "failed"):
+                    break
+                time.sleep(0.05)
+            t.close()
+            return eng.restarts
+
+    def test_normal_memory_does_not_restart(self):
+        self.assertEqual(self._start(1800), 0)
+
+    def test_unknown_memory_does_not_restart(self):
+        self.assertEqual(self._start(None), 0)
+
+    def test_high_memory_restarts(self):
+        self.assertEqual(self._start(6000), 1)
+
+    def test_zero_limit_disables(self):
+        self.assertEqual(self._start(6000, limit=0), 0)
+
+
 class SgfInputTest(unittest.TestCase):
     """sgf inputs: text, file path (games dir / absolute), OGS id or link (fetched, cached)."""
 

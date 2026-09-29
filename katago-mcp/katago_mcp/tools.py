@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -30,6 +31,8 @@ from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
 from .sgf import SgfError, parse, rank_to_profile
 from .store import PositionRecord, Store
+
+log = logging.getLogger("katago_mcp")
 
 
 class ToolError(Exception):
@@ -430,6 +433,25 @@ class Tools:
                         "pv": [idx_to_gtp(p, size) for p in c.pv], "human": hp, "in_acceptable_set": c.move in acc})
         return out
 
+    def _restart_if_heavy(self) -> None:
+        """Restart KataGo before a survey if its memory is above [katago].restart_above_mb (0 disables).
+
+        KataGo's NN cache is a fixed-size table (nnCacheSizePowerOfTwo in analysis.cfg), so its memory levels
+        off and this normally never fires: it guards against an oversized cache setting or a leak. A restart
+        costs a model reload (~30 s on Metal), so it only happens between jobs, never on a query count.
+        """
+        limit = self.cfg.katago.restart_above_mb
+        if not limit or self.jobs.active is not None or not hasattr(self.engine, "memory_mb"):
+            return
+        mb = self.engine.memory_mb()
+        if mb is None or mb <= limit:
+            return
+        log.warning("katago uses %.0f MB (limit %d); restarting it before the survey", mb, limit)
+        try:
+            self.engine.restart()
+        except EngineError as e:
+            raise _wrap_engine_error(e)
+
     def restart_engine(self) -> dict:
         if hasattr(self.engine, "restart"):
             try:
@@ -625,13 +647,7 @@ class Tools:
             plan = self.last_plan
             visits = int(plan["profiles"]["survey"]) if plan else self._default_survey_visits(len(game.moves) or 1)
         self._ensure_engine()
-        limit = self.cfg.katago.restart_after_queries
-        if limit and getattr(self.engine, "queries_since_start", 0) >= limit and self.jobs.active is None \
-                and hasattr(self.engine, "restart"):
-            try:
-                self.engine.restart()      # fresh NN cache before a long job
-            except EngineError as e:
-                raise _wrap_engine_error(e)
+        self._restart_if_heavy()
         try:
             job = self.jobs.start(sgf, visits, student_username, game_id, options)
         except EngineError as e:

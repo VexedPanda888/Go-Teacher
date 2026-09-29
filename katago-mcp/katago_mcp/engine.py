@@ -141,7 +141,6 @@ class KataGoEngine:
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._stderr_tail: list[str] = []
-        self.queries_since_start = 0
         self.version: str = "unknown"
         self.backend: str = "unknown"
 
@@ -190,8 +189,18 @@ class KataGoEngine:
     def restart(self) -> None:
         """Stop and start again: drops KataGo's NN cache (its memory) and any stale state."""
         self.stop()
-        self.queries_since_start = 0
         self.start()
+
+    def memory_mb(self) -> float | None:
+        """KataGo's resident memory in MB, or None when unknown (not running, or no `ps`, e.g. on Windows)."""
+        if not self.running:
+            return None
+        try:
+            out = subprocess.run(["ps", "-o", "rss=", "-p", str(self._proc.pid)],
+                                 capture_output=True, text=True, timeout=5).stdout
+            return int(out.strip()) / 1024      # ps reports KB
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
 
     def stop(self) -> None:
         self.ready = False
@@ -260,7 +269,6 @@ class KataGoEngine:
         """Send a query; return the final response.  on_report(partial) may return True to terminate early."""
         qid = q.get("id") or f"q{uuid.uuid4().hex[:10]}"
         q["id"] = qid
-        self.queries_since_start += 1
         queue: Queue = Queue()
         with self._lock:
             self._queues[qid] = queue
@@ -439,7 +447,8 @@ class MockEngine:
     def running(self) -> bool:
         return True
 
-    queries_since_start = 0
+    fake_memory_mb: float | None = None     # tests set this to exercise the restart guard
+    restarts = 0
 
     def start(self) -> None:
         pass
@@ -448,7 +457,11 @@ class MockEngine:
         pass
 
     def restart(self) -> None:
-        self.queries_since_start = 0
+        self.restarts += 1
+        self.fake_memory_mb = None
+
+    def memory_mb(self) -> float | None:
+        return self.fake_memory_mb
 
     def info(self) -> dict:
         return {"katago_version": "mock", "backend": "mock", "running": True, "ready": True, "start_error": None,

@@ -114,8 +114,9 @@ class KatagoConfig:
     start_on_boot: bool = False             # False: KataGo starts on the first tool that needs it (Claude Desktop
                                             # launches two server instances; only the one in use should load a model)
     first_call_wait_seconds: float = 45.0   # how long a tool call waits for a starting engine before answering "starting"
-    restart_after_queries: int = 6000       # a new survey restarts KataGo once this many queries have run since its start
-                                            # (frees the NN cache; ~30 s on Metal). 0 disables.
+    restart_above_mb: int = 4000            # before a new survey, restart KataGo if its resident memory is above this many
+                                            # MB (~30 s model reload on Metal). Normal use levels off near 2 GB, so this is
+                                            # a guard, not a routine step. 0 disables. See README §5a.
     human_profile_key: str = "humanSLProfile"
     search_threads: int | None = None       # numSearchThreadsPerAnalysisThread for this machine (None: analysis.cfg)
     startup_timeout: float = 120.0

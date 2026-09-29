@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.3.0, as implemented in katago-mcp 0.2.0)
+# katago-mcp — Tool Contract (v0.3.0, as implemented in katago-mcp 0.2.1)
 
 **Status:** draft. The canonical copy is `skills/go-teacher-flow/references/tool-contract.md` (skills must be self-contained); `docs/tool-contract.md` is kept identical and a test checks it. This is the document WS2 is built from and WS3 quotes. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
