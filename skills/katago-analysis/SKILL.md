@@ -1,6 +1,6 @@
 ---
 name: katago-analysis
-description: How to use the katago-mcp tools during a game review — set the time budget, run and read the survey, form hypotheses about each episode, verify them with the right tool recipe (forced lines, pass probe, swing values, local solve, ownership diff, human-model probabilities), and keep the prediction ledger that decides what may be taught. Use whenever a review touches the engine.
+description: How to use the katago-mcp tools during a game review — set the time budget, run and read the survey, recover the belief behind each episode (intent_probe, expectation_probe), prove the better move with forced lines and compare their end positions (forced_line, terminal_features), add supporting tests (local solve, swing values, pass probe, human-model probabilities), and keep the prediction ledger that decides what may be taught. Use whenever a review touches the engine.
 ---
 
 # KataGo analysis for teaching
@@ -41,9 +41,11 @@ Then:
 5. After triage (Phase 3) call `plan_budget(total_minutes, job_id, selected=[{id, needs_local_solve}])`
    to re-plan the remaining time for the chosen episodes. Follow its `per_episode` sizes.
 
-Costs to keep in mind: one root search = 1 unit; each `analyze_line` node = one line_node search;
-`local_solve` = 2 playouts × up to 20 restricted searches (cheap per node but many nodes);
-`pass_probe` with `rank_regions` = 9 extra restricted searches. `human_move_distribution` is nearly free.
+Costs to keep in mind: one root search = 1 unit; the probes run at `line_node` visits — `intent_probe`
+≈ 8 searches, `expectation_probe` ≈ 1–2 per imagined move plus a 4-move refutation, `forced_line` ≈ 2 per
+node plus resistances and 2 for its end; `terminal_features` reuses the searches `forced_line` already
+cached. `local_solve` = 2 playouts × up to 20 restricted searches; `pass_probe` with `rank_regions` = 9
+extra restricted searches. `human_move_distribution` is nearly free.
 
 ## 2. Reading the survey digest
 
@@ -72,69 +74,88 @@ Costs to keep in mind: one root search = 1 unit; each `analyze_line` node = one 
 
 The digest's tags and teachable move are *hypotheses*. Phase 4 decides.
 
-## 3. Hypothesis → recipe
+## 3. The belief protocol (every episode you intend to teach)
 
-Write each hypothesis as a testable prediction with a number in it. Then run the recipe.
+A mistake is a move that only makes sense if some belief about the position is true. For each
+selected episode, from `position_ref_before`, with the played move G and the teachable move E
+(`teachable_move_preliminary`, or the engine's best when learnability is very low):
 
-| Hypothesis (taxonomy #) | Prediction to write | Recipe |
+1. **Intent.** `intent_probe(pos, G)` → `belief` (and `matches`), with its numbers: what G threatened
+   (`threat.value`, a local swing), what it prevented (`defense`), how the opponent answered (`reply`),
+   what it left behind (`left_behind`). A belief the student *stated* in `thinking.md` overrides the
+   inferred one; record both when they differ — the contradiction is the lesson.
+2. **Expectation.** `expectation_probe(pos, G, options.expected_line = the student's line from
+   thinking.md, if any)` → `misread`: the first imagined move that loses more than 3, whose it is, the
+   move `never_considered`, and its `refutation`. No misread means the reading held and the belief is
+   about value (sente, size, safety), not reading.
+3. **Proof lines.** `forced_line(pos, E)` and `forced_line(pos, G)` (and the student's fix, if any):
+   the must-moves after each, the opponent's natural resistance with its refutation, and the end
+   position's features.
+4. **What differs at the ends.** `terminal_features({ref: end of G line}, compare_to: {ref: end of E
+   line})` → `comparison`: groups whose status differs, territory by region, who holds sente, and the
+   tempo price. This is the *why* of the lesson; the score difference is only its size.
+5. **Supporting tests** when the belief needs them:
+
+| Belief / category | Supporting test | What it adds |
 |---|---|---|
-| Direction / whole-board (1) | "The loss is mostly outside the local area" | `ownership_diff(before, after)` → `local_vs_global.classification` is `global` or `mixed`; `analyze_line` on the best move shows the gain elsewhere |
-| Urgent vs big (2) | "Playing elsewhere costs ≥ X points here" | `pass_probe(position, player, move, options.rank_regions=true)`: `local_value.best` vs `urgency[]` ranking |
-| Own L&D (3) / attack L&D (4) | "The group is dead/alive/unsettled after best play" | `local_solve(position, group_point)` at `local_solve` budget; teach only when `confidence` is high or medium |
-| Reading / tactical (5) | "The played move fails to Wx; the correct move works" | Three-line contrast (§4) with `follow_pv_plies` from the plan |
-| Shape (6) | "The engine's move is adjacent and the human target rank plays it" | `human_move_distribution` on peer/target/horizon; `analyze_position` acceptable set |
-| Joseki (7) | "The corner sequence loses ≥ 2 points vs standard" | Three-line contrast from the first deviation |
-| Invasion / reduction (8) | "The invasion dies / the reduction was enough" | `local_solve` for the invading group, `pass_probe` for the reduction |
-| Choice of fight (9) | "The played line has much higher variance for little gain" | Compare `score_stdev` played vs best in `analyze_position`; `analyze_line` both |
-| Thickness / aji (10) | "The best move removes aji the engine sees" | `analyze_position` with `include_ownership_stdev`; `ownership_diff` before/after best |
-| Endgame value (11) | "Point A is worth more than point B by ≥ 1.5" | `swing_value(position, [A, B, …])` |
-| Ko (12) | "Ko threats decide the local result" | `analyze_line` with the ko sequence forced; check `ko_present` |
-| Failure to punish (13) | "Opponent's move n−1 lost ≥ 5 (the server's `tag_punish_min_loss`) and the refutation is playable by a 4k" | `analyze_position` at the position before the student's move; `human_move_distribution` on the refutation |
-| Passive (14) | "The defensive move protected less than the attacking move gained" | `analyze_line` both; `ownership_diff` per group |
-| Slow (15) | "Best move is far away and bigger by ≥ 2" | `pass_probe` with `rank_regions`, `swing_value` |
+| `needs_defending` (14, 2) | `local_solve` on the defended group | the living sequence against the feared attack |
+| `group_is_safe` (3, 2) | `local_solve` on the group left behind | the killing sequence; why there was no second eye |
+| `is_sente` (11, 15) | `swing_value([follow-up, the opponent's tenuki point])` | the follow-up vs what they took, counted |
+| `biggest_move` (1, 15, 11) | `swing_value([G, E])`, or `pass_probe` with `rank_regions` | both moves counted as swings |
+| `behind_must_invade` / `ahead_can_coast` (9, 8) | `human_move_distribution` (horizon), `local_solve` on an invading group | what stronger players choose; the invasion dies / the calm line still wins |
+| `sequence_works` (5, 4, 3, 9) | `expectation_probe` is the test; `local_solve` when a group's life is at stake | the refutation and the tactic |
+| Joseki (7) | `forced_line` from the first deviation | the standard line's end vs the played one |
+| Ko (12) | `analyze_line` with the ko sequence forced | who has the threats |
+| Failure to punish (13) | `expectation_probe` from the opponent's mistake | the punishment and whether a 4k finds it (`human_move_distribution`) |
+| Thickness / aji (10) | `forced_line` on the cutting point | the sequence that uses the aji |
 
-Human probabilities: `peer` = student's rank (how natural the played move was), `target` = 3 stones
-stronger (is the fix learnable now?), `horizon` = 1d (a stretch goal), `opponent` = the opponent's rank
-(would the refutation have been found? `analyze_line.refutation_probability`).
+Write each hypothesis as a testable prediction with a number in it ("Q7 was a defence the groups did
+not need: after a pass and P9 they stay above 0.7"). Human probabilities: `peer` = the student's rank
+(how natural the played move was), `target` = 3 stones stronger (is the fix learnable now?), `horizon` =
+1d, `opponent` = the opponent's rank (would they find the refutation?).
 
-## 4. The three-line contrast
+## 4. The proof tree (replaces the three-line contrast)
 
-For any episode you intend to teach, run from `position_ref_before` at the plan's `line_node` budget and
-`follow_pv_plies`:
+A human proof is a narrow tree of must-moves ending in a position the student can evaluate:
 
-1. **As played**: `analyze_line(pos, [{"color": student, "move": played}])`.
-2. **Teachable move**: the acceptable-set move with the highest `target` probability
-   (`teachable_move_preliminary`); `analyze_line(pos, [{"color": student, "move": teachable}])`.
-3. **Student's fix** (from `self_review.md`) if it differs: `analyze_line` on it.
-4. **Student's expected line** (from `thinking.md`) when they gave one: `analyze_line` with the
-   played move and their moves forced, `follow_pv_plies: 0`. `delta` is from the student's side, so the
-   first student node with `delta` < −3, or opponent node with `delta` > +3, is where their reading
-   breaks; the engine's move there
-   (`analyze_position` on that node's parent) is the move they never considered.
+- `forced_line` extends while replies are forced (the second-best, re-searched with the best avoided,
+  loses > 3) and, by default (`extend: "local"`), while the fight stays local; nodes marked
+  `forced: false` were choices — say "Black would play", not "Black must play". It prefers the move a 3k
+  plays when it is within a point of the engine's, so the line stays legible.
+- `resistance` on an opponent node is the move a player of the opponent's rank would most likely try,
+  with its refutation — the answer to "what if he doesn't cooperate?". Show it when it differs from the
+  forced move.
+- The end of each line has `end` features. Teach the *comparison* of the two ends, never the delta:
+  "After E your corner is 14 points and you keep sente; after G it is 9 and White uses the tempo for
+  K16, worth 8."
+- A contrast smaller than 2 points (`comparison.score_diff`) is not a lesson. A teachable line must not
+  depend on an opponent mistake: if its `resistance` refutation shows the opponent does better, say so
+  or drop it.
+- The student's expected line (`expectation_probe`) and their fix from the self-review are branches of
+  the same tree; record them all in the ledger.
 
-Read `summary.score_end` of each; the contrast must be ≥ 2 points to be teachable and the teachable line
-must not depend on an opponent mistake (`refutation_probability.product` for the opponent profile ≥ 0.3
-means the opponent would likely find the punishment; if the *teachable* line only works because the
-opponent misses something, say so or drop it). Record all three in the ledger.
+`analyze_line` stays available for arbitrary sequences (a ko fight, a line the student proposes in
+conversation) and for `refutation_probability`.
 
 ## 5. Stability protocol
 
-Before a CONFIRMED verdict, re-run the decisive search at the plan's `stability` budget
+Before a CONFIRMED verdict, re-run the decisive searches at the plan's `stability` budget
 (`analyze_position(pos, {"profile": "stability"})`; when the plan has two multipliers, the second one
-is `{"profile": "stability", "multiplier": 16}`). A hypothesis is stable when the top move is unchanged
-and the score moved < 0.5. If it flips, either lower the claim ("the engine is divided") or drop it.
-Episodes flagged `unstable` in the digest need this before anything else.
+is `{"profile": "stability", "multiplier": 16}`): the episode root, and the node where
+`expectation_probe` found the misread. A hypothesis is stable when the top move is unchanged and the
+score moved < 0.5. If it flips, either lower the claim ("the engine is divided") or drop it. Episodes
+flagged `unstable` in the digest need this before anything else.
 
 ## 6. The ledger (`ledger.md`)
 
 One row per hypothesis, kept up to date during Phase 4:
 
 ```
-| id | episode | hypothesis (with a number) | test | result (query_id) | verdict | teach? |
-| H1 | E1 | Q7 loses ≥ 5 because the R8 group dies | local_solve R8 + 3-line | dead (q_ogs_1_0042), as played −6.1 vs R8 +0.3 (q_…0044, q_…0045) | CONFIRMED | yes |
-| H2 | E1 | Student's P8 also saves it | analyze_line P8 | −4.4, group still unsettled (q_…0046) | REFUTED | mention |
-| H3 | E2 | Move 122 was slow: the best move is in the lower right | pass_probe rank_regions | LR best K4 value 4.8 vs played 1.1 (q_…0051) | CONFIRMED | yes |
-| H4 | E3 | Joseki deviation at move 14 | 3-line | contrast 0.9 (< 2) (q_…0060) | WEAK | no |
+| id | episode | belief (source) | hypothesis (with a number) | test | result (query_id) | misread / end diff | verdict | teach? |
+| H1 | E1 | needs_defending (stated: "C6 looked cuttable") | the connection was unnecessary: after a pass and the cut the group stays > 0.7 | intent_probe + local_solve | 0.91 after W C6 (q_…0042); lives with D7, B5 (q_…0043) | end diff: R10 corner 20 vs 6 (q_…0047) | CONFIRMED | yes |
+| H2 | E1 | — | student's fix D6 also saves the tempo | forced_line D6 | group unsettled at the end (q_…0046) | — | REFUTED | mention |
+| H3 | E2 | sequence_works (inferred) | the peer line breaks at W's 2nd move | expectation_probe | misread ply 2: expected D12, never considered G17 (q_…0051) | end diff: F12 group 0.52 vs 0.83 (q_…0054) | CONFIRMED | yes |
+| H4 | E3 | biggest_move (inferred) | E is bigger by ≥ 2 | swing_value | 1.1 (q_…0060) | — | WEAK | no |
 ```
 
 Verdicts: CONFIRMED (prediction met and stable), REFUTED, WEAK (effect below the threshold or engine

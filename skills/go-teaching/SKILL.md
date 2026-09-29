@@ -18,7 +18,8 @@ why; it is never the explanation.
 ## 1. Beliefs (the diagnosis) and categories (the labels)
 
 Every move is a threat, a defense, or a value claim. The probes in katago-analysis §3 tell which, and
-whether it worked. Each belief below has its own proof and its own rule, stated as a check the student
+whether it worked: `intent_probe` returns the belief id below with its evidence, `expectation_probe`
+finds the misread, `forced_line` + `terminal_features` supply "what to show". Each belief below has its own proof and its own rule, stated as a check the student
 can run at the board.
 
 | Belief (`belief` id) | Probe signature | What to show | Rule — a check at the board | Categories |
