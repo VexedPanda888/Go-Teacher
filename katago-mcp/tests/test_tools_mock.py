@@ -123,6 +123,8 @@ class MockToolsTest(unittest.TestCase):
         self.assertTrue(e["pattern_hash"].startswith("ph_"))
         self.assertIn("peer", e["human"]["played"])
         self.assertLessEqual(len(e["candidate_tags"]), 3)
+        self.assertIn(e["best_reply"]["character"], ("tenuki", "local_calm", "local_sharp"))
+        self.assertEqual(e["best_reply"]["local"], e["best_reply"]["character"] != "tenuki")
         self.assertIn(d["game_type"]["type"], ("single_blunder", "accumulation", "mixed"))
         rows = self.tools.job_results(self.job_id, "moves", range=[10, 12])["moves"]
         self.assertEqual([r["n"] for r in rows], [10, 11, 12])
@@ -154,6 +156,8 @@ class MockToolsTest(unittest.TestCase):
         self.assertIn("peer", a["candidates"][0]["human"])
         self.assertTrue(a["acceptable_set"]["moves"])
         self.assertTrue(a["groups"])
+        in_race = {g["anchor"] for r in a.get("capture_races", []) for g in r["groups"]}
+        self.assertTrue(all(("liberties" in g) == (g["anchor"] in in_race) for g in a["groups"]))
         # same position via job_id resolves to the same ref, and via `then` to a different one
         a2 = self.tools.analyze_position({"job_id": self.job_id, "move_number": 30}, {"visits": 50}, {"perspective": "W"})
         self.assertEqual(a2["position_ref"], ref["position_ref"])
@@ -239,6 +243,8 @@ class MockToolsTest(unittest.TestCase):
         self.assertIn("legend", rb)
         self.assertEqual(len(rb["ascii"].splitlines()), 22)
         self.assertEqual(len(rb["overlay_ascii"].splitlines()), 21)
+        self.assertNotIn("low_liberty_groups", rb)             # off by default since contract v0.3
+        self.assertIn("low_liberty_groups", self.tools.render_board(a, {"label_low_liberties": True}))
 
     # ---------------------------------------------------------------- export
     def test_validate_variations_export(self):

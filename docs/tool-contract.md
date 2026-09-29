@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.2.1, as implemented in katago-mcp 0.1.5)
+# katago-mcp — Tool Contract (v0.3.0, as implemented in katago-mcp 0.2.0)
 
 **Status:** draft. The canonical copy is `skills/go-teacher-flow/references/tool-contract.md` (skills must be self-contained); `docs/tool-contract.md` is kept identical and a test checks it. This is the document WS2 is built from and WS3 quotes. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
@@ -249,7 +249,7 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
   time_settings?: { main: number; overtime: string; per_move_times_present: boolean };
   phases_rough: { opening_end: number; middlegame_end: number };   // move-count heuristic; refined by ownership in job_results
   capture_events: { move: number; by: Color; stones: number; points: Point[] }[];     // captures of ≥ 2 stones
-  tension_events: { move: number; color: Color; group_point: Point; group_size: number; liberties: number }[];  // a group of ≥ 3 stones left with ≤ 2 liberties
+  tension_events: { move: number; color: Color; group_point: Point; group_size: number }[];  // a group of ≥ 3 stones left with ≤ 2 liberties (the count itself is not reported)
   boards: { after_move: number; ascii: string }[];    // §4 format
   position_refs: { after_move: number; ref: PositionRef }[];   // for the boards listed
   warnings: string[];                     // e.g. "student username not found in PB/PW"
@@ -337,6 +337,7 @@ type Episode = {
   stability: "stable" | "unstable" | "unknown";
   pattern_hash: string; pattern_hash_5: string;
   group_status_change: { group: string; before: string; after: string }[];   // e.g. "B right side (7)", "alive 0.78", "unsettled 0.31"
+  best_reply: null | { move: Point; local: boolean; character: "tenuki" | "local_calm" | "local_sharp"; gap: number | null; score_stdev: number };   // §3.15
 };
 ```
 **Output (`full`)** adds `moves: MoveRow[]` for every position: `{ n, color, move, score_before, score_after, points_lost, best, prior_played, prior_best, in_acceptable_set, visits, position_ref }`. **Output (`moves`)** returns `MoveRow[]` for `range` only.
@@ -373,13 +374,14 @@ type Episode = {
   acceptable_set: { margin: number; moves: Point[] };
   policy_top: { move: Point; prior: number }[];        // raw network policy, top 8
   ownership?: number[]; ownership_stdev?: number[];    // 361 floats, Black-positive, §4.3 order
-  groups?: Group[];
+  groups?: Group[]; capture_races?: CaptureRace[];       // capture_races only when one is detected
   resolved_profiles: Record<string, string>; query_id: string;
 }
 type Candidate = { move: Point | "pass"; order: number; visits: number; prior: number; winrate: number; score_lead: number; score_stdev: number; lcb: number;
                    pv: Point[]; human: Record<string, number>; in_acceptable_set: boolean };
-type Group = { id: string; color: Color; stones: Point[]; size: number; liberties: number; liberty_points?: Point[];
+type Group = { id: string; color: Color; stones: Point[]; size: number; liberties?: number; liberty_points?: Point[];   // liberties only for groups in a capture race (§3.16) or when asked for
                mean_ownership: number; status: "alive" | "unsettled" | "dead"; region: string; label: string };   // label e.g. "W lower right corner (5)"
+type CaptureRace = { groups: { label: string; anchor: Point; color: Color; liberties: number; liberty_points: Point[] }[] };   // §3.16
 ```
 **KataGo mapping.** `wideRootNoise` via `overrideSettings`; `includeOwnership`, `includeOwnershipStdev`, `includePolicy`, `includePVVisits`; human probabilities via one query per profile with the human model's profile set in `overrideSettings` (exact key per the installed version's Analysis_Engine.md).
 **Cost.** `budget`. **Errors.** `illegal_move`, `unknown_ref`, `engine_unavailable`.
@@ -405,7 +407,7 @@ type LineStep = { color: Color; move: Point | "pass" } | { color: Color; engine:
 {
   start: { position_ref: PositionRef; score_lead: number; to_move: Color };
   nodes: LineNode[];
-  end: { position_ref: PositionRef; score_lead: number; winrate: number; ownership?: number[]; groups?: Group[]; captures: { B: number; W: number } };
+  end: { position_ref: PositionRef; score_lead: number; winrate: number; ownership?: number[]; groups?: Group[]; capture_races?: CaptureRace[]; captures: { B: number; W: number } };
   summary: { score_start: number; score_end: number; total_change: number;
              largest_drop: { ply: number; color: Color; move: Point; delta: number };
              vs_best?: { best_first_move: Point; score_after_best_root_estimate: number; gap_vs_first_step: number; note: string } };   // root estimate only; play the best move out with a second analyze_line for the contrast
@@ -485,7 +487,7 @@ type LineNode = { ply: number; color: Color; move: Point | "pass"; forced: boole
 **Output.**
 ```ts
 {
-  target: { color: Color; stones: Point[]; liberties: number; label: string }; region_used: Region;
+  target: { color: Color; stones: Point[]; label: string }; region_used: Region;
   attacker_first: SolveRun; defender_first: SolveRun;
   status: "alive" | "dead" | "unsettled" | "unclear";   // alive/alive → alive; dead/dead → dead; alive/dead → unsettled; either run unclear → unclear
   confidence: "high" | "medium" | "low";               // from ownership margins beyond the thresholds and early-stop stability
@@ -503,7 +505,7 @@ type SolveRun = { sequence: Move[]; final_position_ref: PositionRef; final_group
 **Inputs.** `{ position: Position; options?: { ownership: "cached" | "compute" = "cached"; budget?: Budget = { profile: "quick" }; min_size?: number = 1; include_liberty_points?: boolean = false } }`
 **Output.**
 ```ts
-{ position_ref: PositionRef; groups: Group[]; unsettled: string[];       // ids of unsettled groups
+{ position_ref: PositionRef; groups: Group[]; unsettled: string[]; capture_races?: CaptureRace[];       // ids of unsettled groups
   summary: { B: { alive: number; unsettled: number; dead: number }; W: { alive: number; unsettled: number; dead: number } };
   ownership_visits: number; query_id: string }
 ```
@@ -550,10 +552,10 @@ type SolveRun = { sequence: Move[]; final_position_ref: PositionRef; final_group
 { position: Position;
   options?: RenderOptions }
 type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" | "ownership_stdev" | "policy" = null;
-                       highlight?: Point[]; region_box?: Region; label_low_liberties?: boolean = true;   // list groups with ≤ 3 liberties
+                       highlight?: Point[]; region_box?: Region; label_low_liberties?: boolean = false;  // list groups with ≤ 3 liberties (off by default since v0.3)
                        coordinates?: boolean = true };
 ```
-**Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups: { label: string; liberties: number; liberty_points: Point[] }[] }`
+**Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups?: { label: string; liberties: number; liberty_points: Point[] }[] }`
 **Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. **Errors.** `unknown_ref`, `illegal_move`.
 
 ---
@@ -647,7 +649,7 @@ Computed at each episode root (taxonomy ids from the plan, WS4). Up to three tag
 Thresholds calibrated in WS8 (20 seed games; notes in `seed/calibration.md`, which stays local because `seed/` is not in git). "Plausible" uses the human model's peer-rank probabilities (`human.played.peer`, `human.best.peer`), falling back to KataGo's policy priors when the human model is unavailable: KataGo's policy almost always prefers the best move, so the policy-only rule never fired.
 - **13 Failure to punish**: the opponent's previous move lost ≥ `tag_punish_min_loss` (5) points and the student's move gives back ≥ `got_away_ratio` (0.6) of it.
 - **3 / 4 / 5**: peer(played) ≥ `tag_plausible_min_peer` (0.20), peer(played) ≥ `tag_plausible_ratio` (1.5) × peer(best) and `points_lost ≥ tag_plausible_min_loss` (2) (search refutes a move the student's rank plays) → 3 if the student's own group status falls after the played move, 4 if the opponent's group status rises after the best move (missed attack), else 5.
-- **6 / 15 / 1 / 2**: intuition failed — `prior_best ≥ 0.20` and `prior_played ≤ 0.10`, or (when 3/4/5 did not fire) target(best) ≥ `tag_intuition_best_min` (0.20) and peer(played) ≤ `tag_intuition_played_max` (0.10) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else, when `dist ≥ tag_direction_min_distance` (5), 1, plus 2 when the best move's region contains a group of either color with ≤ 3 liberties.
+- **6 / 15 / 1 / 2**: intuition failed — `prior_best ≥ 0.20` and `prior_played ≤ 0.10`, or (when 3/4/5 did not fire) target(best) ≥ `tag_intuition_best_min` (0.20) and peer(played) ≤ `tag_intuition_played_max` (0.10) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else, when `dist ≥ tag_direction_min_distance` (5), 1, plus 2 when the best move's region contains an unsettled group (§3.9, ownership at `P_{n−1}`, ≥ 2 stones) of either color.
 - **1**: `local_loss_share ≤ local_share_global` (0.4) and `dist(best, played) ≥ tag_direction_min_distance` (5), unless 6 or 15 already applies.
 - **9**: `style_axis = overplay` and `score_stdev_played ≥ 1.5 × score_stdev_best`.
 - **10**: the best move's region has mean `ownership_stdev ≥ 0.35` and the played move is elsewhere.
@@ -677,6 +679,12 @@ An episode is `stable` when, at survey visits, the best move's visit share is �
 
 ### 3.14 Reconciliation
 For games decided by counting: `engine_final_score = s_M` (Black perspective) compared with the SGF margin signed for Black. `ok` if `|diff| ≤ 2.5`; else `mismatch` (komi, rules or handicap bonus is probably wrong; Claude reports and stops). `n/a` for resignations, timeouts and forfeits.
+
+### 3.15 Reply character
+From the survey search at `P_n` (the position after the episode's root move, the opponent to move): the best reply is `local` when it lies within `local_radius` (4, Chebyshev) of the root move. `gap` = how much the best reply beats the best candidate of the other kind (local vs non-local), for the replier. `tenuki` — the move did not need an answer; `local_sharp` — answering here is worth ≥ `sharp_margin` (3) more than the best move elsewhere, or no non-local candidate was searched (the move started a fight, or overplayed); `local_calm` — answered, but little rides on it. A cheap first signal for the belief probes (§1.18–1.21); not a verdict.
+
+### 3.16 Capture races
+Two adjacent groups of opposite colour (each ≥ 2 stones), both `unsettled` (§3.9) and both with at most `race_max_liberties` (4) liberties. Liberty counts are reported only for groups in a race (and when `include_liberty_points` / `label_low_liberties` ask for them): outside a race the count is not what decides the position, and a number in the output invites commentary about it.
 
 ---
 
@@ -782,6 +790,9 @@ local_share_local = 0.7
 local_share_global = 0.4
 stability_visit_share = 0.35
 stability_margin = 0.5
+race_max_liberties = 4                    # §3.16
+local_radius = 4                          # §3.15: a reply this close to the move is local
+sharp_margin = 3.0                        # §3.15
 
 [paths]
 reviews_dir = "reviews"
@@ -831,3 +842,9 @@ Changes from v0.1 to v0.2 (all reflected in the sections above):
 8. `Budget.seconds` requires a measured throughput, otherwise `budget_infeasible` (§0.4).
 9. Legality inside the server checks positional superko for all superko rulesets; KataGo remains the arbiter inside searches (§0.1).
 10. The survey persists `analysis.json` before the job reports `done`; a restarted server reuses a finished survey from disk (`reuse_existing`).
+
+Changes from v0.2 to v0.3 (causal evidence; the plan is `docs/plan-causal-lessons.md`):
+
+1. Liberty counts leave the default outputs: `Group.liberties` is optional (capture races, explicit requests), `sgf_summary.tension_events` and `local_solve.target` drop the count, `render_board.label_low_liberties` defaults to false; new `capture_races` (§3.16) on `analyze_position`, `analyze_line.end` and `group_status`.
+2. Tag 2 fires on an unsettled group in the best move's region instead of a group with ≤ 3 liberties (§3.7).
+3. Digest episodes carry `best_reply` (§3.15).

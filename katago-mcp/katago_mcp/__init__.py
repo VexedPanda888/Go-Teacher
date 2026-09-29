@@ -1,3 +1,3 @@
-"""katago-mcp: KataGo as a teaching tool surface for Claude (tool contract v0.2.1)."""
-__version__ = "0.1.5"
-CONTRACT_VERSION = "0.2.1"
+"""katago-mcp: KataGo as a teaching tool surface for Claude (tool contract v0.3.0)."""
+__version__ = "0.2.0"
+CONTRACT_VERSION = "0.3.0"

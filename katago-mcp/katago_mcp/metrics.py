@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, Board
 from .config import Thresholds
-from .coords import chebyshev, idx_to_gtp
+from .coords import chebyshev, gtp_to_idx, idx_to_gtp, neighbors
 from .engine import Analysis
 from .regions import LABELS, STANDARD_CODES, standard_code, standard_partition, bbox
 
@@ -195,8 +195,15 @@ def group_status_label(mean_own_owner: float, th: Thresholds) -> str:
     return "unsettled"
 
 
+def group_label(g, board_size: int) -> str:
+    return f"{COLOR_CHAR[g.color]} {LABELS[standard_code(g.anchor, board_size)]} ({g.size})"
+
+
 def group_records(board: Board, ownership: list[float], th: Thresholds, min_size: int = 1,
-                  liberty_points: bool = False) -> list[dict]:
+                  liberty_points: bool = False, race_anchors: set[int] | None = None) -> list[dict]:
+    """Groups with status from ownership.  Liberty counts are left out unless the group is in a
+    capturing race (`race_anchors`) or they are asked for (`liberty_points`): outside a race they
+    are not what decides a position, and a count on the page invites commentary about it."""
     out = []
     for g in board.groups():
         if g.size < min_size:
@@ -208,15 +215,49 @@ def group_records(board: Board, ownership: list[float], th: Thresholds, min_size
             "id": f"g_{COLOR_CHAR[g.color]}_{idx_to_gtp(g.anchor, board.size)}",
             "color": COLOR_CHAR[g.color], "anchor": idx_to_gtp(g.anchor, board.size),
             "stones": [idx_to_gtp(i, board.size) for i in g.stones], "size": g.size,
-            "liberties": len(g.liberties), "mean_ownership": round(mean_owner, 3),
+            "mean_ownership": round(mean_owner, 3),
             "status": group_status_label(mean_owner, th), "region": code,
-            "label": f"{COLOR_CHAR[g.color]} {LABELS[code]} ({g.size})",
+            "label": group_label(g, board.size),
         }
-        if liberty_points:
+        if liberty_points or (race_anchors and g.anchor in race_anchors):
+            rec["liberties"] = len(g.liberties)
             rec["liberty_points"] = [idx_to_gtp(i, board.size) for i in g.liberties]
         out.append(rec)
     out.sort(key=lambda r: (r["status"] != "unsettled", -r["size"]))
     return out
+
+
+def capture_races(board: Board, ownership: list[float] | None, th: Thresholds, min_size: int = 2) -> list[dict]:
+    """Adjacent groups of opposite colour, both unsettled and both short of liberties
+    (≤ `race_max_liberties`): the one situation where liberty counts are the lesson."""
+    if ownership is None:
+        return []
+    weak = {}
+    for g in board.groups():
+        if g.size < min_size or len(g.liberties) > th.race_max_liberties:
+            continue
+        mean_owner = sign_of(g.color) * sum(ownership[i] for i in g.stones) / g.size
+        if group_status_label(mean_owner, th) == "unsettled":
+            weak[g.anchor] = g
+    races, seen = [], set()
+    for a, g in weak.items():
+        for s in g.stones:
+            for nb in neighbors(s, board.size):
+                if board.cells[nb] in (EMPTY, g.color):
+                    continue
+                h = board.group_at(nb)
+                if h is None or h.anchor not in weak or (min(a, h.anchor), max(a, h.anchor)) in seen:
+                    continue
+                seen.add((min(a, h.anchor), max(a, h.anchor)))
+                races.append({"groups": [{"label": group_label(x, board.size), "anchor": idx_to_gtp(x.anchor, board.size),
+                                          "color": COLOR_CHAR[x.color], "liberties": len(x.liberties),
+                                          "liberty_points": [idx_to_gtp(i, board.size) for i in x.liberties]}
+                                         for x in (g, h)]})
+    return races
+
+
+def race_anchor_set(races: list[dict], board_size: int) -> set[int]:
+    return {gtp_to_idx(g["anchor"], board_size) for r in races for g in r["groups"]}
 
 
 def group_changes(board_before: Board, own_before: list[float], own_after: list[float], th: Thresholds,
@@ -454,10 +495,37 @@ def build_episodes(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds,
             "pattern_hash_5": pattern_hash(board_before, root["idx"], ga.student_color, 5) if root["idx"] is not None else None,
             "group_status_change": changes,
         }
+        ep["best_reply"] = reply_character(after, root["idx"], ga.size, th)
         ep["candidate_tags"] = candidate_tags(ep, rows, ga, n, before, after, th)
         episodes.append(ep)
     link_persistent_best(episodes)
     return episodes
+
+
+def reply_character(after: Analysis, move_idx: int | None, size: int, th: Thresholds) -> dict | None:
+    """The opponent's best answer to a move, from the search at the position after it: `tenuki` (the
+    move did not need an answer), `local_sharp` (answering here is worth ≥ `sharp_margin` more than the
+    best move elsewhere: the move started a fight or overplayed), `local_calm` (answered, but little rides
+    on it). `gap` is how much the chosen kind of reply beats the best reply of the other kind."""
+    if not after.candidates:
+        return None
+    best = after.candidates[0]
+    s = sign_of(after.to_move)
+
+    def is_local(c) -> bool:
+        return c.move is not None and move_idx is not None and chebyshev(c.move, move_idx, size) <= th.local_radius
+
+    local = is_local(best)
+    other = next((c for c in after.candidates[1:] if is_local(c) != local), None)
+    gap = None if other is None else round(s * (best.score_lead - other.score_lead), 2) + 0.0
+    if not local:
+        character = "tenuki"
+    elif gap is None or gap >= th.sharp_margin:
+        character = "local_sharp"
+    else:
+        character = "local_calm"
+    return {"move": idx_to_gtp(best.move, size), "local": local, "character": character, "gap": gap,
+            "score_stdev": round(best.score_stdev, 2)}
 
 
 def link_persistent_best(episodes: list[dict]) -> None:
@@ -539,8 +607,10 @@ def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before:
         elif dist >= th.tag_direction_min_distance:
             tags.append("1")
             best_region = standard_code(best_idx, ga.size)
-            if any(standard_code(g.anchor, ga.size) == best_region
-                   for g in ga.boards[n - 1].groups() if len(g.liberties) <= 3):
+            if before.ownership is not None and any(
+                    standard_code(g.anchor, ga.size) == best_region and g.size >= 2
+                    and group_status_label(sign_of(g.color) * sum(before.ownership[i] for i in g.stones) / g.size, th) == "unsettled"
+                    for g in ga.boards[n - 1].groups()):
                 tags.append("2")
     # 1 whole-board by ownership attribution, only when the best move is genuinely elsewhere
     if sig.get("local_loss_share") is not None and sig["local_loss_share"] <= th.local_share_global \

@@ -62,6 +62,27 @@ class TestBoard(unittest.TestCase):
         self.assertEqual(b.captures[BLACK], 1)
         self.assertEqual(b.captures[WHITE], 0)
 
+    def test_capture_race_and_liberties_only_in_races(self):
+        from katago_mcp.config import Thresholds
+        from katago_mcp.metrics import capture_races, group_records, race_anchor_set
+        b = Board()
+        for p in ("D4", "E4", "C5", "F5"):
+            b.place(BLACK, gtp_to_idx(p))
+        for p in ("D5", "E5", "C4", "F4", "Q16", "Q17"):
+            b.place(WHITE, gtp_to_idx(p))
+        own = [0.0] * 361
+        for p in ("Q16", "Q17"):
+            own[gtp_to_idx(p)] = -0.95                     # settled white group far away
+        th = Thresholds()
+        races = capture_races(b, own, th)
+        self.assertEqual(len(races), 1)
+        self.assertEqual({g["anchor"] for g in races[0]["groups"]}, {"D4", "D5"})
+        self.assertEqual({g["liberties"] for g in races[0]["groups"]}, {2})
+        recs = {r["anchor"]: r for r in group_records(b, own, th, min_size=2, race_anchors=race_anchor_set(races, 19))}
+        self.assertEqual(recs["D4"]["liberties"], 2)
+        self.assertNotIn("liberties", recs["Q17"])
+        self.assertEqual(capture_races(b, None, th), [])
+
     def test_simple_ko(self):
         # Ko shape: B at B2, C1, C3 and W at E2, D1, D3; W plays C2 (one liberty, D2), B captures at D2.
         b = Board()

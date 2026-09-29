@@ -75,6 +75,10 @@ class Thresholds:
     tag_direction_min_distance: int = 5      # 1 by ownership attribution: best this far from played
     quick_visits: int = 200
     stable_stop_delta: float = 0.5
+    # causal evidence (contract v0.3): races, reply character
+    race_max_liberties: int = 4              # capture race: adjacent unsettled groups, each at most this many liberties
+    local_radius: int = 4                    # a reply within this Chebyshev distance of the move is "local"
+    sharp_margin: float = 3.0                # local reply beats the best tenuki by this much -> "local_sharp"
 
 
 @dataclass

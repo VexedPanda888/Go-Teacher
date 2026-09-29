@@ -49,7 +49,7 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
             "pattern_hash": e["pattern_hash"], "pattern_hash_5": e["pattern_hash_5"],
             "in_acceptable_set": e["acceptable_set"]["played_in_set"], "human_played": e["human"]["played"],
             "human_best": e["human"]["best"], "got_away": e["got_away_with_it"],
-            "persistent_best": e.get("persistent_best", []),
+            "persistent_best": e.get("persistent_best", []), "best_reply": e.get("best_reply"),
             "position_ref_before": e["root"]["position_ref_before"],
         })
     return {

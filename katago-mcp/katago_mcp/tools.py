@@ -23,8 +23,8 @@ from .config import Config
 from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, parse_move
 from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
 from .jobs import Job, JobManager, game_id_of, resolve_profiles, student_color_of
-from .metrics import (acceptable_set, classify_local, decisive_and_last_chance, group_changes, group_records,
-                      group_status_label, move_rows, phases as phases_fn, regional_attribution, sign_of)
+from .metrics import (acceptable_set, capture_races, classify_local, decisive_and_last_chance, group_changes, group_records,
+                      group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution, sign_of)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
 from .sgf import SgfError, parse, rank_to_profile
@@ -556,7 +556,7 @@ class Tools:
                 if g.size >= 3 and len(g.liberties) <= 2 and g.anchor not in reported:
                     reported.add(g.anchor)
                     tension_events.append({"move": n, "color": COLOR_CHAR[g.color], "group_point": idx_to_gtp(g.anchor),
-                                           "group_size": g.size, "liberties": len(g.liberties)})
+                                           "group_size": g.size})
         M = len(game.moves)
         wanted = boards_at if boards_at is not None else [50, 100, 150, "end"]
         board_out, refs = [], []
@@ -717,7 +717,11 @@ class Tools:
         if o.get("include_ownership_stdev") and a.ownership_stdev is not None:
             out["ownership_stdev"] = [round(x, 2) for x in a.ownership_stdev]
         if o.get("include_groups", True) and a.ownership is not None:
-            out["groups"] = group_records(rec.board, a.ownership, self.cfg.thresholds, min_size=1)
+            races = capture_races(rec.board, a.ownership, self.cfg.thresholds)
+            out["groups"] = group_records(rec.board, a.ownership, self.cfg.thresholds, min_size=1,
+                                          race_anchors=race_anchor_set(races, size))
+            if races:
+                out["capture_races"] = races
         out["query_id"] = self._log(rec.game_id, "analyze_position", {"ref": rec.ref, "visits": visits}, a.visits,
                                     time.time() - t0, hit, {"top": out["candidates"][0]["move"] if out["candidates"] else None,
                                                             "score_lead": out["root"]["score_lead"]})
@@ -815,7 +819,11 @@ class Tools:
         if cur_a.ownership is not None and o.get("ownership_at_end", True):
             end["ownership"] = [round(x, 2) for x in cur_a.ownership]
             if o.get("groups_at_end", True):
-                end["groups"] = group_records(end_board, cur_a.ownership, self.cfg.thresholds, min_size=2)
+                races = capture_races(end_board, cur_a.ownership, self.cfg.thresholds)
+                end["groups"] = group_records(end_board, cur_a.ownership, self.cfg.thresholds, min_size=2,
+                                              race_anchors=race_anchor_set(races, size))
+                if races:
+                    end["capture_races"] = races
         largest = min(nodes, key=lambda nd: nd["delta"]) if nodes else None
         summary = {"score_start": self._pv_score(a0.score_lead, persp), "score_end": end["score_lead"],
                    "total_change": round(end["score_lead"] - self._pv_score(a0.score_lead, persp), 2),
@@ -1066,7 +1074,7 @@ class Tools:
         conf = "high" if all(m >= 0.2 for m in margins) else "low" if any(abs(v) < 0.1 for v in (att["final_group_ownership"], dfn["final_group_ownership"])) or status == "unclear" else "medium"
         if abs(att["final_group_ownership"]) < 0.2 or abs(dfn["final_group_ownership"]) < 0.2:
             caveats.append("seki-like ownership near zero in at least one run")
-        out = {"target": {"color": COLOR_CHAR[g.color], "stones": [idx_to_gtp(i) for i in g.stones], "liberties": len(g.liberties),
+        out = {"target": {"color": COLOR_CHAR[g.color], "stones": [idx_to_gtp(i) for i in g.stones],
                           "label": f"{COLOR_CHAR[g.color]} {LABELS[standard_code(g.anchor, size)]} ({g.size})"},
                "region_used": {"points": [idx_to_gtp(i) for i in sorted(reg)]},
                "attacker_first": att, "defender_first": dfn, "status": status, "confidence": conf, "caveats": caveats,
@@ -1083,12 +1091,16 @@ class Tools:
         rec = self._resolve_position(position)
         t0 = time.time()
         own, _score, visits = self._ownership(rec, o.get("budget"))
-        groups = group_records(rec.board, own, self.cfg.thresholds, int(o.get("min_size", 1)), bool(o.get("include_liberty_points", False)))
+        races = capture_races(rec.board, own, self.cfg.thresholds)
+        groups = group_records(rec.board, own, self.cfg.thresholds, int(o.get("min_size", 1)), bool(o.get("include_liberty_points", False)),
+                               race_anchors=race_anchor_set(races, rec.spec.size))
         summary = {"B": {"alive": 0, "unsettled": 0, "dead": 0}, "W": {"alive": 0, "unsettled": 0, "dead": 0}}
         for g in groups:
             summary[g["color"]][g["status"]] += 1
         out = {"position_ref": rec.ref, "groups": groups, "unsettled": [g["id"] for g in groups if g["status"] == "unsettled"],
                "summary": summary, "ownership_visits": visits}
+        if races:
+            out["capture_races"] = races
         out["query_id"] = self._log(rec.game_id, "group_status", {"ref": rec.ref}, 0, time.time() - t0, True, {"unsettled": len(out["unsettled"])})
         return out
 
@@ -1184,7 +1196,7 @@ class Tools:
         elif overlay == "policy":
             a, _ = self._analyze(rec, self.cfg.thresholds.quick_visits, ownership=False, policy=True)
             out["overlay_ascii"] = render_overlay(a.policy[:size * size], size, "policy")
-        if o.get("label_low_liberties", True):
+        if o.get("label_low_liberties", False):
             out["low_liberty_groups"] = low_liberty_groups(rec.board, 3, 1)[:8]
         return out
 

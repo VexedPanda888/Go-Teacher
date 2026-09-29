@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "katago-mcp"
-version = "0.1.5"
+version = "0.2.0"
 description = "MCP server exposing KataGo as a Go-teaching analysis engine"
 requires-python = ">=3.11"
 dependencies = [
