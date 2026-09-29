@@ -595,5 +595,26 @@ class LenientInputsTest(unittest.TestCase):
             self.tools.analyze_position(12345)
 
 
+class SeedBeliefsTest(unittest.TestCase):
+    def test_belief_clusters(self):
+        from katago_mcp.seed import belief_clusters
+
+        def ep(move, loss, belief):
+            return {"moves": [move, move], "root_points_lost": loss, "probe": {"belief": belief}}
+        records = [
+            {"game_id": "g1", "episodes": [ep(40, 9.0, "needs_defending"), ep(80, 2.0, "is_sente")]},
+            {"game_id": "g2", "episodes": [ep(30, 7.0, "needs_defending"), ep(90, 6.0, None), {"moves": [5, 5], "root_points_lost": 20.0}]},
+            {"game_id": "g3", "episodes": [ep(55, 8.0, "needs_defending"), ep(60, 1.0, "biggest_move")]},
+            {"file": "bad.sgf", "error": "x"},
+        ]
+        c = belief_clusters(records, top=5)
+        self.assertEqual(c["probed"], 6)
+        self.assertEqual(c["all"]["needs_defending"], 3)
+        self.assertEqual(c["top"]["needs_defending"], 3)
+        self.assertTrue(c["sentence"].startswith("3 of your 5 biggest probed losses share the belief 'needs_defending'"))
+        self.assertIn("g1 move 40", c["sentence"])
+        self.assertIsNone(belief_clusters([{"game_id": "g", "episodes": [ep(1, 3.0, None)]}])["sentence"])
+
+
 if __name__ == "__main__":
     unittest.main()

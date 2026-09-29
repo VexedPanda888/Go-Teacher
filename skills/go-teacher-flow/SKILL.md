@@ -85,7 +85,8 @@ block (headline, lessons, strengths, self-review comparison, next game, reliabil
 **Phase 6 — Deliver and remember.** `validate_variations` with the episodes and summary → build with
 `build_dashboard.py` → publish the dashboard artifact → share the link and a 6–10 line spoken summary in
 chat. Then update memory: the game, the CONFIRMED episodes with pattern hashes, the lessons, and the
-refreshed profile (≤ 1,500 tokens). Finish by asking whether anything on the page is unclear.
+refreshed profile (≤ 1,500 tokens), including `beliefs` and `belief_insight`. Finish by asking whether
+anything on the page is unclear.
 
 ## Calibration / seeding pass (WS8)
 
@@ -96,8 +97,11 @@ Asked when the student brings `seed/seed_summary.md` + `.json` (made by `katago-
    and test candidate rules on the JSON before proposing them. The server's rules live in
    `katago_mcp/metrics.py` `candidate_tags`; thresholds live in `[thresholds]` of `config/*.toml`.
 3. Draft profile + a 20-episode sample (top episode per game) for the student to rate; the plan's bar
-   is ≥ 80 % tag accuracy. Record everything in `seed/calibration.md` (local; `seed/` is not in git).
-4. Seed memory only after the student agrees: `verdict: "SURVEY"`, `points_lost` = root loss (the chain
+   is ≥ 80 % tag accuracy. When the summary was made with `--probes`, also show the belief table and its
+   sentence, and ask the student whether the belief matches what they were thinking on the sample
+   episodes (the plan's bar: ≥ 6 of 8). Record everything in `seed/calibration.md` (local; `seed/` is not in git).
+4. Seed memory only after the student agrees: `verdict: "SURVEY"`, beliefs with
+   `belief_source: "probe_survey"`, `points_lost` = root loss (the chain
    sum double-counts swings), skip games already reviewed, never overwrite CONFIRMED episodes.
 5. If tag rules change in code, rebuild tags from `reviews/<game_id>/analysis.json` (use
    `katago-mcp/.venv/bin/python`; system Python lacks `tomllib`), check they reproduce what was seeded,

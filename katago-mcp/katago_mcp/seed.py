@@ -3,10 +3,16 @@
 
   katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ [--visits 500] [--student cwhay888]
                   [--out seed/seed_summary.json] [--episodes 6] [--mock]
+                  [--probes] [--probe-episodes 5] [--probe-visits 200]
 
 For each game: run (or reuse) the whole-game survey, take the digest, keep only what calibration and
 memory need.  Writes <out>.json (machine-readable, one record per game) and <out>.md (a table for the
 calibration conversation).  Re-running is cheap: finished surveys are reused from reviews/<game_id>/.
+
+With --probes, intent_probe runs on the top episodes of each game (by root loss) at a small budget and
+each episode gets its inferred belief, so beliefs can be clustered across games after one batch
+("three of your five biggest losses were defences of groups that were already alive"). These beliefs
+are survey grade: inferred at low visits, never stated by the student, never verified.
 """
 from __future__ import annotations
 
@@ -22,7 +28,20 @@ from .engine import MockEngine
 from .tools import ToolError, Tools
 
 
-def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes: int) -> dict:
+def probe_one(t: Tools, e: dict, visits: int) -> dict:
+    """The compact intent_probe result kept in the seed record."""
+    try:
+        r = t.intent_probe({"ref": e["root"]["position_ref_before"]}, e["root"]["played"], {"visits": visits})
+    except ToolError as err:
+        return {"error": err.code}
+    return {"belief": r["belief"]["id"] if r["belief"] else None, "matches": r["matches"],
+            "evidence": r["belief"]["evidence"] if r["belief"] else None,
+            "reply": (r["reply"] or {}).get("character"), "threat": r["threat"]["value"], "tenuki_value": r["tenuki_value"],
+            "defense": r["defense"]["value"], "loss": r["score"]["loss"], "query_id": r["query_id"], "visits": visits}
+
+
+def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes: int,
+               probes: bool = False, probe_episodes: int = 5, probe_visits: int = 200) -> dict:
     sgf = path.read_text(encoding="utf-8", errors="replace")
     s = t.sgf_summary(sgf, student)
     r = t.start_game_analysis(sgf, {"visits_per_move": visits}, student)
@@ -37,6 +56,11 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
     if st["state"] != "done":
         return {"file": path.name, "game_id": r["game_id"], "error": st.get("error") or st["state"]}
     d = t.job_results(r["job_id"], "digest", max_episodes=episodes)
+    probed = {}
+    if probes:
+        for e in sorted(d["episodes"], key=lambda e: -e["root"]["points_lost"])[:probe_episodes]:
+            if e["root"]["played"] not in (None, "pass"):
+                probed[e["id"]] = probe_one(t, e, probe_visits)
     t.job_status(r["job_id"], "release")          # keep memory flat across a long run (files stay on disk)
     eps = []
     for e in d["episodes"]:
@@ -51,6 +75,7 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
             "human_best": e["human"]["best"], "got_away": e["got_away_with_it"],
             "persistent_best": e.get("persistent_best", []), "best_reply": e.get("best_reply"),
             "position_ref_before": e["root"]["position_ref_before"],
+            **({"probe": probed[e["id"]]} if e["id"] in probed else {}),
         })
     return {
         "file": path.name, "game_id": d["game_id"], "job_id": r["job_id"], "reused": r["reused"],
@@ -61,6 +86,23 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
         "decisive": d["decisive"], "last_chance": d["last_chance"], "points_lost": d["points_lost"],
         "positives": d["positives"], "reliability": d["reliability"], "episodes": eps, "survey_seconds": round(time.time() - t0),
     }
+
+
+def belief_clusters(records: list[dict], top: int = 5) -> dict:
+    """Beliefs among the probed episodes: counts overall, and among each game's `top` biggest root losses
+    pooled across games (the insight a coach gives after a month)."""
+    ok = [r for r in records if "error" not in r]
+    probed = [(e, r["game_id"]) for r in ok for e in r["episodes"] if e.get("probe") and "error" not in e["probe"]]
+    allc = Counter(e["probe"]["belief"] or "none" for e, _ in probed)
+    biggest = sorted(probed, key=lambda eg: -eg[0]["root_points_lost"])[:top]
+    topc = Counter(e["probe"]["belief"] or "none" for e, _ in biggest)
+    sentence = None
+    if biggest:
+        b, n = topc.most_common(1)[0]
+        if b != "none" and n >= 2:
+            sentence = f"{n} of your {len(biggest)} biggest probed losses share the belief {b!r}: " + \
+                       ", ".join(f"{g} move {e['moves'][0]}" for e, g in biggest if e["probe"]["belief"] == b)
+    return {"probed": len(probed), "all": dict(allc), "top": dict(topc), "top_n": len(biggest), "sentence": sentence}
 
 
 def markdown(records: list[dict]) -> str:
@@ -99,6 +141,13 @@ def markdown(records: list[dict]) -> str:
     lines += ["", "Style: " + ", ".join(f"{k} {v}" for k, v in styles.most_common()),
               "Game state at the mistake: " + ", ".join(f"{k} {v}" for k, v in states.most_common()),
               "Phase: " + ", ".join(f"{k} {v}" for k, v in phases.most_common()), ""]
+    bc = belief_clusters(records)
+    if bc["probed"]:
+        lines += [f"## Beliefs ({bc['probed']} probed episodes, survey grade)", "",
+                  "| belief | all probed | among the " + str(bc["top_n"]) + " biggest |", "|---|---|---|"]
+        for b, n in sorted(bc["all"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {b} | {n} | {bc['top'].get(b, 0)} |")
+        lines += ["", bc["sentence"] or "No belief repeats among the biggest losses.", ""]
     rec = [(h, n) for h, n in hashes.items() if n >= 2]
     lines += [f"Recurring 7×7 patterns (≥ 2 games): {len(rec)}"] + [f"- {h}: {n}" for h, n in sorted(rec, key=lambda kv: -kv[1])]
     lines += ["", "## Top episodes per game (for the calibration pass)", ""]
@@ -108,7 +157,8 @@ def markdown(records: list[dict]) -> str:
             hp = e["human_played"]
             lines.append(f"- {e['id']} moves {e['moves'][0]}–{e['moves'][1]}: {e['points_lost']} pts, {e['region']} {e['phase']} {e['game_state']}, "
                          f"played {e['played']} best {e['best']} teachable {e['teachable']}, tags {e['candidate_tags']}, style {e['style']}, "
-                         f"learn {e['learnability']}, peer/target of played {hp.get('peer')}/{hp.get('target')}, stab {e['stability']}, {e['pattern_hash']}")
+                         f"learn {e['learnability']}, peer/target of played {hp.get('peer')}/{hp.get('target')}, stab {e['stability']}, {e['pattern_hash']}"
+                         + (f", belief {e['probe'].get('belief')}" if e.get("probe") else ""))
         lines.append("")
     for r in records:
         if "error" in r:
@@ -125,6 +175,9 @@ def main() -> int:
     ap.add_argument("--episodes", type=int, default=6)
     ap.add_argument("--out", default=None)
     ap.add_argument("--mock", action="store_true")
+    ap.add_argument("--probes", action="store_true", help="run intent_probe on each game's top episodes (beliefs)")
+    ap.add_argument("--probe-episodes", type=int, default=5)
+    ap.add_argument("--probe-visits", type=int, default=200)
     ap.add_argument("--restart-every", type=int, default=4, help="restart KataGo every N games to drop its NN cache (0 = never)")
     args = ap.parse_args()
     cfg = load_config(args.config)
@@ -143,7 +196,8 @@ def main() -> int:
                 t.restart_engine()
             print(f"[{i}/{len(files)}] {p.name}", file=sys.stderr)
             try:
-                records.append(survey_one(t, p, args.visits, args.student, args.episodes))
+                records.append(survey_one(t, p, args.visits, args.student, args.episodes,
+                                          args.probes, args.probe_episodes, args.probe_visits))
             except ToolError as e:
                 records.append({"file": p.name, "error": e.to_dict()["error"]})
                 print(f"  failed: {e.code}: {e.message}", file=sys.stderr)

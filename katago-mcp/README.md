@@ -217,6 +217,13 @@ seeded episodes into memory with `verdict: "SURVEY"` (unverified; half weight in
 Twenty games at 500 visits/move take roughly `20 × 200 × 500 / vps` seconds — about 50 minutes at
 650 visits/s. Run it on the Pro and leave it.
 
+Add `--probes` to also run `intent_probe` on the five biggest episodes of each game (`--probe-episodes`,
+`--probe-visits`, default 200). Each probed episode gets an inferred belief (`probe.belief`), and the
+`.md` gains a belief table and, when one belief repeats among the biggest losses, the sentence that
+says so ("3 of your 5 biggest probed losses share the belief 'needs_defending': …"). An intent probe is
+about 8 searches, so this adds a few seconds per episode (estimated at roughly 10 minutes for 20 games
+on the Pro). These beliefs are survey grade: inferred at low visits, never stated by the student.
+
 ## 6. Deviations from tool contract v0.1 (folded into contract v0.2)
 
 | # | Contract | Implementation |

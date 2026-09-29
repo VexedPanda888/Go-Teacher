@@ -1,6 +1,9 @@
 # Causal lessons — plan (v0.1)
 
-**Status:** planned, 29 Sep 2026. Nothing built yet. Decisions in §0.3.
+**Status:** built, 29 Sep 2026 (katago-mcp 0.2.0, contract v0.3.0), steps 1–7 of §4 in seven commits.
+Not yet done: the §5 calibration on the fixed test set with the student's ratings, and threshold tuning on
+the seed games (`katago-mcp-seed --probes`). The memory artifact's read-only page does not show the new
+`beliefs` / `belief_insight` fields yet. Decisions in §0.3.
 **Goal:** make reviews explain *mechanism* instead of grading moves. Today's lessons say where the
 points went ("the engine ranks the right side last", "misses the key point", "does much less for
 you" — `reviews/ogs_91122267/export-1.json`) because the tools only return evaluative evidence
