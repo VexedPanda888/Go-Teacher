@@ -45,11 +45,11 @@ plan (survey visits, episodes, per-episode sizes), memory watch-list.
 **Phase 1 — Survey.** `start_game_analysis` with `{"profile": "survey"}`. Do not call any other engine
 tool until Phase 3.
 
-**Phase 2 — Blind self-review → `self_review.md`.** While the survey runs, ask 5–8 questions from the
-go-teaching bank (always Q1, Q2, one of Q3–Q5, Q8), one or two at a time, about 10 minutes. Show
-`render_board` boards from the SGF (no engine) when a question needs one. Save answers verbatim.
-Engine results are sealed until this file exists — if the student asks for them early, explain why
-and keep going.
+**Phase 2 — Blind self-review → `self_review.md`.** While the survey runs, ask the four questions of
+go-teaching §4.1, one or two at a time, about 5 minutes. If the survey is still running when they are
+answered, add the optional questions from the same section until it finishes. Show `render_board`
+boards from the SGF (no engine) when a question needs one. Save answers verbatim. Engine results are
+sealed until this file exists — if the student asks for them early, explain why and keep going.
 
 **Phase 3 — Combine and triage → `survey.md`, `ledger.md`.** `job_results(job_id)`. Check
 reconciliation first. Compare the digest with self_review.md: agreements, misjudgements, blind spots.
@@ -57,15 +57,26 @@ Pick 3–5 candidate episodes by the triage rule (go-teaching §2) including the
 lost game. For each write one or two hypotheses with a number in them into ledger.md (katago-analysis
 §6). Re-plan: `plan_budget(total_minutes, job_id, selected=[…])` and record the per-episode sizes.
 
+**Phase 3b — Episode interviews → `thinking.md`.** For each selected episode, show the position before
+the student's move with `render_board` (no overlay) and ask what the move was for and what they
+expected next (go-teaching §4.2). Save the answers verbatim, including any line they give as moves.
+Nothing about an episode's engine verdict is shown before its answer is saved. Update the ledger
+hypotheses with the stated belief.
+
 **Phase 4 — Verify → `ledger.md` verdicts, `verified.md`.** For each selected episode run the recipe
 for its hypothesis (katago-analysis §3), the three-line contrast (§4) and the stability check (§5).
+When the student stated an expected line, play it out and find the first move where it stops working.
 Fill in results with query ids and verdicts. Stop when the budget's verification minutes are used;
-untested hypotheses stay UNTESTED. verified.md lists, per episode: verdict, the three lines with end
-scores, the teachable move, the refutation of the played move, position refs.
+untested hypotheses stay UNTESTED. verified.md lists, per episode: verdict, the belief and its source,
+the move where the expected line breaks, the three lines with end scores and what differs at their
+ends (groups, sente, territory), the teachable move, the refutation of the played move, position refs.
 
 **Phase 5 — Lessons → `lesson.md`.** Choose 2–3 lessons from CONFIRMED episodes by triage (one per
-category, one strength). Write each in the lesson format (go-teaching §3). Write the summary block
-(headline, lessons, strengths, self-review comparison, next game, reliability).
+category, one strength). Write each in the fixed lesson template (go-teaching §3): what you were trying
+to do → what you expected and the exact move where it diverges → the better move's forced line and the
+comparison of the end positions → the rule as a check at the board → optionally "why not X?". Then
+reread every sentence against the concept-word rule and cut what is not cashed out. Write the summary
+block (headline, lessons, strengths, self-review comparison, next game, reliability).
 
 **Phase 6 — Deliver and remember.** `validate_variations` with the episodes and summary → build with
 `build_dashboard.py` → publish the dashboard artifact → share the link and a 6–10 line spoken summary in
@@ -99,6 +110,9 @@ Asked when the student brings `seed/seed_summary.md` + `.json` (made by `katago-
   outranks the biggest blunder after it.
 - Follow the budget. Say what was left unverified because of time.
 - Memory records recurrence, never progress or improvement claims.
+- A mistake is a belief to recover and refute; the *why* of a lesson is what differs at the end of the
+  two lines, never the score delta. Concept words (direction, thickness, aji, shape, slow, urgent, big)
+  are cashed out as a consequence in a verified sequence, or cut. Liberties only inside a refutation.
 - Kind, direct, specific. Say "you", name the moves, avoid hedging and avoid praising the engine.
 
 ## When things go wrong

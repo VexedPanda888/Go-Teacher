@@ -78,6 +78,9 @@ blob whose checksum does not match, so nothing unverified can reach the student.
 
 - Commentary entries appear when the student steps onto that move; write each as a self-contained
   paragraph of 1–3 sentences in plain language for a 7-kyu player. Name points as on the board (Q7).
+- Commentary follows the lesson template (go-teaching §3): at the root, what the student was trying to
+  do; at the divergence, the move they did not consider; at the end of the chain, what is different
+  from the better line's end. No concept word without its consequence; no "the engine ranks/prefers".
 - Put the "what to notice" cue in `cue`, the transferable rule in `principle`. One sentence each.
 - Label branches by what they are for the student: "As played", "Engine's line", "Your fix (P8)".
 - Every number on the page comes from the engine; do not restate scores in the text unless they came
