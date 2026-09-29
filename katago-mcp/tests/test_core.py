@@ -141,6 +141,7 @@ class TestSgf(unittest.TestCase):
         self.assertEqual(g.moves[-1], (BLACK, gtp_to_idx("O17")))
         self.assertTrue(g.per_move_times)
         self.assertEqual(g.ogs_game_id, "99887766")
+        self.assertEqual(sgf.parse(HANDICAP_SGF.replace("game/99887766", "api/v1/games/123")).ogs_game_id, "123")
         self.assertEqual(g.players["B"]["rank"], "7k")
         r = g.result()
         self.assertEqual((r["winner"], r["margin"], r["method"]), ("W", 12.5, "score"))

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -157,9 +157,10 @@ class Config:
     def vps(self) -> float:
         return self.throughput.visits_per_second_sustained or self.throughput.visits_per_second_cold or 0.0
 
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        return d
+    @property
+    def throughput_path(self) -> Path | None:
+        """The measured-throughput sidecar next to the machine config (<machine>.throughput.json)."""
+        return Path(self.path).with_suffix(".throughput.json") if self.path else None
 
 
 def _fill(dc, data: dict):
@@ -185,12 +186,7 @@ def load_config(path: str | Path | None) -> Config:
     _fill(cfg.katago, data.get("katago"))
     _fill(cfg.throughput, data.get("throughput"))
     _fill(cfg.student, data.get("student"))
-    b = data.get("budget", {})
-    _fill(cfg.budget, {k: v for k, v in b.items() if k not in ("unit_base", "unit_cap")})
-    if "unit_base" in b:
-        _fill(cfg.budget.unit_base, b["unit_base"])
-    if "unit_cap" in b:
-        _fill(cfg.budget.unit_cap, b["unit_cap"])
+    _fill(cfg.budget, data.get("budget"))          # unit_base / unit_cap tables fill their Unit in place
     _fill(cfg.thresholds, data.get("thresholds"))
     cfg.reviews_dir = data.get("paths", {}).get("reviews_dir", cfg.reviews_dir)
     cfg.games_dir = data.get("paths", {}).get("games_dir", cfg.games_dir)

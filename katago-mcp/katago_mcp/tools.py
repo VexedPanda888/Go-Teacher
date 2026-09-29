@@ -15,22 +15,27 @@ import urllib.error
 import urllib.request
 import threading
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import CONTRACT_VERSION, __version__
 from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, CHAR_COLOR, Board, IllegalMove, opponent
-from .budget import BudgetError, plan as plan_budget_fn
+from .budget import (EXPECTATION_REFUTATION_PLIES, FORCED_REFUTATION_PLIES, FORCED_RESISTANCE_NODES, PUNISH_PLIES, BudgetError,
+                     plan as plan_budget_fn, search_profiles, survey_visits)
 from .config import Config
 from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, parse_move
 from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
+from .export import canonical, encode_ownership
 from .jobs import Job, JobManager, game_id_of, resolve_profiles, student_color_of
-from .metrics import (acceptable_set, capture_races, classify_local, decisive_and_last_chance, group_changes, group_label,
-                      group_records, group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution,
-                      reply_character, sign_of, territory_by_region)
+from .metrics import (acceptable_set, best_candidate, candidate_for, capture_races, classify_local, decisive_and_last_chance,
+                      group_changes, group_label, group_mean_ownership, group_records, group_status_label, groups_near, human_prob,
+                      move_rows, near_empty, phases as phases_fn, prob_at, race_anchor_set, regional_attribution, reply_character,
+                      sign_of, territory_by_region)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
-from .sgf import SgfError, parse, rank_to_profile
-from .store import PositionRecord, Store
+from .sgf import OGS_GAME_RE, SgfError, parse, rank_to_profile
+from .store import PositionRecord, Store, timestamp
 
 log = logging.getLogger("katago_mcp")
 
@@ -46,6 +51,12 @@ class ToolError(Exception):
                           "recoverable": self.recoverable, "suggestion": self.suggestion}}
 
 
+# The MCP tools, in registration order: server.py registers these `Tools` methods, docstring = description.
+PUBLIC_TOOLS = ("engine_info", "plan_budget", "sgf_summary", "start_game_analysis", "job_status", "job_results",
+                "get_position_ref", "analyze_position", "analyze_line", "pass_probe", "swing_value", "local_solve",
+                "group_status", "ownership_diff", "human_move_distribution", "render_board", "terminal_features",
+                "forced_line", "intent_probe", "expectation_probe", "validate_variations")
+
 BELIEF_CATEGORIES = {
     "needs_defending": ["14", "2"], "group_is_safe": ["3", "2"], "is_sente": ["11", "15"],
     "behind_must_invade": ["9", "8"], "ahead_can_coast": ["9"], "sequence_works": ["5", "4", "3", "9"],
@@ -55,6 +66,44 @@ BELIEF_CATEGORIES = {
 
 def _wrap_engine_error(e: EngineError) -> ToolError:
     return ToolError(e.code, str(e), recoverable=e.recoverable, suggestion=e.suggestion)
+
+
+@contextmanager
+def _engine_errors():
+    """EngineError -> ToolError."""
+    try:
+        yield
+    except EngineError as e:
+        raise _wrap_engine_error(e)
+
+
+def _gtp(pt, size: int = 19, where: str = "", details: dict | None = None) -> int | None:
+    """A GTP point from a caller; a bad one is a bad_request (prefixed with `where`)."""
+    try:
+        return gtp_to_idx(pt, size)
+    except CoordError as e:
+        raise ToolError("bad_request", f"{where}: {e}" if where else str(e), details)
+
+
+class _Spent:
+    """Engine visits one tool call actually searched (cache hits are free); `_analyze(..., spent=)` adds to it."""
+    __slots__ = ("visits",)
+
+    def __init__(self):
+        self.visits = 0
+
+
+@dataclass
+class _Validation:
+    """State of one validate_variations call."""
+    job: Job
+    visits: int
+    student: int
+    evaluate: bool
+    spent: _Spent = field(default_factory=_Spent)
+    errors: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    ownership: dict[str, str] = field(default_factory=dict)
 
 
 def _r(x: float | None, nd: int = 2):
@@ -121,10 +170,8 @@ class Tools:
 
     # ================================================================ infrastructure
     def _load_throughput_sidecar(self) -> None:
-        if not self.cfg.path:
-            return
-        p = Path(self.cfg.path).with_suffix(".throughput.json")
-        if p.exists():
+        p = self.cfg.throughput_path
+        if p is not None and p.exists():
             try:
                 d = json.loads(p.read_text())
                 self.vps = float(d.get("visits_per_second_sustained") or self.vps)
@@ -135,9 +182,9 @@ class Tools:
                 pass
 
     def _save_throughput_sidecar(self) -> None:
-        if not self.cfg.path:
+        p = self.cfg.throughput_path
+        if p is None:
             return
-        p = Path(self.cfg.path).with_suffix(".throughput.json")
         p.write_text(json.dumps({"visits_per_second_cold": self.cfg.throughput.visits_per_second_cold,
                                  "visits_per_second_sustained": self.cfg.throughput.visits_per_second_sustained,
                                  "measured_at": self.cfg.throughput.measured_at}, indent=2))
@@ -158,8 +205,6 @@ class Tools:
         return qid
 
     # ---------------------------------------------------------------- SGF input
-    _OGS_RE = re.compile(r"online-go\.com/(?:api/v1/games/|game/)?(?:view/)?(\d+)")
-
     def _resolve_sgf(self, sgf: str | None) -> tuple[str, str | None, dict]:
         """Accept SGF text, a path to an .sgf file on this machine, or an OGS game id / link.
 
@@ -172,7 +217,7 @@ class Tools:
                             "or an OGS game id or link")
         if s.startswith("(") or s.startswith("\ufeff("):
             return s.lstrip("\ufeff"), None, {"kind": "text", "chars": len(s)}
-        m = self._OGS_RE.search(s) or re.fullmatch(r"(\d{3,12})", s)
+        m = OGS_GAME_RE.search(s) or re.fullmatch(r"(\d{3,12})", s)
         if m and not os.path.exists(s):
             return self._fetch_ogs(m.group(1))
         p = Path(s).expanduser()
@@ -182,10 +227,7 @@ class Tools:
             if c.is_file():
                 text = c.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
                 mm = re.match(r"ogs_?(\d+)", c.stem)
-                hint = f"ogs_{mm.group(1)}" if mm else None
-                if hint is None:
-                    mm = re.search(r"online-go\.com/game/(?:view/)?(\d+)", text)
-                    hint = f"ogs_{mm.group(1)}" if mm else None
+                hint = f"ogs_{mm.group(1)}" if mm else None       # else the PC link, which parse() reads
                 return text, hint, {"kind": "file", "path": str(c)}
         raise ToolError("bad_request", f"sgf is neither SGF text, an existing file, nor an OGS game id: {s[:80]!r}",
                         suggestion=f"put the .sgf file in {self.cfg.games_dir} and pass its file name, or pass the OGS game link")
@@ -231,7 +273,7 @@ class Tools:
                 mn = int(spec.get("move_number", 0))
                 if not 0 <= mn <= len(job.game.moves):
                     raise ToolError("bad_request", f"move_number must be 0..{len(job.game.moves)}")
-                base = self.jobs._spec(job.game, mn)
+                base = self.jobs.spec_at(job.game, mn)
                 game_id = job.game_id
             elif "sgf" in spec:
                 text, _hint, _src = self._resolve_sgf(spec["sgf"])
@@ -239,8 +281,7 @@ class Tools:
                 mn = int(spec.get("move_number", len(game.moves)))
                 if not 0 <= mn <= len(game.moves):
                     raise ToolError("bad_request", f"move_number must be 0..{len(game.moves)}")
-                base = PositionSpec(game.size, game.rules, game.komi, list(game.setup_black), list(game.setup_white),
-                                    list(game.moves[:mn]), game.first_to_move)
+                base = self.jobs.spec_at(game, mn)
                 game_id, mn = None, mn
             elif "moves" in spec or "setup" in spec:
                 setup = spec.get("setup") or {}
@@ -249,7 +290,7 @@ class Tools:
                 moves = [parse_move(m) for m in spec.get("moves", [])]
                 to_move = CHAR_COLOR.get(spec.get("to_move", "B"), BLACK)
                 first = moves[0][0] if moves else to_move
-                if moves and "to_move" in spec and CHAR_COLOR[spec["to_move"]] != (WHITE if moves[-1][0] == BLACK else BLACK):
+                if moves and "to_move" in spec and CHAR_COLOR[spec["to_move"]] != opponent(moves[-1][0]):
                     raise ToolError("bad_request", "to_move disagrees with the move list; add a pass to change the side to move")
                 base = PositionSpec(19, spec.get("rules", "japanese"), float(spec.get("komi", 6.5)), sb, sw, moves, first)
                 game_id, mn = None, None
@@ -301,6 +342,12 @@ class Tools:
             return self.plans[job_id]
         return self.last_plan
 
+    def _visits_for(self, rec: PositionRecord, budget, default_profile: str) -> tuple[int, str | None]:
+        """Visits for a search at rec under `budget`, and the job id of rec's game (for its plan)."""
+        job = self._job_for_game(rec.game_id)
+        jid = job.job_id if job else None
+        return self._budget_visits(budget, jid, default_profile), jid
+
     def _budget_visits(self, budget, job_id: str | None = None, default_profile: str = "root") -> int:
         budget = norm_budget(budget) or {"profile": default_profile}
         if "visits" in budget:
@@ -314,47 +361,29 @@ class Tools:
                                 suggestion="katago-mcp benchmark --config <machine>.toml")
             return max(1, int(float(budget["seconds"]) * self.vps))
         prof = budget.get("profile", default_profile)
+        quick = self.cfg.thresholds.quick_visits
         if prof == "quick":
-            return self.cfg.thresholds.quick_visits
+            return quick
         plan = self._active_plan(job_id)
         u = self.cfg.budget.unit_base
         if plan:
-            pr = plan["profiles"]
-            if prof == "survey":
-                return int(pr["survey"])
-            if prof == "root":
-                return int(pr["root"])
-            if prof == "line_node":
-                return int(pr["line_node"])
-            if prof == "local_solve":
-                return int(pr["local_solve"])
-            if prof == "stability":
-                mults = plan["verification"]["per_episode"]["stability_multipliers"]
-                m = int(budget.get("multiplier", mults[0] if mults else 4))
-                return int(pr["root"]) * m
-        if prof == "survey":
-            return self._default_survey_visits(200)
-        if prof == "root":
-            return u.root
-        if prof == "line_node":
-            return u.line_node
-        if prof == "local_solve":
-            return u.solve
+            pr, mults = plan["profiles"], plan["verification"]["per_episode"]["stability_multipliers"]
+        else:
+            pr, mults = search_profiles(self._default_survey_visits(200), u, quick), u.stability
+        if prof in ("survey", "root", "line_node", "local_solve"):
+            return int(pr[prof])
         if prof == "stability":
-            return u.root * int(budget.get("multiplier", u.stability[0] if u.stability else 4))
+            return int(pr["root"]) * int(budget.get("multiplier", mults[0] if mults else 4))
         raise ToolError("bad_request", f"unknown budget profile {prof!r}")
 
     def _default_survey_visits(self, move_count: int) -> int:
-        b = self.cfg.budget
-        if self.vps <= 0:
-            return 300
-        return max(b.survey_floor, min(b.survey_cap, int(self.vps * b.survey_minutes_target * 60 / max(1, move_count))))
+        return survey_visits(self.cfg.budget, self.vps, move_count) if self.vps > 0 else 300
 
     # ---------------------------------------------------------------- engine access
     def _analyze(self, rec: PositionRecord, visits: int, ownership: bool = True, ownership_stdev: bool = False,
                  policy: bool = True, wide_root_noise: float | None = None, allow: list[dict] | None = None,
                  avoid: list[dict] | None = None, pv_len: int | None = None, human_profiles: list[str] | None = None,
-                 stop_when_stable: bool = False, priority: int = 10) -> tuple[Analysis, bool]:
+                 stop_when_stable: bool = False, priority: int = 10, spent: _Spent | None = None) -> tuple[Analysis, bool]:
         opts = dict(ownership=ownership, ownership_stdev=ownership_stdev, wide_root_noise=wide_root_noise or 0.0,
                     allow=allow, avoid=avoid)
         cached = self.store.get_cached(rec.ref, visits, **opts) if not allow and not avoid else None
@@ -364,16 +393,16 @@ class Tools:
             hit = True
         else:
             self._ensure_engine()
-            try:
+            with _engine_errors():
                 a = self.engine.analyze(rec.spec, visits, include_ownership=ownership, include_ownership_stdev=ownership_stdev,
                                         include_policy=policy, pv_len=pv_len, wide_root_noise=wide_root_noise,
                                         allow_moves=allow, avoid_moves=avoid, priority=priority,
                                         stop_when_stable=stop_when_stable, stable_delta=self.cfg.thresholds.stable_stop_delta)
-            except EngineError as e:
-                raise _wrap_engine_error(e)
             if not allow and not avoid:
                 self.store.put_cached(rec.ref, a, **opts)
             hit = False
+            if spent is not None:
+                spent.visits += a.visits
         for prof in human_profiles or []:
             if prof not in a.human:
                 a.human[prof] = self._human_policy(rec, prof)
@@ -384,19 +413,16 @@ class Tools:
         if key in self.human_cache:
             return self.human_cache[key]
         self._ensure_engine()
-        try:
+        with _engine_errors():
             pol = self.engine.human_policy(rec.spec, profile)
-        except EngineError as e:
-            raise _wrap_engine_error(e)
         self.human_cache[key] = pol
         return pol
 
     def _ownership(self, rec: PositionRecord, budget: dict | None = None) -> tuple[list[float], float, int]:
         """Cached ownership if any, else a quick search.  Returns (ownership, score_black, visits)."""
-        cached = self.store.any_ownership(rec.ref)
-        if cached is not None:
-            a = self.store.get_cached(rec.ref, 1, ownership=True)
-            return cached, a.score_lead, a.visits
+        a = self.store.best_with_ownership(rec.ref)
+        if a is not None:
+            return a.ownership, a.score_lead, a.visits
         visits = self._budget_visits(budget, None, "quick")
         a, _ = self._analyze(rec, visits, ownership=True, policy=False)
         return a.ownership, a.score_lead, a.visits
@@ -420,13 +446,7 @@ class Tools:
     def _candidate_dicts(self, a: Analysis, persp: int, profiles: dict[str, str], size: int, max_n: int, acc: list) -> list[dict]:
         out = []
         for c in a.candidates[:max_n]:
-            hp = {}
-            for alias, prof in profiles.items():
-                arr = a.human.get(prof)
-                if arr is not None:
-                    i = size * size if c.move is None else c.move
-                    if arr[i] >= 0:
-                        hp[alias] = round(arr[i], 4)
+            hp = human_prob(a, profiles, c.move, size)
             out.append({"move": idx_to_gtp(c.move, size), "order": c.order, "visits": c.visits, "prior": round(c.prior, 4),
                         "winrate": self._pv_wr(c.winrate, persp), "score_lead": self._pv_score(c.score_lead, persp),
                         "score_stdev": round(c.score_stdev, 2), "lcb": self._pv_wr(c.lcb, persp),
@@ -447,21 +467,18 @@ class Tools:
         if mb is None or mb <= limit:
             return
         log.warning("katago uses %.0f MB (limit %d); restarting it before the survey", mb, limit)
-        try:
+        with _engine_errors():
             self.engine.restart()
-        except EngineError as e:
-            raise _wrap_engine_error(e)
 
     def restart_engine(self) -> dict:
         if hasattr(self.engine, "restart"):
-            try:
+            with _engine_errors():
                 self.engine.restart()
-            except EngineError as e:
-                raise _wrap_engine_error(e)
         return self.engine.info()
 
     # ================================================================ 1.1 engine_info
     def engine_info(self, refresh_benchmark: bool = False) -> dict:
+        """Machine, KataGo/network versions, human model, throughput (visits/s), active job and plan, student profiles."""
         if refresh_benchmark:
             self.benchmark()
         else:
@@ -492,26 +509,25 @@ class Tools:
         moves = ["BQ16", "WD4", "BQ4", "WD16", "BR14", "WC14", "BF3", "WC6", "BO3", "WK17", "BF17", "WK3"]
         rec = self._resolve_position({"moves": moves, "rules": "japanese", "komi": 6.5}, persist=False)
         self._ensure_engine()
-        try:
+        with _engine_errors():
             a = self.engine.analyze(rec.spec, 10_000_000, include_ownership=False, include_policy=False,
                                     max_seconds=seconds, priority=20)
-        except EngineError as e:
-            raise _wrap_engine_error(e)
         secs = max(a.seconds, 1e-3)
         vps = a.visits / secs
         self.vps = vps
         self.cfg.throughput.visits_per_second_sustained = round(vps, 1)
         if not self.cfg.throughput.visits_per_second_cold:
             self.cfg.throughput.visits_per_second_cold = round(vps, 1)
-        self.cfg.throughput.measured_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.cfg.throughput.measured_at = timestamp()
         self._save_throughput_sidecar()
         return {"visits": a.visits, "seconds": round(secs, 2), "visits_per_second": round(vps, 1)}
 
     # ================================================================ 1.2 plan_budget
-    def plan_budget(self, total_minutes, move_count: int | None = None, job_id: str | None = None,
+    def plan_budget(self, total_minutes: float | str, move_count: int | None = None, job_id: str | None = None,
                     self_review_minutes: float | None = None, episodes_requested: int | None = None,
-                    expected_ld_episodes: int | None = None, selected: list[dict] | None = None,
+                    expected_ld_episodes: int | None = None, selected: list | None = None,
                     interview_minutes: float | None = None) -> dict:
+        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes (blind self-review and episode interviews reserved). Re-plan with job_id + selected after triage."""
         if isinstance(total_minutes, str):
             if total_minutes.strip().lower() not in ("unlimited", "unbounded", "as long as it needs"):
                 try:
@@ -533,7 +549,7 @@ class Tools:
             p = plan_budget_fn(self.cfg.budget, self.vps, int(move_count), total_minutes,
                                self_review_minutes=self_review_minutes, episodes_requested=episodes_requested,
                                interview_minutes=interview_minutes, expected_ld_episodes=expected_ld_episodes, selected=selected, elapsed_minutes=elapsed,
-                               survey_visits_existing=existing_survey)
+                               survey_visits_existing=existing_survey, quick_visits=self.cfg.thresholds.quick_visits)
         except BudgetError as e:
             raise ToolError("budget_infeasible", str(e), suggestion="run engine_info with refresh_benchmark=true")
         p["move_count"] = int(move_count)
@@ -550,6 +566,7 @@ class Tools:
     # ================================================================ 1.3 sgf_summary
     def sgf_summary(self, sgf: str, student_username: str | None = None, boards_at: list | None = None,
                     ascii_options: dict | None = None) -> dict:
+        """Parse a game without engine use: players, rules, komi, handicap, result, move count, captures, tension events, ASCII boards, position refs. `sgf` is an OGS game link or id (fetched from online-go.com), the path/name of an .sgf file on this machine (games/ folder), or raw SGF text; prefer the link or the path over pasting text."""
         sgf, gid_hint, source = self._resolve_sgf(sgf)
         try:
             game = parse(sgf)
@@ -564,11 +581,7 @@ class Tools:
             warnings.append(f"student username {username!r} not found in PB/PW; confirm the color")
         gid = gid_hint or game_id_of(game, sgf)
         # replay for capture and tension events
-        board = Board(19, to_move=game.first_to_move)
-        for i in game.setup_black:
-            board.place(BLACK, i)
-        for i in game.setup_white:
-            board.place(WHITE, i)
+        board = Board.from_setup(19, game.first_to_move, game.setup_black, game.setup_white)
         boards = [board]
         capture_events, tension_events = [], []
         reported: set[int] = set()
@@ -596,7 +609,7 @@ class Tools:
             if 0 <= k <= M and not any(b["after_move"] == k for b in board_out):
                 last = (game.moves[k - 1][0], game.moves[k - 1][1]) if k > 0 else None
                 board_out.append({"after_move": k, "ascii": render_board(boards[k], last, **(ascii_options or {}))})
-                rec = self.store.put_position(self.jobs._spec(game, k), gid, k)
+                rec = self.store.put_position(self.jobs.spec_at(game, k), gid, k)
                 refs.append({"after_move": k, "ref": rec.ref})
         opp_color = None if sc is None else opponent(sc)
         res = game.result()
@@ -631,6 +644,7 @@ class Tools:
     # ================================================================ 1.4 – 1.6 jobs
     def start_game_analysis(self, sgf: str, budget: dict | None = None, student_username: str | None = None,
                             game_id: str | None = None, options: dict | None = None) -> dict:
+        """Start the asynchronous whole-game survey. `sgf`: OGS game link/id, .sgf file path, or SGF text (prefer link or path). budget: {visits_per_move} or {profile:'survey'} (from the active plan). Returns a job_id."""
         options = options or {}
         sgf, gid_hint, _source = self._resolve_sgf(sgf)
         game_id = game_id or gid_hint
@@ -638,45 +652,43 @@ class Tools:
             game = parse(sgf)
         except SgfError as e:
             raise ToolError("invalid_sgf", str(e))
-        budget = budget or {"profile": "survey"}
+        budget = norm_budget(budget) or {"profile": "survey"}
         if "visits_per_move" in budget:
             visits = int(budget["visits_per_move"])
-        elif "visits" in budget:
-            visits = int(budget["visits"])
+        elif "visits" in budget or "seconds" in budget:
+            visits = self._budget_visits(budget)
         else:
             plan = self.last_plan
             visits = int(plan["profiles"]["survey"]) if plan else self._default_survey_visits(len(game.moves) or 1)
         self._ensure_engine()
         self._restart_if_heavy()
-        try:
+        with _engine_errors():
             job = self.jobs.start(sgf, visits, student_username, game_id, options)
-        except EngineError as e:
-            raise _wrap_engine_error(e)
         if self.last_plan and job.job_id not in self.plans:
             self.plans[job.job_id] = self.last_plan
             job.plan = self.last_plan
         expected = (job.positions_total * visits / self.vps) if self.vps > 0 else None
         out = {"job_id": job.job_id, "game_id": job.game_id, "positions_total": job.positions_total,
                "visits_per_move": visits, "expected_seconds": None if expected is None else round(expected),
-               "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(job.started_at)), "reused": job.reused,
+               "started_at": timestamp(job.started_at), "reused": job.reused,
                "student_color": None if job.student_color is None else COLOR_CHAR[job.student_color],
                "profiles": job.profiles, "state": job.state}
         out["query_id"] = self._log(job.game_id, "start_game_analysis", {"visits_per_move": visits}, result={"job_id": job.job_id})
         return out
 
     def job_status(self, job_id: str, action: str = "status") -> dict:
-        try:
+        """Progress of a survey job (action 'status'), cancel it ('cancel'), or free a finished job's memory ('release'; its results stay on disk)."""
+        with _engine_errors():
             if action == "cancel":
                 return self.jobs.cancel(job_id)
             if action == "release":
                 return self.jobs.release(job_id)
             return self.jobs.get(job_id).status()
-        except EngineError as e:
-            raise _wrap_engine_error(e)
 
     def job_results(self, job_id: str, detail: str = "digest", range: list | None = None, max_episodes: int = 10,
                     include_positives: bool = True) -> dict:
-        try:
+        """Survey digest: phases, points lost, episodes (chains) with signatures, candidate tags, human probabilities, decisive move, last chance. detail: digest | moves | full."""
+        with _engine_errors():
             job = self.jobs.get(job_id)
             if detail == "moves":
                 rows = self.jobs.rows(job_id, tuple(range) if range else None)
@@ -684,14 +696,13 @@ class Tools:
             d = self.jobs.digest(job_id, max_episodes=max_episodes, include_positives=include_positives)
             if detail == "full":
                 d["moves"] = [_row_out(r) for r in self.jobs.rows(job_id)]
-        except EngineError as e:
-            raise _wrap_engine_error(e)
         d["query_id"] = self._log(job.game_id, "job_results", {"detail": detail},
                                   result={"episodes": len(d.get("episodes", [])), "complete": d.get("complete")})
         return d
 
     # ================================================================ 1.7 get_position_ref
     def get_position_ref(self, job_id: str | None = None, sgf: str | None = None, move_number: int = 0) -> dict:
+        """Position reference for the position after move_number of a job, or of an SGF given as OGS link/id, file path, or text."""
         spec = {"job_id": job_id, "move_number": move_number} if job_id else {"sgf": sgf, "move_number": move_number}
         if not job_id and not sgf:
             raise ToolError("bad_request", "job_id or sgf required")
@@ -709,10 +720,10 @@ class Tools:
 
     # ================================================================ 1.8 analyze_position
     def analyze_position(self, position: dict, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Search one position: root score/winrate, candidates with PV and human probabilities, acceptable set, policy top, groups. position: {ref}|{job_id,move_number}|{sgf,move_number}|{moves,...} plus optional then:[...]."""
         o = options or {}
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "root")
+        visits, _ = self._visits_for(rec, budget, "root")
         persp = self._perspective(o.get("perspective"), rec)
         profiles = self._profiles(o.get("human_profiles"), rec)
         wrn = o.get("wide_root_noise", 0.04)
@@ -755,28 +766,26 @@ class Tools:
     # ================================================================ 1.9 analyze_line
     def analyze_line(self, position: dict, line: list, budget: dict | None = None, follow_pv_plies: int | None = None,
                      options: dict | None = None) -> dict:
+        """Play a line (forced moves and/or engine replies) and evaluate every node; then follow the PV. Returns per-ply evals, deltas, end ownership/groups, refutation probability."""
         o = options or {}
         if not line:
             raise ToolError("bad_request", "line must have at least one step")
         start = self._resolve_position(position)
-        job = self._job_for_game(start.game_id)
-        jid = job.job_id if job else None
-        visits = self._budget_visits(budget, jid, "line_node")
+        visits, jid = self._visits_for(start, budget, "line_node")
         persp = self._perspective(o.get("perspective"), start)
         plan = self._active_plan(jid)
         if follow_pv_plies is None:
             follow_pv_plies = plan["verification"]["per_episode"]["follow_pv_plies"] if plan else self.cfg.budget.unit_base.plies
         opp_alias = o.get("opponent_profile", "opponent")
         opp_profile = self._profiles([opp_alias], start)[opp_alias]
-        punish_plies = int(o.get("punish_plies", 3))
+        punish_plies = int(o.get("punish_plies", PUNISH_PLIES))
         restrict = o.get("restrict")
         restrict_color = CHAR_COLOR[restrict["color"]] if restrict else None
         restrict_pts = region_indices(restrict["region"]) if restrict else None
         size = start.spec.size
         t0 = time.time()
-        total_visits = 0
-        a0, hit0 = self._analyze(start, visits, ownership=False, policy=False)
-        total_visits += 0 if hit0 else a0.visits
+        spent = _Spent()
+        a0, _ = self._analyze(start, visits, ownership=False, policy=False, spent=spent)
         cur, cur_a = start, a0
         nodes: list[dict] = []
         punish: list[dict] = []
@@ -787,9 +796,9 @@ class Tools:
             if restrict and color == restrict_color and ply <= int(restrict.get("until_ply", 99)):
                 allowed = [idx_to_gtp(i) for i in restrict_pts if rec.board.cells[i] == EMPTY] + ["pass"]
                 a2, _ = self._analyze(rec, visits, ownership=False, policy=False,
-                                      allow=[{"player": COLOR_CHAR[color], "moves": allowed, "untilDepth": 1}])
-                return (a2.candidates[0].move if a2.candidates else None), a2
-            return (a.candidates[0].move if a.candidates else None), a
+                                      allow=[{"player": COLOR_CHAR[color], "moves": allowed, "untilDepth": 1}], spent=spent)
+                return best_candidate(a2), a2
+            return best_candidate(a), a
 
         steps = list(norm_list(line) or []) + [{"engine": True}] * int(follow_pv_plies)
         for ply, raw_step in enumerate(steps, 1):
@@ -806,30 +815,24 @@ class Tools:
                 if CHAR_COLOR.get(step["color"]) != color:
                     raise ToolError("bad_request", f"step {ply}: {step['color']} is not to move ({COLOR_CHAR[color]} is)", {"ply": ply},
                                     suggestion="insert a pass, or start from the position before the opponent's reply")
-                try:
-                    mv = gtp_to_idx(step["move"], size)
-                except CoordError as e:
-                    raise ToolError("bad_request", f"step {ply}: {e}", {"ply": ply})
+                mv = _gtp(step["move"], size, f"step {ply}", {"ply": ply})
                 forced = True
                 alternatives = None
             human_p = None
             if color == opponent_color and not forced:
                 try:
-                    pol = self._human_policy(cur, opp_profile)
-                    i = size * size if mv is None else mv
-                    human_p = round(pol[i], 4) if pol[i] >= 0 else None
+                    human_p = _r(prob_at(self._human_policy(cur, opp_profile), mv, size), 4)
                 except ToolError:
                     human_p = None
                 if human_p is not None and len(punish) < punish_plies:
                     punish.append({"ply": ply, "move": idx_to_gtp(mv), "probability": human_p})
             try:
-                nxt = self._resolve_position({"ref": cur.ref, "then": [[COLOR_CHAR[color], idx_to_gtp(mv)]]})
+                nxt = self._play(cur, mv, color)
             except ToolError as e:
                 e.details["ply"] = ply
                 raise
             is_last = ply == len(steps)
-            na, hit = self._analyze(nxt, visits, ownership=is_last and o.get("ownership_at_end", True), policy=False)
-            total_visits += 0 if hit else na.visits
+            na, _ = self._analyze(nxt, visits, ownership=is_last and o.get("ownership_at_end", True), policy=False, spent=spent)
             nodes.append({
                 "ply": ply, "color": COLOR_CHAR[color], "move": idx_to_gtp(mv), "forced": forced, "position_ref": nxt.ref,
                 "eval_after": {"score_lead": self._pv_score(na.score_lead, persp), "winrate": self._pv_wr(na.winrate, persp),
@@ -863,22 +866,22 @@ class Tools:
                                   "note": "root estimate of the best move, not a played-out line; run analyze_line on it for the contrast"}
         out = {"start": {"position_ref": start.ref, "score_lead": summary["score_start"], "to_move": COLOR_CHAR[start.to_move]},
                "perspective": COLOR_CHAR[persp], "nodes": nodes, "end": end, "summary": summary, "legality": "ok",
-               "visits_used": total_visits, "seconds_used": round(time.time() - t0, 2)}
+               "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2)}
         if punish:
             prod = 1.0
             for p in punish:
                 prod *= p["probability"]
             out["refutation_probability"] = {"by_profile": opp_profile, "per_ply": punish, "product": round(prod, 4)}
         out["query_id"] = self._log(start.game_id, "analyze_line", {"ref": start.ref, "line": line, "follow": follow_pv_plies},
-                                    total_visits, time.time() - t0, False, {"score_start": summary["score_start"], "score_end": summary["score_end"]})
+                                    spent.visits, time.time() - t0, False, {"score_start": summary["score_start"], "score_end": summary["score_end"]})
         return out
 
     # ================================================================ 1.10 pass_probe
     def pass_probe(self, position: dict, player: str, move: str | None = None, budget: dict | None = None,
                    options: dict | None = None) -> dict:
+        """Local value of a move: score if the player passes vs after the best move (and after `move`). options.rank_regions=true ranks the nine regions by the value of playing there."""
         o = options or {}
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
         player = norm_color(player)
         color = CHAR_COLOR.get(player)
         if color is None:
@@ -886,18 +889,16 @@ class Tools:
         if rec.to_move != color:
             raise ToolError("bad_request", f"{player} is not to move at this position ({COLOR_CHAR[rec.to_move]} is)",
                             suggestion="pass the position before the move in question")
-        visits = self._budget_visits(budget, job.job_id if job else None, "root")
+        visits, _ = self._visits_for(rec, budget, "root")
         persp = CHAR_COLOR.get(o.get("perspective"), color)
         s = sign_of(persp)
         t0 = time.time()
-        total = 0
-        a0, h0 = self._analyze(rec, visits, ownership=False, policy=False, stop_when_stable=True)
-        total += 0 if h0 else a0.visits
-        pass_rec = self._resolve_position({"ref": rec.ref, "then": [[player, "pass"]]})
-        ap, hp = self._analyze(pass_rec, visits, ownership=False, policy=False, stop_when_stable=True)
-        total += 0 if hp else ap.visits
+        spent = _Spent()
+        a0, _ = self._analyze(rec, visits, ownership=False, policy=False, stop_when_stable=True, spent=spent)
+        pass_rec = self._play(rec, None, color)
+        ap, _ = self._analyze(pass_rec, visits, ownership=False, policy=False, stop_when_stable=True, spent=spent)
         score_if_pass = ap.score_lead
-        reply = ap.candidates[0].move if ap.candidates else None
+        reply = best_candidate(ap)
         out = {"position_ref": rec.ref, "player": player, "perspective": COLOR_CHAR[persp],
                "score_if_pass": self._pv_score(score_if_pass, persp),
                "opponent_reply_to_pass": {"move": idx_to_gtp(reply), "region": LABELS[standard_code(reply)] if reply is not None else None},
@@ -907,8 +908,7 @@ class Tools:
                                                          "best": round(s * ((a0.candidates[0].score_lead if a0.candidates else a0.score_lead) - score_if_pass), 2)}}
         if move:
             mv_rec = self._resolve_position({"ref": rec.ref, "then": [[player, move]]})
-            am, hm = self._analyze(mv_rec, visits, ownership=False, policy=False)
-            total += 0 if hm else am.visits
+            am, _ = self._analyze(mv_rec, visits, ownership=False, policy=False, spent=spent)
             out["score_after_move"] = {"move": move, "score": self._pv_score(am.score_lead, persp)}
             out["local_value"]["played"] = round(s * (am.score_lead - score_if_pass), 2)
         if o.get("rank_regions"):
@@ -919,37 +919,34 @@ class Tools:
                 if not allowed:
                     continue
                 ar, _ = self._analyze(rec, max(200, visits // 3), ownership=False, policy=False,
-                                      allow=[{"player": player, "moves": allowed, "untilDepth": 1}])
-                total += ar.visits
+                                      allow=[{"player": player, "moves": allowed, "untilDepth": 1}], spent=spent)
                 if ar.candidates:
                     urgency.append({"region": code, "label": LABELS[code], "best_move_there": idx_to_gtp(ar.candidates[0].move),
                                     "value": round(s * (ar.candidates[0].score_lead - score_if_pass), 2)})
             urgency.sort(key=lambda u: -u["value"])
             out["urgency"] = urgency
-        out["visits_used"] = total
-        out["query_id"] = self._log(rec.game_id, "pass_probe", {"ref": rec.ref, "player": player, "move": move}, total,
+        out["visits_used"] = spent.visits
+        out["seconds_used"] = round(time.time() - t0, 2)
+        out["query_id"] = self._log(rec.game_id, "pass_probe", {"ref": rec.ref, "player": player, "move": move}, spent.visits,
                                     time.time() - t0, False, {"local_value": out["local_value"]})
         return out
 
     # ================================================================ 1.11 swing_value
     def swing_value(self, position: dict, points: list, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Swing (Black-first minus White-first) and sente/gote for up to six points, ranked."""
         o = options or {}
         points = norm_list(points) or []
         if not points or len(points) > 6:
             raise ToolError("bad_request", "points must have 1..6 entries")
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "root")
+        visits, _ = self._visits_for(rec, budget, "root")
         persp = self._perspective(o.get("perspective"), rec)
         radius = int(o.get("local_radius", 4))
         t0 = time.time()
-        total = 0
+        spent = _Spent()
         results = []
         for pt in points:
-            try:
-                idx = gtp_to_idx(pt, rec.spec.size)
-            except CoordError as e:
-                raise ToolError("bad_request", str(e))
+            idx = _gtp(pt, rec.spec.size)
             if idx is None or rec.board.cells[idx] != EMPTY:
                 results.append({"point": pt, "skipped": "occupied"})
                 continue
@@ -966,9 +963,8 @@ class Tools:
                 except ToolError as e:
                     entry[f"{'black' if color_ch == 'B' else 'white'}_first"] = {"skipped": e.message}
                     continue
-                a, hit = self._analyze(r2, visits, ownership=False, policy=False)
-                total += 0 if hit else a.visits
-                reply = a.candidates[0].move if a.candidates else None
+                a, _ = self._analyze(r2, visits, ownership=False, policy=False, spent=spent)
+                reply = best_candidate(a)
                 local = reply is not None and chebyshev(reply, idx, rec.spec.size) <= radius
                 gap = None
                 if a.candidates and len(a.candidates) > 1:
@@ -988,24 +984,21 @@ class Tools:
             results.append(entry)
         ranked = [r["point"] for r in sorted((r for r in results if "swing" in r), key=lambda r: -r["swing"])]
         out = {"position_ref": rec.ref, "to_move": COLOR_CHAR[rec.to_move], "perspective": COLOR_CHAR[persp],
-               "results": results, "ranked": ranked, "visits_used": total}
-        out["query_id"] = self._log(rec.game_id, "swing_value", {"ref": rec.ref, "points": points}, total, time.time() - t0, False,
+               "results": results, "ranked": ranked, "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2)}
+        out["query_id"] = self._log(rec.game_id, "swing_value", {"ref": rec.ref, "points": points}, spent.visits, time.time() - t0, False,
                                     {"ranked": ranked})
         return out
 
     # ================================================================ 1.12 local_solve
     def local_solve(self, position: dict, group_point: str, region: dict | None = None, budget: dict | None = None,
                     options: dict | None = None) -> dict:
+        """Life-and-death of the group at group_point: attacker-first and defender-first playouts confined to a region -> alive | dead | unsettled | unclear with confidence."""
         o = options or {}
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "local_solve")
+        visits, _ = self._visits_for(rec, budget, "local_solve")
         th = self.cfg.thresholds
         size = rec.spec.size
-        try:
-            gp = gtp_to_idx(group_point, size)
-        except CoordError as e:
-            raise ToolError("bad_request", str(e))
+        gp = _gtp(group_point, size)
         g = rec.board.group_at(gp) if gp is not None else None
         if g is None:
             raise ToolError("no_group_at_point", f"no stone at {group_point}")
@@ -1016,7 +1009,7 @@ class Tools:
             except RegionError as e:
                 raise ToolError("bad_region", str(e))
         else:
-            reg = expand(target_stones, 2, size) | set(g.liberties)
+            reg = expand(target_stones, 2, size)
         reg |= set(g.liberties)
         max_plies = int(o.get("max_plies", 20))
         allow_tenuki = bool(o.get("allow_tenuki", True))
@@ -1027,21 +1020,16 @@ class Tools:
         if rec.board.ko_capture_available(rec.spec.rules):
             caveats.append("ko present in the position")
         t0 = time.time()
-        total = 0
+        spent = _Spent()
 
         def own_of(a: Analysis, board: Board) -> float:
-            s = sign_of(defender)
-            vals = [a.ownership[i] for i in target_stones]
-            # captured stones: the point is empty in this board -> count as fully lost for the defender
-            vals = [v if board.cells[i] == defender else -s * 1.0 for i, v in zip(target_stones, vals)]
-            return s * sum(vals) / len(vals)
+            return group_mean_ownership(g, a.ownership, board)     # captured stones count as lost for the defender
 
         def run(first: int) -> dict:
-            nonlocal total
             cur = rec
             seq = []
             if cur.to_move != first:
-                cur = self._resolve_position({"ref": cur.ref, "then": [[COLOR_CHAR[cur.to_move], "pass"]]})
+                cur = self._play(cur, None)
                 seq.append([COLOR_CHAR[opponent(first)], "pass"])
             hist: list[float] = []
             reason = "max_plies"
@@ -1052,15 +1040,14 @@ class Tools:
                 allowed = [idx_to_gtp(i) for i in reg if cur.board.cells[i] == EMPTY]
                 if allow_tenuki or not allowed:
                     allowed.append("pass")
-                a, hit = self._analyze(cur, visits, ownership=True, policy=False,
-                                       allow=[{"player": COLOR_CHAR[color], "moves": allowed, "untilDepth": 1}])
-                total += 0 if hit else a.visits
+                a, _ = self._analyze(cur, visits, ownership=True, policy=False,
+                                     allow=[{"player": COLOR_CHAR[color], "moves": allowed, "untilDepth": 1}], spent=spent)
                 if not target_stones & set(cur.board.stones(defender)):
                     reason = "group_captured"
                     break
-                mv = a.candidates[0].move if a.candidates else None
+                mv = best_candidate(a)
                 seq.append([COLOR_CHAR[color], idx_to_gtp(mv)])
-                cur = self._resolve_position({"ref": cur.ref, "then": [[COLOR_CHAR[color], idx_to_gtp(mv)]]})
+                cur = self._play(cur, mv, color)
                 passes = passes + 1 if mv is None else 0
                 if passes >= 2:
                     reason = "both_passed"
@@ -1077,8 +1064,7 @@ class Tools:
                 final_own = -1.0
                 a_end = None
             else:
-                a_end, hit = self._analyze(cur, max(200, visits // 2), ownership=True, policy=False)
-                total += 0 if hit else a_end.visits
+                a_end, _ = self._analyze(cur, max(200, visits // 2), ownership=True, policy=False, spent=spent)
                 final_own = own_of(a_end, cur.board)
             return {"sequence": seq, "final_position_ref": cur.ref, "final_group_ownership": round(final_own, 3),
                     "final_status": group_status_label(final_own, th), "plies": len([m for m in seq if m[1] != "pass"]),
@@ -1103,8 +1089,8 @@ class Tools:
                           "label": f"{COLOR_CHAR[g.color]} {LABELS[standard_code(g.anchor, size)]} ({g.size})"},
                "region_used": {"points": [idx_to_gtp(i) for i in sorted(reg)]},
                "attacker_first": att, "defender_first": dfn, "status": status, "confidence": conf, "caveats": caveats,
-               "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
-        qid = self._log(rec.game_id, "local_solve", {"ref": rec.ref, "group_point": group_point}, total, time.time() - t0, False,
+               "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2)}
+        qid = self._log(rec.game_id, "local_solve", {"ref": rec.ref, "group_point": group_point}, spent.visits, time.time() - t0, False,
                         {"status": status, "confidence": conf})
         out["query_id"] = qid
         self.solve_results[qid] = out
@@ -1112,6 +1098,7 @@ class Tools:
 
     # ================================================================ 1.13 group_status
     def group_status(self, position: dict, options: dict | None = None) -> dict:
+        """Every group with size, liberties, mean ownership and status (alive/unsettled/dead) from cached or quick ownership."""
         o = options or {}
         rec = self._resolve_position(position)
         t0 = time.time()
@@ -1131,6 +1118,7 @@ class Tools:
 
     # ================================================================ 1.14 ownership_diff
     def ownership_diff(self, a: dict, b: dict, regions: list | None = None, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Ownership change between two positions by region and by group; classifies the loss as local, mixed or global."""
         o = options or {}
         ra = self._resolve_position(a)
         rb = self._resolve_position(b)
@@ -1165,6 +1153,7 @@ class Tools:
     # ================================================================ 1.15 human_move_distribution
     def human_move_distribution(self, position: dict, profiles: list | None = None, moves_of_interest: list | None = None,
                                 top_n: int = 8) -> dict:
+        """Human-model move probabilities at a position for profiles (peer/target/horizon/opponent or rank_7k...), top moves and moves of interest."""
         rec = self._resolve_position(position)
         prof = self._profiles(norm_list(profiles) or ["peer", "target", "horizon", "opponent"], rec)
         moves_of_interest = norm_list(moves_of_interest)
@@ -1175,14 +1164,7 @@ class Tools:
             pol = self._human_policy(rec, p)
             order = sorted((i for i in range(size * size) if pol[i] > 0), key=lambda i: -pol[i])[:top_n]
             ent = -sum(v * math.log(v) for v in pol[:size * size] if v and v > 0)
-            moi = {}
-            for m in moves_of_interest or []:
-                try:
-                    i = gtp_to_idx(m, size)
-                except CoordError as e:
-                    raise ToolError("bad_request", str(e))
-                v = pol[size * size if i is None else i]
-                moi[m] = round(v, 4) if v >= 0 else None
+            moi = {m: _r(prob_at(pol, _gtp(m, size), size), 4) for m in moves_of_interest or []}
             out_p[alias] = {"profile": p, "top": [{"move": idx_to_gtp(i), "probability": round(pol[i], 4)} for i in order],
                             "moves_of_interest": moi, "entropy": round(ent, 3)}
         out = {"position_ref": rec.ref, "to_move": COLOR_CHAR[rec.to_move], "profiles": out_p, "resolved_profiles": prof}
@@ -1192,14 +1174,12 @@ class Tools:
 
     # ================================================================ 1.16 render_board
     def render_board(self, position: dict, options: dict | None = None) -> dict:
+        """ASCII board with last move, highlights, region box; optional ownership/policy overlay and low-liberty groups."""
         o = options or {}
         rec = self._resolve_position(position)
         size = rec.spec.size
         last = rec.spec.moves[-1] if rec.spec.moves else None
-        try:
-            hl = {gtp_to_idx(p, size) for p in (norm_list(o.get("highlight")) or [])}
-        except CoordError as e:
-            raise ToolError("bad_request", str(e))
+        hl = {_gtp(p, size) for p in (norm_list(o.get("highlight")) or [])}
         box = None
         if o.get("region_box"):
             try:
@@ -1242,16 +1222,16 @@ class Tools:
             return i, round(pol[i], 4)
         return None, None
 
-    def _second_best_gap(self, rec: PositionRecord, a: Analysis, visits: int) -> tuple[float | None, str | None, int]:
+    def _second_best_gap(self, rec: PositionRecord, a: Analysis, visits: int, spent: _Spent) -> tuple[float | None, str | None]:
         """Re-search with the top move avoided so the second-best has real visits; returns (how much the
-        best beats it for the side to move, the second-best move, visits)."""
+        best beats it for the side to move, the second-best move)."""
         top = a.candidates[0]
         x = rec.to_move
         a2, _ = self._analyze(rec, visits, ownership=False, policy=False,
-                              avoid=[{"player": COLOR_CHAR[x], "moves": [idx_to_gtp(top.move)], "untilDepth": 1}])
+                              avoid=[{"player": COLOR_CHAR[x], "moves": [idx_to_gtp(top.move)], "untilDepth": 1}], spent=spent)
         if not a2.candidates:
-            return None, None, a2.visits
-        return round(sign_of(x) * (a.score_lead - a2.score_lead), 2), idx_to_gtp(a2.candidates[0].move), a2.visits
+            return None, None
+        return round(sign_of(x) * (a.score_lead - a2.score_lead), 2), idx_to_gtp(a2.candidates[0].move)
 
     def _own_move(self, move, rec: PositionRecord) -> int | None:
         """A move for the side to move at rec, given as 'Q7', 'BQ7', {'color','move'} …; checks the colour."""
@@ -1261,20 +1241,17 @@ class Tools:
         if CHAR_COLOR.get(step["color"]) != rec.to_move:
             raise ToolError("bad_request", f"{step['color']} is not to move at this position ({COLOR_CHAR[rec.to_move]} is)",
                             suggestion="pass the position before the move in question")
-        try:
-            return gtp_to_idx(step["move"], rec.spec.size)
-        except CoordError as e:
-            raise ToolError("bad_request", str(e))
+        return _gtp(step["move"], rec.spec.size)
 
     def _play(self, rec: PositionRecord, move: int | None, color: int | None = None) -> PositionRecord:
         return self._resolve_position({"ref": rec.ref, "then": [[COLOR_CHAR[color if color is not None else rec.to_move], idx_to_gtp(move)]]})
 
-    def _engine_continuation(self, rec: PositionRecord, plies: int, visits: int) -> tuple[list[str], PositionRecord, Analysis | None, int]:
-        """Engine-vs-engine for `plies` moves from rec. Returns (moves as 'BQ7', end record, end analysis, visits)."""
-        moves, total, cur, a = [], 0, rec, None
+    def _engine_continuation(self, rec: PositionRecord, plies: int, visits: int,
+                             spent: _Spent) -> tuple[list[str], PositionRecord, Analysis | None]:
+        """Engine-vs-engine for `plies` moves from rec. Returns (moves as 'BQ7', end record, end analysis)."""
+        moves, cur, a = [], rec, None
         for _ in range(plies):
-            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
-            total += 0 if hit else a.visits
+            a, _ = self._analyze(cur, visits, ownership=False, policy=False, spent=spent)
             if not a.candidates or a.candidates[0].move is None:
                 break
             mv = a.candidates[0].move
@@ -1282,17 +1259,15 @@ class Tools:
             cur = self._play(cur, mv)
             a = None
         if a is None:
-            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
-            total += 0 if hit else a.visits
-        return moves, cur, a, total
+            a, _ = self._analyze(cur, visits, ownership=False, policy=False, spent=spent)
+        return moves, cur, a
 
-    def _features(self, rec: PositionRecord, visits: int, persp: int, must_answer: bool = False) -> tuple[dict, list[dict], int]:
-        """Terminal features of one position (contract §1.18). Returns (public dict, groups with stones, visits)."""
+    def _features(self, rec: PositionRecord, visits: int, persp: int, spent: _Spent,
+                  must_answer: bool = False) -> tuple[dict, list[dict]]:
+        """Terminal features of one position (contract §1.18). Returns (public dict, groups with stones)."""
         th = self.cfg.thresholds
         size = rec.spec.size
-        total = 0
-        a, hit = self._analyze(rec, visits, ownership=True, policy=False)
-        total += 0 if hit else a.visits
+        a, _ = self._analyze(rec, visits, ownership=True, policy=False, spent=spent)
         sp = sign_of(persp)
         races = capture_races(rec.board, a.ownership, th)
         groups = group_records(rec.board, a.ownership, th, min_size=2, race_anchors=race_anchor_set(races, size))
@@ -1304,8 +1279,7 @@ class Tools:
         # tempo price: what the side to move gains by playing its best move instead of passing
         mover = rec.to_move
         pass_rec = self._play(rec, None, mover)
-        ap, hp = self._analyze(pass_rec, visits, ownership=False, policy=False)
-        total += 0 if hp else ap.visits
+        ap, _ = self._analyze(pass_rec, visits, ownership=False, policy=False, spent=spent)
         best = a.candidates[0] if a.candidates else None
         tempo = {"side_to_move": COLOR_CHAR[mover], "best_move": idx_to_gtp(best.move) if best else None,
                  "value": round(sign_of(mover) * (a.score_lead - ap.score_lead), 2),
@@ -1322,7 +1296,7 @@ class Tools:
                "weak_groups": weak, "territory": terr, "territory_total": tot, "sente": sente, "tempo": tempo}
         if races:
             pub["capture_races"] = races
-        return pub, groups, total
+        return pub, groups
 
     @staticmethod
     def _compare_features(fa: dict, ga_: list[dict], fb: dict, gb: list[dict], th) -> dict:
@@ -1366,34 +1340,34 @@ class Tools:
     # ================================================================ 1.18 terminal_features
     def terminal_features(self, position: dict, compare_to: dict | None = None, budget: dict | None = None,
                           options: dict | None = None) -> dict:
+        """What an end position looks like (group statuses, weak groups, territory by region, who holds sente, what the next move is worth) and, with compare_to, what is concretely different between two end positions."""
         o = options or {}
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        visits, _ = self._visits_for(rec, budget, "line_node")
         persp = self._perspective(o.get("perspective"), rec)
         t0 = time.time()
-        fa, ga_, total = self._features(rec, visits, persp)
+        spent = _Spent()
+        fa, ga_ = self._features(rec, visits, persp, spent)
         out = {"a": fa}
         if compare_to is not None:
             rb = self._resolve_position(compare_to)
-            fb, gb, tb = self._features(rb, visits, persp)
-            total += tb
+            fb, gb = self._features(rb, visits, persp, spent)
             out["b"] = fb
             out["comparison"] = self._compare_features(fa, ga_, fb, gb, self.cfg.thresholds)
-        out["visits_used"] = total
-        out["query_id"] = self._log(rec.game_id, "terminal_features", {"ref": rec.ref, "compare_to": compare_to}, total,
+        out["visits_used"] = spent.visits
+        out["seconds_used"] = round(time.time() - t0, 2)
+        out["query_id"] = self._log(rec.game_id, "terminal_features", {"ref": rec.ref, "compare_to": compare_to}, spent.visits,
                                     time.time() - t0, False, {"score_a": fa["score_lead"],
                                                               "score_b": out.get("b", {}).get("score_lead")})
         return out
 
     # ================================================================ 1.19 forced_line
     def forced_line(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Play a move and extend the line while each reply is forced (the second-best loses more than forced_margin), preferring human-legible moves; adds the opponent's natural resistance with its refutation and the terminal features of the end position."""
         o = options or {}
         th = self.cfg.thresholds
         start = self._resolve_position(position)
-        job = self._job_for_game(start.game_id)
-        jid = job.job_id if job else None
-        visits = self._budget_visits(budget, jid, "line_node")
+        visits, jid = self._visits_for(start, budget, "line_node")
         persp = self._perspective(o.get("perspective"), start)
         sp = sign_of(persp)
         plan = self._active_plan(jid)
@@ -1401,8 +1375,8 @@ class Tools:
         max_plies = int(o.get("max_plies", default_plies))
         forced_margin = float(o.get("forced_margin", th.forced_margin))
         human_margin = float(o.get("human_margin", th.human_margin))
-        resistance_nodes = int(o.get("resistance_nodes", 2))
-        refute_plies = int(o.get("refutation_plies", 3))
+        resistance_nodes = int(o.get("resistance_nodes", FORCED_RESISTANCE_NODES))
+        refute_plies = int(o.get("refutation_plies", FORCED_REFUTATION_PLIES))
         extend = o.get("extend", "local")
         if extend not in ("forced", "local"):
             raise ToolError("bad_request", "extend must be 'forced' or 'local'")
@@ -1411,9 +1385,8 @@ class Tools:
         resist_prof = prof[o.get("resistance_profile", "opponent")]
         size = start.spec.size
         t0 = time.time()
-        total = 0
-        a0, h0 = self._analyze(start, visits, ownership=False, policy=False)
-        total += 0 if h0 else a0.visits
+        spent = _Spent()
+        a0, _ = self._analyze(start, visits, ownership=False, policy=False, spent=spent)
         mover = start.to_move
         mv0 = self._own_move(move, start)
         cur = self._play(start, mv0, mover)
@@ -1426,16 +1399,14 @@ class Tools:
         for ply in range(1, max_plies + 1):
             x = cur.to_move
             sx = sign_of(x)
-            a, hit = self._analyze(cur, visits, ownership=False, policy=False)
-            total += 0 if hit else a.visits
+            a, _ = self._analyze(cur, visits, ownership=False, policy=False, spent=spent)
             if first_eval is None:
                 first_eval = a.score_lead
             if not a.candidates or a.candidates[0].move is None:
                 stop_reason = "pass"
                 break
             top = a.candidates[0]
-            gap, alt, tv = self._second_best_gap(cur, a, visits)
-            total += tv
+            gap, alt = self._second_best_gap(cur, a, visits, spent)
             is_forced = gap is None or gap > forced_margin
             recent = [m for m in played_idx[-3:] if m is not None]
             local = any(chebyshev(top.move, m, size) <= th.local_radius for m in recent)
@@ -1460,10 +1431,8 @@ class Tools:
                 if r is not None and r != chosen.move:
                     resist_used += 1
                     rrec = self._play(cur, r)
-                    ar, hr = self._analyze(rrec, visits, ownership=False, policy=False)
-                    total += 0 if hr else ar.visits
-                    ref_moves, _end, aend, tv = self._engine_continuation(rrec, refute_plies, visits)
-                    total += tv
+                    ar, _ = self._analyze(rrec, visits, ownership=False, policy=False, spent=spent)
+                    ref_moves, _end, aend = self._engine_continuation(rrec, refute_plies, visits, spent)
                     node["resistance"] = {"move": idx_to_gtp(r), "probability": rp,
                                           "loss_for_resister": round(sx * (a.score_lead - ar.score_lead), 2),
                                           "refutation": ref_moves, "score_end": round(sp * aend.score_lead, 2) if aend else None}
@@ -1475,14 +1444,11 @@ class Tools:
             cur = self._play(cur, chosen.move, x)
         must_answer = False
         if stop_reason == "max_plies":
-            ae, he = self._analyze(cur, visits, ownership=False, policy=False)
-            total += 0 if he else ae.visits
+            ae, _ = self._analyze(cur, visits, ownership=False, policy=False, spent=spent)
             if ae.candidates and ae.candidates[0].move is not None:
-                g_end, _alt, tv = self._second_best_gap(cur, ae, visits)
-                total += tv
+                g_end, _alt = self._second_best_gap(cur, ae, visits, spent)
                 must_answer = g_end is None or g_end > forced_margin
-        end, _g, tf = self._features(cur, visits, persp, must_answer=must_answer)
-        total += tf
+        end, _g = self._features(cur, visits, persp, spent, must_answer=must_answer)
         best0 = a0.candidates[0] if a0.candidates else None
         out = {"start": {"position_ref": start.ref, "to_move": COLOR_CHAR[mover], "score_lead": round(sp * a0.score_lead, 2),
                          "best_move": idx_to_gtp(best0.move) if best0 else None},
@@ -1491,41 +1457,18 @@ class Tools:
                         "loss_vs_best": None if first_eval is None or best0 is None else
                         round(max(0.0, sign_of(mover) * (best0.score_lead - first_eval)), 2)},
                "perspective": COLOR_CHAR[persp], "line": line, "nodes": nodes, "stop_reason": stop_reason, "free_at_end": free,
-               "end": end, "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
-        out["query_id"] = self._log(start.game_id, "forced_line", {"ref": start.ref, "move": move, "max_plies": max_plies}, total,
+               "end": end, "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2)}
+        out["query_id"] = self._log(start.game_id, "forced_line", {"ref": start.ref, "move": move, "max_plies": max_plies}, spent.visits,
                                     time.time() - t0, False, {"line": line, "stop": stop_reason, "score_end": end["score_lead"]})
         return out
 
-    # ================================================================ belief probes: helpers
-    @staticmethod
-    def _near_empty(board: Board, idx: int, radius: int) -> list[str]:
-        size = board.size
-        r0, c0 = divmod(idx, size)
-        out = []
-        for r in range(max(0, r0 - radius), min(size, r0 + radius + 1)):
-            for c in range(max(0, c0 - radius), min(size, c0 + radius + 1)):
-                if board.cells[r * size + c] == EMPTY:
-                    out.append(idx_to_gtp(r * size + c, size))
-        return out
-
-    @staticmethod
-    def _groups_near(board: Board, color: int, idx: int, radius: int, min_size: int = 2) -> list:
-        return [g for g in board.groups() if g.color == color and g.size >= min_size
-                and any(chebyshev(s, idx, board.size) <= radius for s in g.stones)]
-
-    @staticmethod
-    def _group_own(g, board_now: Board, own: list[float]) -> float:
-        """Owner-perspective mean ownership of the stones of g; stones no longer on the board count −1."""
-        s = sign_of(g.color)
-        return round(sum(s * own[i] if board_now.cells[i] == g.color else -1.0 for i in g.stones) / g.size, 3)
-
     # ================================================================ 1.20 intent_probe
     def intent_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """What a move was for: what it threatened if ignored, what it prevented, the character of the best reply, and the belief it implies (needs_defending, group_is_safe, is_sente, behind_must_invade, ahead_can_coast, attack_works, biggest_move) with its evidence."""
         o = options or {}
         th = self.cfg.thresholds
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        visits, _ = self._visits_for(rec, budget, "line_node")
         size = rec.spec.size
         x = rec.to_move
         opp = opponent(x)
@@ -1535,16 +1478,16 @@ class Tools:
             raise ToolError("bad_request", "intent_probe needs a board move, not a pass")
         nr = int(o.get("neighborhood_radius", th.neighborhood_radius))
         t0 = time.time()
-        total = 0
+        spent = _Spent()
 
         def search(r: PositionRecord, ownership: bool = False, allow: list | None = None) -> Analysis:
-            nonlocal total
-            a, hit = self._analyze(r, visits, ownership=ownership, policy=False, allow=allow)
-            total += 0 if hit else a.visits
-            return a
+            return self._analyze(r, visits, ownership=ownership, policy=False, allow=allow, spent=spent)[0]
 
         def top(a: Analysis):
             return a.candidates[0] if a.candidates else None
+
+        def gown(gr, board: Board, own: list[float]) -> float:
+            return round(group_mean_ownership(gr, own, board), 3)
 
         a_p = search(rec, ownership=True)
         e = top(a_p)
@@ -1552,27 +1495,25 @@ class Tools:
         rec_g = self._play(rec, g_idx, x)
         a_g = search(rec_g, ownership=True)
         s_g = a_g.score_lead
-        r = top(a_g)
-        r_idx = r.move if r else None
+        r_idx = best_candidate(a_g)
         rc = reply_character(a_g, g_idx, size, th)
         # the opponent's best local answer, and X's best local follow-up if the opponent ignores the move:
         # the difference is the local swing, i.e. the size of what G threatened
-        loc = self._near_empty(rec_g.board, g_idx, nr) + ["pass"]
+        loc = near_empty(rec_g.board, g_idx, nr) + ["pass"]
         a_gloc = search(rec_g, allow=[{"player": COLOR_CHAR[opp], "moves": loc, "untilDepth": 1}])
         s_gloc = a_gloc.score_lead
         rec_gpass = self._play(rec_g, None, opp)
-        a_gpass = search(rec_gpass, allow=[{"player": COLOR_CHAR[x], "moves": self._near_empty(rec_gpass.board, g_idx, nr) + ["pass"],
+        a_gpass = search(rec_gpass, allow=[{"player": COLOR_CHAR[x], "moves": near_empty(rec_gpass.board, g_idx, nr) + ["pass"],
                                             "untilDepth": 1}])
         f = top(a_gpass)
         v_f = round(sx * (a_gpass.score_lead - s_gloc), 2) + 0.0
         tenuki_value = round(sx * (s_gloc - s_g), 2) + 0.0
         # what G prevented: X passes, the opponent plays its strongest move near G
         rec_ppass = self._play(rec, None, x)
-        a_ppass = search(rec_ppass, allow=[{"player": COLOR_CHAR[opp], "moves": self._near_empty(rec.board, g_idx, nr) + ["pass"],
+        a_ppass = search(rec_ppass, allow=[{"player": COLOR_CHAR[opp], "moves": near_empty(rec.board, g_idx, nr) + ["pass"],
                                             "untilDepth": 1}])
-        d = top(a_ppass)
-        d_idx = d.move if d else None
-        defended = self._groups_near(rec.board, x, g_idx, th.defend_radius)
+        d_idx = best_candidate(a_ppass)
+        defended = groups_near(rec.board, x, g_idx, th.defend_radius)
         groups_def, v_d = [], None
         if d_idx is not None:
             rec_pd = self._play(rec_ppass, d_idx, opp)
@@ -1580,18 +1521,18 @@ class Tools:
             v_d = round(sx * (s_g - a_pd.score_lead), 2) + 0.0
             for gr in defended:
                 groups_def.append({"label": group_label(gr, size), "anchor": idx_to_gtp(gr.anchor),
-                                   "ownership_before": self._group_own(gr, rec.board, a_p.ownership),
-                                   "ownership_after_move": self._group_own(gr, rec_g.board, a_g.ownership),
-                                   "ownership_if_attacked": self._group_own(gr, rec_pd.board, a_pd.ownership)})
+                                   "ownership_before": gown(gr, rec.board, a_p.ownership),
+                                   "ownership_after_move": gown(gr, rec_g.board, a_g.ownership),
+                                   "ownership_if_attacked": gown(gr, rec_pd.board, a_pd.ownership)})
         # groups left behind when the opponent's best reply is elsewhere
         left = []
         if r_idx is not None and rc and not rc["local"]:
             rec_gr = self._play(rec_g, r_idx, opp)
             a_gr = search(rec_gr, ownership=True)
-            for gr in self._groups_near(rec.board, x, r_idx, th.defend_radius):
+            for gr in groups_near(rec.board, x, r_idx, th.defend_radius):
                 left.append({"label": group_label(gr, size), "anchor": idx_to_gtp(gr.anchor),
-                             "ownership_before": self._group_own(gr, rec.board, a_p.ownership),
-                             "ownership_after_reply": self._group_own(gr, rec_gr.board, a_gr.ownership)})
+                             "ownership_before": gown(gr, rec.board, a_p.ownership),
+                             "ownership_after_reply": gown(gr, rec_gr.board, a_gr.ownership)})
         # was the better move gote too, and did anything change status between the two?
         e_gote, status_changes = None, None
         if e_idx is not None and e_idx != g_idx:
@@ -1600,10 +1541,10 @@ class Tools:
             rce = reply_character(a_e, e_idx, size, th)
             e_gote = bool(rce and not rce["local"])
             status_changes = [group_label(gr, size) for gr in rec.board.groups() if gr.size >= 3
-                              and abs(self._group_own(gr, rec_e.board, a_e.ownership) - self._group_own(gr, rec_g.board, a_g.ownership))
+                              and abs(gown(gr, rec_e.board, a_e.ownership) - gown(gr, rec_g.board, a_g.ownership))
                               >= th.group_change_min]
         # risk against the score
-        cand_g = next((c for c in a_p.candidates if c.move == g_idx), None)
+        cand_g = candidate_for(a_p, g_idx)
         stdev_g = round(cand_g.score_stdev if cand_g else a_g.score_stdev, 2)
         stdev_e = round(e.score_stdev, 2) if e else None
         lead = round(sx * a_p.score_lead, 2)
@@ -1660,38 +1601,37 @@ class Tools:
             "better_move": {"gote": e_gote, "groups_that_differ": status_changes},
             "risk": {"score_lead_before": lead, "stdev_move": stdev_g, "stdev_best": stdev_e, "human": hp},
             "belief": matches[0] if matches else None, "matches": [m["id"] for m in matches],
-            "visits_used": total, "seconds_used": round(time.time() - t0, 2),
+            "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2),
         }
-        out["query_id"] = self._log(rec.game_id, "intent_probe", {"ref": rec.ref, "move": move}, total, time.time() - t0, False,
+        out["query_id"] = self._log(rec.game_id, "intent_probe", {"ref": rec.ref, "move": move}, spent.visits, time.time() - t0, False,
                                     {"belief": out["belief"]["id"] if out["belief"] else None, "matches": out["matches"]})
         return out
 
     # ================================================================ 1.21 expectation_probe
     def expectation_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Play the line the student expected (options.expected_line) or the one a player of their rank reads, check every move with the engine, and report the first move that loses more than misread_margin: the misread, the move never considered, and its refutation."""
         o = options or {}
         th = self.cfg.thresholds
         rec = self._resolve_position(position)
-        job = self._job_for_game(rec.game_id)
-        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        visits, jid = self._visits_for(rec, budget, "line_node")
         size = rec.spec.size
         x = rec.to_move
         persp = self._perspective(o.get("perspective"), rec)
         sp = sign_of(persp)
-        plies = int(o.get("plies", 6))
+        plan = self._active_plan(jid)
+        default_plies = plan["verification"]["per_episode"].get("expectation_plies", 6) if plan else 6
+        plies = int(o.get("plies", default_plies))
         margin = float(o.get("misread_margin", th.misread_margin))
-        refute_plies = int(o.get("refutation_plies", 4))
+        refute_plies = int(o.get("refutation_plies", EXPECTATION_REFUTATION_PLIES))
         prof_alias = o.get("profile", "peer")
         prof = self._profiles([prof_alias], rec)[prof_alias]
         expected = list(norm_list(o.get("expected_line")) or [])
         g_idx = self._own_move(move, rec)
         t0 = time.time()
-        total = 0
+        spent = _Spent()
 
         def search(r: PositionRecord, ownership: bool = False) -> Analysis:
-            nonlocal total
-            a, hit = self._analyze(r, visits, ownership=ownership, policy=False)
-            total += 0 if hit else a.visits
-            return a
+            return self._analyze(r, visits, ownership=ownership, policy=False, spent=spent)[0]
 
         def score_of(a: Analysis, r: PositionRecord, mv: int | None) -> float:
             c = next((c for c in a.candidates if c.move == mv and c.visits >= th.acceptable_min_visit_share * max(1, a.visits)), None)
@@ -1711,10 +1651,7 @@ class Tools:
                 if step.get("engine") or CHAR_COLOR.get(step["color"]) != c:
                     raise ToolError("bad_request", f"expected_line step {ply}: {expected[ply - 1]!r} is not a move for "
                                     f"{COLOR_CHAR[c]}, who is to move", {"ply": ply})
-                try:
-                    mv = gtp_to_idx(step["move"], size)
-                except CoordError as e:
-                    raise ToolError("bad_request", f"expected_line step {ply}: {e}", {"ply": ply})
+                mv = _gtp(step["move"], size, f"expected_line step {ply}", {"ply": ply})
                 source = "stated"
             else:
                 mv, _p = self._human_top(cur, prof)
@@ -1741,8 +1678,7 @@ class Tools:
             nodes.append(node)
             if loss > margin and best.move != mv:
                 ref_start = self._play(cur, best.move, c)
-                ref_moves, ref_end, _a, tv = self._engine_continuation(ref_start, refute_plies, visits)
-                total += tv
+                ref_moves, ref_end, _a = self._engine_continuation(ref_start, refute_plies, visits, spent)
                 a_end = search(ref_end, ownership=True)
                 races = capture_races(ref_end.board, a_end.ownership, th)
                 misread = {"ply": ply, "color": COLOR_CHAR[c], "whose": "you" if c == x else "opponent",
@@ -1760,243 +1696,250 @@ class Tools:
                "nodes": nodes, "line": line, "misread": misread,
                "note": None if misread else f"the line a {prof} player reads holds for {len(nodes)} plies; look for the belief "
                                             "in intent_probe (value, not reading)",
-               "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
+               "visits_used": spent.visits, "seconds_used": round(time.time() - t0, 2)}
         out["query_id"] = self._log(rec.game_id, "expectation_probe", {"ref": rec.ref, "move": move, "expected_line": expected},
-                                    total, time.time() - t0, False,
+                                    spent.visits, time.time() - t0, False,
                                     {"misread_ply": misread["ply"] if misread else None,
                                      "never_considered": misread["never_considered"] if misread else None})
         return out
 
     # ================================================================ 1.17 validate_variations
     def validate_variations(self, job_id: str, episodes: list, summary: dict | None = None, options: dict | None = None) -> dict:
+        """Validate lesson branches and quizzes against the game (legality, colors, evaluations) and export the checksummed dashboard data blob."""
         o = options or {}
-        try:
+        with _engine_errors():
             job = self.jobs.get(job_id)
-        except EngineError as e:
-            raise _wrap_engine_error(e)
         if job.ga is None or job.state != "done":
             raise ToolError("job_not_finished", "the survey must be complete before exporting")
         ga = job.ga
         ga.build_boards()
-        th = self.cfg.thresholds
-        size = ga.size
         student = ga.student_color if ga.student_color is not None else BLACK
-        s = sign_of(student)
-        visits = self._budget_visits(o.get("budget"), job_id, "line_node")
-        errors: list[dict] = []
-        warnings: list[str] = []
-        ownership_out: dict[str, str] = {}
+        v = _Validation(job, self._budget_visits(o.get("budget"), job_id, "line_node"), student, o.get("evaluate_missing", True))
         t0 = time.time()
-        total = 0
-        M = ga.M
-
-        def own_key_for_move(n: int) -> None:
-            a = ga.positions[n]
-            if a.ownership is not None:
-                ownership_out[f"m{n}"] = encode_ownership(a.ownership)
-
         eps_out = []
         for ep in episodes:
             eid = ep.get("id", "E?")
             root_n = int(ep["moves"][0]) if ep.get("moves") else None
-            if root_n is None or not 1 <= root_n <= M:
-                errors.append({"episode_id": eid, "code": "bad_from_move", "message": "episode moves range missing or out of game"})
+            if root_n is None or not 1 <= root_n <= ga.M:
+                v.errors.append({"episode_id": eid, "code": "bad_from_move", "message": "episode moves range missing or out of game"})
                 continue
-            own_key_for_move(root_n - 1)
-            own_key_for_move(root_n)
-            branches_out = []
-            branch_ends: dict[str, PositionRecord] = {}
+            for n in (root_n - 1, root_n):
+                if ga.positions[n].ownership is not None:
+                    v.ownership[f"m{n}"] = encode_ownership(ga.positions[n].ownership)
+            branches_out, branch_ends = [], {}
             for br in ep.get("branches", []):
-                bid = br.get("id", "B?")
-                parent, at_ply, prefix = None, None, []
-                if br.get("from_branch"):
-                    parent = next((b for b in branches_out if b["id"] == br["from_branch"]), None)
-                    if parent is None:
-                        errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
-                                       "message": f"from_branch {br['from_branch']!r} is not an earlier valid branch of {eid}"})
-                        continue
-                    at_ply = int(br.get("at_ply", 0))
-                    if not 0 <= at_ply <= len(parent["moves"]):
-                        errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
-                                       "message": f"at_ply {at_ply} outside 0..{len(parent['moves'])} of {parent['id']}"})
-                        continue
-                    fm = parent["fromMove"]
-                    prefix = parent["moves"][:at_ply]
-                else:
-                    fm = int(br.get("from_move", root_n - 1))
-                if not 0 <= fm <= M:
-                    errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_from_move", "message": f"from_move {fm} outside 0..{M}"})
-                    continue
-                spec = self.jobs._spec(job.game, fm)
-                board = ga.boards[fm]
-                cur = self.store.put_position(spec, job.game_id, fm, persist=False)
-                evals, moves_out, ok = [], [], True
-                for ply, m in enumerate(prefix + list(br.get("moves", [])), 1):
-                    try:
-                        color, idx = parse_move(m, size)
-                    except CoordError as e:
-                        errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "illegal_move", "message": str(e)})
-                        ok = False
-                        break
-                    if color != board.to_move:
-                        errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "wrong_color",
-                                       "message": f"{COLOR_CHAR[color]} played but {COLOR_CHAR[board.to_move]} is to move"})
-                        ok = False
-                        break
-                    try:
-                        board = board.play(color, idx, spec.rules)
-                    except IllegalMove as e:
-                        errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "illegal_move", "message": e.reason})
-                        ok = False
-                        break
-                    spec = PositionSpec(spec.size, spec.rules, spec.komi, spec.setup_black, spec.setup_white,
-                                        spec.moves + [(color, idx)], spec.first_to_move)
-                    cur = self.store.put_position(spec, job.game_id, None, persist=False)
-                    a, hit = self._analyze(cur, visits, ownership=True, policy=False) if o.get("evaluate_missing", True) \
-                        else (self.store.get_cached(cur.ref, 1), True)
-                    if a is None:
-                        errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "unknown_query",
-                                       "message": "no cached evaluation and evaluate_missing is false"})
-                        ok = False
-                        break
-                    total += 0 if hit else a.visits
-                    evals.append(round(s * a.score_lead, 1))
-                    moves_out.append(f"{COLOR_CHAR[color]}{idx_to_gtp(idx, size)}")
-                if not ok:
-                    continue
-                if len(moves_out) <= len(prefix):
-                    errors.append({"episode_id": eid, "branch_id": bid, "code": "illegal_move", "message": "branch has no moves"})
-                    continue
-                game_cont = [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves[fm:fm + len(moves_out)]]
-                if game_cont == moves_out and parent is None:
-                    warnings.append(f"branch {bid} of {eid} never diverges from the game")
-                if a is not None and a.ownership is not None:
-                    ownership_out[f"{eid}:{bid}:end"] = encode_ownership(a.ownership)
-                bo = {"id": bid, "label": br.get("label", bid), "fromMove": fm, "moves": moves_out, "evals": evals,
-                      "ownershipAtEnd": f"{eid}:{bid}:end" if a is not None and a.ownership is not None else None,
-                      "ledgerRef": br.get("ledger_ref"), "kind": br.get("kind")}
-                if parent is not None:
-                    bo["parentBranch"], bo["branchPly"] = parent["id"], at_ply
-                branches_out.append(bo)
-                branch_ends[bid] = cur
-            comparison_out = None
-            cmp_spec = ep.get("comparison")
-            if cmp_spec:
-                ids = (cmp_spec.get("a"), cmp_spec.get("b"))
-                missing = [i for i in ids if i not in branch_ends]
-                if missing:
-                    errors.append({"episode_id": eid, "code": "bad_comparison",
-                                   "message": f"comparison names {missing}, which are not valid branches of {eid}"})
-                else:
-                    fa, ga_g, ta = self._features(branch_ends[ids[0]], visits, student)
-                    fb, gb_g, tb = self._features(branch_ends[ids[1]], visits, student)
-                    total += ta + tb
-                    c = self._compare_features(fa, ga_g, fb, gb_g, th)
-                    labels = {b["id"]: b["label"] for b in branches_out}
-                    comparison_out = {
-                        "a": ids[0], "b": ids[1], "aLabel": labels[ids[0]], "bLabel": labels[ids[1]],
-                        "scoreDiff": c["score_diff"],
-                        "groups": [{"group": g["group"], "a": g["in_a"], "b": g["in_b"]} for g in c["groups_changed"]],
-                        "territory": [{"label": r["label"], "a": r["a"], "b": r["b"]} for r in c["territory_changed"]],
-                        "territoryTotal": c["territory_total"], "sente": {"a": c["sente"]["a"], "b": c["sente"]["b"]},
-                        "nextMove": {k: {"side": v["side_to_move"], "move": v["best_move"], "value": v["value"]} for k, v in c["tempo"].items()},
-                        "weakGroups": c["weak_groups"]}
-            quiz_out = None
-            q = ep.get("quiz")
-            if q:
-                at = int(q.get("at_move", root_n))
-                if not 1 <= at <= M:
-                    errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"quiz at_move {at} outside 1..{M}"})
-                else:
-                    before = ga.positions[at - 1]
-                    mover = ga.moves[at - 1][0]
-                    sm = sign_of(mover)
-                    best = before.candidates[0] if before.candidates else None
-                    best_score = best.score_lead if best else before.score_lead
-                    actual_idx = ga.moves[at - 1][1]
-                    peer_prof = ga.profiles.get("peer")
-                    peer_idx = None
-                    if peer_prof and peer_prof in before.human:
-                        pol = before.human[peer_prof]
-                        peer_idx = max(range(size * size), key=lambda i: pol[i])
-                    cand_pts = list(dict.fromkeys(list(q.get("candidates", [])) + [idx_to_gtp(actual_idx, size)] +
-                                                  ([idx_to_gtp(peer_idx, size)] if peer_idx is not None else [])))
-                    cands = []
-                    for pt in cand_pts:
-                        try:
-                            ci = gtp_to_idx(pt, size)
-                        except CoordError:
-                            errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"bad candidate {pt}"})
-                            continue
-                        c = next((c for c in before.candidates if c.move == ci), None)
-                        if ci == actual_idx:
-                            sc = ga.positions[at].score_lead          # same definition as the survey's points lost
-                        elif c is not None:
-                            sc = c.score_lead
-                        else:
-                            spec = self.jobs._spec(job.game, at - 1)
-                            spec.moves.append((mover, ci))
-                            try:
-                                rec = self.store.put_position(spec, job.game_id, None, persist=False)
-                            except IllegalMove as e:
-                                errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"candidate {pt} illegal: {e.reason}"})
-                                continue
-                            a, hit = self._analyze(rec, visits, ownership=False, policy=False)
-                            total += 0 if hit else a.visits
-                            sc = a.score_lead
-                        labels = []
-                        if ci == actual_idx:
-                            labels.append("actual")
-                        if ci == peer_idx:
-                            labels.append("peer")
-                        if best and ci == best.move:
-                            labels.append("best")
-                        cands.append({"move": pt, "pointsLost": round(max(0.0, sm * (best_score - sc)), 1), "labels": labels, "note": ""})
-                    quiz_out = {"atMove": at, "type": q.get("type", "move"), "candidates": cands,
-                                "actual": idx_to_gtp(actual_idx, size), "peerMove": idx_to_gtp(peer_idx, size) if peer_idx is not None else None}
-                    if q.get("type") == "status":
-                        st = q.get("status") or {}
-                        res = self.solve_results.get(st.get("solve_query_id", ""))
-                        if res is None:
-                            errors.append({"episode_id": eid, "code": "unknown_query", "message": f"solve_query_id {st.get('solve_query_id')!r} not found"})
-                        else:
-                            quiz_out["status"] = {"groupPoint": st.get("group_point"), "answer": res["status"], "confidence": res["confidence"]}
+                done = self._vv_branch(v, br, eid, root_n, branches_out)
+                if done is not None:
+                    branches_out.append(done[0])
+                    branch_ends[done[0]["id"]] = done[1]
+            comparison_out = self._vv_comparison(v, ep["comparison"], eid, branches_out, branch_ends) if ep.get("comparison") else None
+            quiz_out = self._vv_quiz(v, ep["quiz"], eid, root_n) if ep.get("quiz") else None
             eps_out.append({"id": eid, "moves": ep.get("moves"), "title": ep.get("title", ""), "category": ep.get("category", ""),
                             "tags": ep.get("tags", []), "pointsLost": ep.get("points_lost"),
                             "commentary": [{"atMove": int(c["at_move"]), "text": c["text"]} for c in ep.get("commentary", [])],
                             "branches": branches_out, "quiz": quiz_out, "principle": ep.get("principle", ""), "cue": ep.get("cue", ""),
                             "ruleCheck": ep.get("rule_check", ""), "belief": ep.get("belief"), "comparison": comparison_out})
-        valid = not errors
-        out = {"valid": valid, "errors": errors, "warnings": warnings, "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
+        valid = not v.errors
+        out = {"valid": valid, "errors": v.errors, "warnings": v.warnings, "visits_used": v.spent.visits,
+               "seconds_used": round(time.time() - t0, 2)}
         if valid:
-            game = job.game
-            you = COLOR_CHAR[student]
-            opp = "W" if you == "B" else "B"
-            rows = move_rows(ga, th)
-            ph = phases_fn(ga, th)
-            dec, lc = decisive_and_last_chance(ga, rows, th)
-            data = {
-                "meta": {"game_id": ga.game_id, "job_id": job_id, "visits_per_move": ga.visits_per_move, "server_version": __version__,
-                         "contract_version": CONTRACT_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
-                "game": {"id": ga.game_id, "date": game.date, "you": you, "opponent": game.players[opp]["name"],
-                         "opponentRank": game.players[opp].get("rank"), "yourRank": game.players[you].get("rank"),
-                         "handicap": ga.handicap, "komi": ga.komi, "rules": ga.rules, "result": ga.result.get("raw", ""),
-                         "players": game.players},
-                "setup": {"AB": [idx_to_gtp(i, size) for i in ga.setup_black], "AW": [idx_to_gtp(i, size) for i in ga.setup_white]},
-                "moves": [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves],
-                "scoreSeries": [round(s * a.score_lead, 1) for a in ga.positions],
-                "phases": ph, "decisive": dec, "lastChance": lc,
-                "episodes": eps_out, "ownership": ownership_out, "summary": summary or {},
-            }
-            blob = json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+            data = self._vv_data(v, job_id, eps_out, summary)
+            blob = canonical(data)
             out["dashboard_data"] = blob
             out["sha256"] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
             out["size_bytes"] = len(blob.encode("utf-8"))
             n = len(list(self.store.game_dir(job.game_id).glob("export-*.json"))) + 1
             self.store.write_json(job.game_id, f"export-{n}.json", {"sha256": out["sha256"], "data": data})
-        out["query_id"] = self._log(job.game_id, "validate_variations", {"episodes": len(episodes)}, total, time.time() - t0, False,
-                                    {"valid": valid, "errors": len(errors)})
+        out["query_id"] = self._log(job.game_id, "validate_variations", {"episodes": len(episodes)}, v.spent.visits, time.time() - t0, False,
+                                    {"valid": valid, "errors": len(v.errors)})
         return out
+
+    def _vv_branch(self, v: "_Validation", br: dict, eid: str, root_n: int, earlier: list[dict]) -> tuple[dict, PositionRecord] | None:
+        """One lesson branch replayed and evaluated: (exported branch, end position), or None after recording its error."""
+        job, ga, errors = v.job, v.job.ga, v.errors
+        size, M = ga.size, ga.M
+        bid = br.get("id", "B?")
+        parent, at_ply, prefix = None, None, []
+        if br.get("from_branch"):
+            parent = next((b for b in earlier if b["id"] == br["from_branch"]), None)
+            if parent is None:
+                errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
+                               "message": f"from_branch {br['from_branch']!r} is not an earlier valid branch of {eid}"})
+                return None
+            at_ply = int(br.get("at_ply", 0))
+            if not 0 <= at_ply <= len(parent["moves"]):
+                errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_branch_parent",
+                               "message": f"at_ply {at_ply} outside 0..{len(parent['moves'])} of {parent['id']}"})
+                return None
+            fm = parent["fromMove"]
+            prefix = parent["moves"][:at_ply]
+        else:
+            fm = int(br.get("from_move", root_n - 1))
+        if not 0 <= fm <= M:
+            errors.append({"episode_id": eid, "branch_id": bid, "code": "bad_from_move", "message": f"from_move {fm} outside 0..{M}"})
+            return None
+        spec = self.jobs.spec_at(job.game, fm)
+        board = ga.boards[fm]
+        cur = self.store.put_position(spec, job.game_id, fm, persist=False)
+        evals, moves_out, a = [], [], None
+        s = sign_of(v.student)
+        for ply, m in enumerate(prefix + list(br.get("moves", [])), 1):
+            try:
+                color, idx = parse_move(m, size)
+            except CoordError as e:
+                errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "illegal_move", "message": str(e)})
+                return None
+            if color != board.to_move:
+                errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "wrong_color",
+                               "message": f"{COLOR_CHAR[color]} played but {COLOR_CHAR[board.to_move]} is to move"})
+                return None
+            try:
+                board = board.play(color, idx, spec.rules)
+            except IllegalMove as e:
+                errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "illegal_move", "message": e.reason})
+                return None
+            spec = PositionSpec(spec.size, spec.rules, spec.komi, spec.setup_black, spec.setup_white,
+                                spec.moves + [(color, idx)], spec.first_to_move)
+            cur = self.store.put_position(spec, job.game_id, None, persist=False)
+            a = self._analyze(cur, v.visits, ownership=True, policy=False, spent=v.spent)[0] if v.evaluate \
+                else self.store.get_cached(cur.ref, 1)
+            if a is None:
+                errors.append({"episode_id": eid, "branch_id": bid, "ply": ply, "move": str(m), "code": "unknown_query",
+                               "message": "no cached evaluation and evaluate_missing is false"})
+                return None
+            evals.append(round(s * a.score_lead, 1))
+            moves_out.append(f"{COLOR_CHAR[color]}{idx_to_gtp(idx, size)}")
+        if len(moves_out) <= len(prefix):
+            errors.append({"episode_id": eid, "branch_id": bid, "code": "illegal_move", "message": "branch has no moves"})
+            return None
+        game_cont = [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves[fm:fm + len(moves_out)]]
+        if game_cont == moves_out and parent is None:
+            v.warnings.append(f"branch {bid} of {eid} never diverges from the game")
+        if a.ownership is not None:
+            v.ownership[f"{eid}:{bid}:end"] = encode_ownership(a.ownership)
+        bo = {"id": bid, "label": br.get("label", bid), "fromMove": fm, "moves": moves_out, "evals": evals,
+              "ownershipAtEnd": f"{eid}:{bid}:end" if a.ownership is not None else None,
+              "ledgerRef": br.get("ledger_ref"), "kind": br.get("kind")}
+        if parent is not None:
+            bo["parentBranch"], bo["branchPly"] = parent["id"], at_ply
+        return bo, cur
+
+    def _vv_comparison(self, v: "_Validation", cmp_spec: dict, eid: str, branches_out: list[dict],
+                       branch_ends: dict[str, PositionRecord]) -> dict | None:
+        """The end-position comparison of two branches of an episode (dashboard shape)."""
+        ids = (cmp_spec.get("a"), cmp_spec.get("b"))
+        missing = [i for i in ids if i not in branch_ends]
+        if missing:
+            v.errors.append({"episode_id": eid, "code": "bad_comparison",
+                             "message": f"comparison names {missing}, which are not valid branches of {eid}"})
+            return None
+        fa, ga_g = self._features(branch_ends[ids[0]], v.visits, v.student, v.spent)
+        fb, gb_g = self._features(branch_ends[ids[1]], v.visits, v.student, v.spent)
+        c = self._compare_features(fa, ga_g, fb, gb_g, self.cfg.thresholds)
+        labels = {b["id"]: b["label"] for b in branches_out}
+        return {"a": ids[0], "b": ids[1], "aLabel": labels[ids[0]], "bLabel": labels[ids[1]],
+                "scoreDiff": c["score_diff"],
+                "groups": [{"group": g["group"], "a": g["in_a"], "b": g["in_b"]} for g in c["groups_changed"]],
+                "territory": [{"label": r["label"], "a": r["a"], "b": r["b"]} for r in c["territory_changed"]],
+                "territoryTotal": c["territory_total"], "sente": {"a": c["sente"]["a"], "b": c["sente"]["b"]},
+                "nextMove": {k: {"side": t["side_to_move"], "move": t["best_move"], "value": t["value"]} for k, t in c["tempo"].items()},
+                "weakGroups": c["weak_groups"]}
+
+    def _vv_quiz(self, v: "_Validation", q: dict, eid: str, root_n: int) -> dict | None:
+        """A quiz with the points lost of every candidate (the actual move by the survey's own definition)."""
+        job, ga, errors = v.job, v.job.ga, v.errors
+        size, M = ga.size, ga.M
+        at = int(q.get("at_move", root_n))
+        if not 1 <= at <= M:
+            errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"quiz at_move {at} outside 1..{M}"})
+            return None
+        before = ga.positions[at - 1]
+        mover, actual_idx = ga.moves[at - 1]
+        sm = sign_of(mover)
+        best = before.candidates[0] if before.candidates else None
+        best_score = best.score_lead if best else before.score_lead
+        peer_prof = ga.profiles.get("peer")
+        peer_idx = None
+        if peer_prof and peer_prof in before.human:
+            pol = before.human[peer_prof]
+            peer_idx = max(range(size * size), key=lambda i: pol[i])
+        cand_pts = list(dict.fromkeys(list(q.get("candidates", [])) + [idx_to_gtp(actual_idx, size)] +
+                                      ([idx_to_gtp(peer_idx, size)] if peer_idx is not None else [])))
+        cands = []
+        for pt in cand_pts:
+            try:
+                ci = gtp_to_idx(pt, size)
+            except CoordError:
+                errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"bad candidate {pt}"})
+                continue
+            c = candidate_for(before, ci)
+            if ci == actual_idx:
+                sc = ga.positions[at].score_lead          # same definition as the survey's points lost
+            elif c is not None:
+                sc = c.score_lead
+            else:
+                spec = self.jobs.spec_at(job.game, at - 1)
+                spec.moves.append((mover, ci))
+                try:
+                    rec = self.store.put_position(spec, job.game_id, None, persist=False)
+                except IllegalMove as e:
+                    errors.append({"episode_id": eid, "code": "bad_quiz", "message": f"candidate {pt} illegal: {e.reason}"})
+                    continue
+                sc = self._analyze(rec, v.visits, ownership=False, policy=False, spent=v.spent)[0].score_lead
+            labels = []
+            if ci == actual_idx:
+                labels.append("actual")
+            if ci == peer_idx:
+                labels.append("peer")
+            if best and ci == best.move:
+                labels.append("best")
+            cands.append({"move": pt, "pointsLost": round(max(0.0, sm * (best_score - sc)), 1), "labels": labels, "note": ""})
+        quiz_out = {"atMove": at, "type": q.get("type", "move"), "candidates": cands,
+                    "actual": idx_to_gtp(actual_idx, size), "peerMove": idx_to_gtp(peer_idx, size) if peer_idx is not None else None}
+        if q.get("type") == "status":
+            st = q.get("status") or {}
+            res = self.solve_results.get(st.get("solve_query_id", ""))
+            if res is None:
+                errors.append({"episode_id": eid, "code": "unknown_query", "message": f"solve_query_id {st.get('solve_query_id')!r} not found"})
+            else:
+                quiz_out["status"] = {"groupPoint": st.get("group_point"), "answer": res["status"], "confidence": res["confidence"]}
+        return quiz_out
+
+    def _vv_data(self, v: "_Validation", job_id: str, eps_out: list[dict], summary: dict | None) -> dict:
+        """The dashboard data blob (checksummed as canonical JSON by the caller)."""
+        th = self.cfg.thresholds
+        game, ga = v.job.game, v.job.ga
+        size = ga.size
+        s = sign_of(v.student)
+        you = COLOR_CHAR[v.student]
+        opp = COLOR_CHAR[opponent(v.student)]
+        rows = move_rows(ga, th)
+        dec, lc = decisive_and_last_chance(ga, rows, th)
+        return {
+            "meta": {"game_id": ga.game_id, "job_id": job_id, "visits_per_move": ga.visits_per_move, "server_version": __version__,
+                     "contract_version": CONTRACT_VERSION, "exported_at": timestamp()},
+            "game": {"id": ga.game_id, "date": game.date, "you": you, "opponent": game.players[opp]["name"],
+                     "opponentRank": game.players[opp].get("rank"), "yourRank": game.players[you].get("rank"),
+                     "handicap": ga.handicap, "komi": ga.komi, "rules": ga.rules, "result": ga.result.get("raw", ""),
+                     "players": game.players},
+            "setup": {"AB": [idx_to_gtp(i, size) for i in ga.setup_black], "AW": [idx_to_gtp(i, size) for i in ga.setup_white]},
+            "moves": [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves],
+            "scoreSeries": [round(s * a.score_lead, 1) for a in ga.positions],
+            "phases": phases_fn(ga, th), "decisive": dec, "lastChance": lc,
+            "episodes": eps_out, "ownership": v.ownership, "summary": summary or {},
+        }
+
+    def wait_for_job(self, job_id: str, poll: float = 0.5, on_progress=None, timeout: float | None = None) -> dict:
+        """Block until a survey job is done, failed or cancelled (or `timeout` passes); returns its last status.
+        For the CLI, seeding and tests; `on_progress(status)` sees every status polled."""
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            st = self.job_status(job_id)
+            if on_progress is not None:
+                on_progress(st)
+            if st["state"] in ("done", "failed", "cancelled") or (deadline is not None and time.time() >= deadline):
+                return st
+            time.sleep(poll)
 
     def close(self) -> None:
         try:
@@ -2082,18 +2025,6 @@ def norm_line_step(step, to_move: int, size: int = 19) -> dict:
 
 
 # ==================================================================== helpers
-def encode_ownership(own: list[float]) -> str:
-    out = []
-    for o in own:
-        k = int(round((max(-1.0, min(1.0, o)) + 1.0) * 10))
-        out.append(chr(ord("a") + max(0, min(20, k))))
-    return "".join(out)
-
-
-def decode_ownership(s: str) -> list[float]:
-    return [(ord(ch) - ord("a")) / 10.0 - 1.0 for ch in s]
-
-
 def _row_out(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in ("idx", "best_idx", "acceptable")}
 

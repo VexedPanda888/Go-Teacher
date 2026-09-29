@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from queue import Queue, Empty
 from typing import Callable
 
-from .board import BLACK, WHITE, COLOR_CHAR, Board, IllegalMove
+from .board import BLACK, WHITE, COLOR_CHAR, Board, IllegalMove, opponent
 from pathlib import Path
 
 from .coords import gtp_to_idx, idx_to_gtp, star_points
@@ -96,22 +96,14 @@ class PositionSpec:
     @property
     def to_move(self) -> int:
         if self.moves:
-            return WHITE if self.moves[-1][0] == BLACK else BLACK
+            return opponent(self.moves[-1][0])
         return self.first_to_move
 
     def board(self) -> Board:
-        b = Board(self.size, to_move=self.first_to_move)
-        for i in self.setup_black:
-            b.place(BLACK, i)
-        for i in self.setup_white:
-            b.place(WHITE, i)
+        b = Board.from_setup(self.size, self.first_to_move, self.setup_black, self.setup_white)
         for color, idx in self.moves:
             b = b.play(color, idx, self.rules)
         return b
-
-
-def _pt(idx: int | None, size: int) -> str:
-    return idx_to_gtp(idx, size)
 
 
 class KataGoEngine:
@@ -311,9 +303,9 @@ class KataGoEngine:
         q = {
             "rules": spec.rules, "komi": spec.komi,
             "boardXSize": spec.size, "boardYSize": spec.size,
-            "initialStones": [["B", _pt(i, spec.size)] for i in spec.setup_black]
-            + [["W", _pt(i, spec.size)] for i in spec.setup_white],
-            "moves": [[COLOR_CHAR[c], _pt(i, spec.size)] for c, i in spec.moves],
+            "initialStones": [["B", idx_to_gtp(i, spec.size)] for i in spec.setup_black]
+            + [["W", idx_to_gtp(i, spec.size)] for i in spec.setup_white],
+            "moves": [[COLOR_CHAR[c], idx_to_gtp(i, spec.size)] for c, i in spec.moves],
             "initialPlayer": COLOR_CHAR[spec.first_to_move],
         }
         return q
@@ -341,7 +333,6 @@ class KataGoEngine:
         if avoid_moves:
             q["avoidMoves"] = avoid_moves
         reports: list[tuple[str, float]] = []
-        on_report = None
         t0 = time.time()
         if (stop_when_stable and max_visits >= 400) or max_seconds:
             q["reportDuringSearchEvery"] = self.report_every
@@ -362,6 +353,8 @@ class KataGoEngine:
                     if all(r[0] == last[0][0] for r in last) and max(r[1] for r in last) - min(r[1] for r in last) < stable_delta:
                         return True
                 return False
+        else:
+            on_report = None
         resp = self.query(q, on_report=on_report)
         a = self._normalize(resp, spec)
         if pv_len:

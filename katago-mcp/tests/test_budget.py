@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from katago_mcp.budget import plan, unit_visits, solve_visits, line_node_searches, BudgetError  # noqa: E402
+from katago_mcp.budget import plan, unit_visits, solve_visits, line_node_searches, survey_visits, BudgetError  # noqa: E402
 from katago_mcp.config import BudgetConfig  # noqa: E402
 
 
@@ -94,6 +94,14 @@ class TestWorkedExamples(unittest.TestCase):
         self.assertFalse(p["feasible"])
         self.assertLess(p["verification"]["episodes"], 5)
         self.assertTrue(any("fit at base rigor" in n for n in p["notes"]))
+
+    def test_survey_visits_and_quick_profile(self):
+        cfg = BudgetConfig()
+        self.assertEqual(survey_visits(cfg, 120, 187), int(120 * 10 * 60 / 187))
+        self.assertEqual(survey_visits(cfg, 650, 187), cfg.survey_cap)
+        self.assertEqual(survey_visits(cfg, 1, 187), cfg.survey_floor)
+        self.assertEqual(plan(cfg, vps=650, move_count=187, total_minutes=40)["profiles"]["quick"], 200)
+        self.assertEqual(plan(cfg, vps=650, move_count=187, total_minutes=40, quick_visits=300)["profiles"]["quick"], 300)
 
     def test_no_throughput(self):
         with self.assertRaises(BudgetError):

@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from .board import BLACK, WHITE
 from .coords import sgf_to_idx
 
+# An online-go.com game link (game/N, game/view/N, api/v1/games/N): the game id in group 1.
+OGS_GAME_RE = re.compile(r"online-go\.com/(?:api/v1/games/|game/)?(?:view/)?(\d+)")
+
 
 class SgfError(ValueError):
     pass
@@ -255,7 +258,7 @@ def parse(text: str) -> SgfGame:
     g.place = root.get("PC", [None])[0]
     g.comment = root.get("GC", [None])[0]
     g.game_name = root.get("GN", [None])[0]
-    m = re.search(r"online-go\.com/game/(?:view/)?(\d+)", text)
+    m = OGS_GAME_RE.search(text)
     if m:
         g.ogs_game_id = m.group(1)
     if "TM" in root:

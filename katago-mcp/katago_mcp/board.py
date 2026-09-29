@@ -84,6 +84,16 @@ class Board:
         self.history_hash = 0
         self.move_count = 0
 
+    @classmethod
+    def from_setup(cls, size: int, to_move: int, setup_black=(), setup_white=()) -> "Board":
+        """Empty board with setup stones (AB/AW), before any move."""
+        b = cls(size, to_move=to_move)
+        for i in setup_black:
+            b.place(BLACK, i)
+        for i in setup_white:
+            b.place(WHITE, i)
+        return b
+
     # ------------------------------------------------------------------ basics
     def copy(self) -> "Board":
         b = Board.__new__(Board)
@@ -167,14 +177,6 @@ class Board:
         return n
 
     # ------------------------------------------------------------------ play
-    def legality(self, color: int, idx: int | None, rules: str = "japanese") -> str | None:
-        """Return None if legal, else the reason."""
-        try:
-            self.play(color, idx, rules)
-        except IllegalMove as e:
-            return e.reason
-        return None
-
     def play(self, color: int, idx: int | None, rules: str = "japanese") -> "Board":
         rs = RULESETS.get(rules, RULESETS["japanese"])
         b = self.copy()

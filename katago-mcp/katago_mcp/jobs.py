@@ -8,20 +8,19 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 
-from .board import BLACK, WHITE, COLOR_CHAR, CHAR_COLOR
+from .board import BLACK, WHITE, COLOR_CHAR, CHAR_COLOR, opponent
 from .config import Config
 from .engine import Analysis, PositionSpec, EngineError
 from .metrics import GameAnalysis, move_rows, phases, build_episodes, digest
 from .sgf import SgfGame, parse, rank_to_profile, rank_stronger_by
-from .store import Store
+from .store import Store, timestamp
 
 
 def resolve_profiles(cfg: Config, game: SgfGame | None, student_color: int | None) -> dict[str, str]:
     student_rank = cfg.student.rank
     opp_rank = None
     if game is not None and student_color is not None:
-        sc = COLOR_CHAR[student_color]
-        oc = "W" if sc == "B" else "B"
+        sc, oc = COLOR_CHAR[student_color], COLOR_CHAR[opponent(student_color)]
         student_rank = game.players[sc].get("rank") or cfg.student.rank
         opp_rank = game.players[oc].get("rank")
     peer = rank_to_profile(student_rank) or "rank_7k"
@@ -46,6 +45,15 @@ def game_id_of(game: SgfGame, text: str) -> str:
     if game.ogs_game_id:
         return f"ogs_{game.ogs_game_id}"
     return "sgf_" + hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def game_analysis(game_id: str, game: SgfGame, student_color: int | None, positions: list[Analysis], refs: list[str],
+                  visits_per_move: int, profiles: dict[str, str], after_best: dict[int, list[float]] | None = None) -> GameAnalysis:
+    return GameAnalysis(
+        game_id=game_id, size=game.size, rules=game.rules, komi=game.komi, handicap=game.handicap,
+        student_color=student_color, moves=list(game.moves), setup_black=list(game.setup_black),
+        setup_white=list(game.setup_white), first_to_move=game.first_to_move, positions=positions, refs=refs,
+        visits_per_move=visits_per_move, result=game.result(), profiles=profiles, after_best_ownership=after_best or {})
 
 
 @dataclass
@@ -128,7 +136,8 @@ class JobManager:
         t.start()
         return job
 
-    def _spec(self, game: SgfGame, k: int) -> PositionSpec:
+    def spec_at(self, game: SgfGame, k: int) -> PositionSpec:
+        """The position after move k of a game (a fresh spec the caller may extend)."""
         return PositionSpec(game.size, game.rules, game.komi, list(game.setup_black), list(game.setup_white),
                             list(game.moves[:k]), game.first_to_move)
 
@@ -138,18 +147,14 @@ class JobManager:
         profiles = list(dict.fromkeys(job.profiles.values()))
         analyses: list[Analysis] = []
         refs: list[str] = []
-        ga = GameAnalysis(
-            game_id=job.game_id, size=game.size, rules=game.rules, komi=game.komi, handicap=game.handicap,
-            student_color=job.student_color, moves=list(game.moves), setup_black=list(game.setup_black),
-            setup_white=list(game.setup_white), first_to_move=game.first_to_move, positions=analyses, refs=refs,
-            visits_per_move=job.visits_per_move, result=game.result(), profiles=dict(job.profiles))
+        ga = game_analysis(job.game_id, game, job.student_color, analyses, refs, job.visits_per_move, dict(job.profiles))
         job.ga = ga
         try:
             for k in range(job.positions_total):
                 if job._cancel.is_set():
                     job.state = "cancelled"
                     break
-                spec = self._spec(game, k)
+                spec = self.spec_at(game, k)
                 rec = self.store.put_position(spec, job.game_id, k, persist=False)
                 a = self.engine.analyze(spec, job.visits_per_move, include_ownership=True, include_policy=True,
                                         human_profiles=profiles, priority=0)
@@ -189,7 +194,7 @@ class JobManager:
             best = rows[n - 1]["best_idx"]
             if best is None:
                 continue
-            spec = self._spec(job.game, n - 1)
+            spec = self.spec_at(job.game, n - 1)
             color = job.game.moves[n - 1][0]
             spec.moves.append((color, best))
             try:
@@ -208,7 +213,7 @@ class JobManager:
             "student_color": None if ga.student_color is None else COLOR_CHAR[ga.student_color],
             "profiles": ga.profiles, "positions": [a.to_dict() for a in ga.positions], "refs": list(ga.refs),
             "after_best_ownership": {str(k): v for k, v in ga.after_best_ownership.items()},
-            "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "written_at": timestamp(),
         }
         self.store.write_json(job.game_id, "analysis.json", obj)
 
@@ -221,16 +226,12 @@ class JobManager:
             return None
         game = parse(sgf_path.read_text(encoding="utf-8"))
         sc = obj.get("student_color")
-        ga = GameAnalysis(
-            game_id=game_id, size=game.size, rules=game.rules, komi=game.komi, handicap=game.handicap,
-            student_color=CHAR_COLOR[sc] if sc else None, moves=list(game.moves), setup_black=list(game.setup_black),
-            setup_white=list(game.setup_white), first_to_move=game.first_to_move,
-            positions=[Analysis.from_dict(d) for d in obj["positions"]], refs=list(obj["refs"]),
-            visits_per_move=obj["visits_per_move"], result=game.result(), profiles=obj.get("profiles", {}),
-            after_best_ownership={int(k): v for k, v in obj.get("after_best_ownership", {}).items()})
+        ga = game_analysis(game_id, game, CHAR_COLOR[sc] if sc else None, [Analysis.from_dict(d) for d in obj["positions"]],
+                           list(obj["refs"]), obj["visits_per_move"], obj.get("profiles", {}),
+                           {int(k): v for k, v in obj.get("after_best_ownership", {}).items()})
         # rebuild the position store and cache so refs resolve
         for k, a in enumerate(ga.positions):
-            spec = self._spec(game, k)
+            spec = self.spec_at(game, k)
             rec = self.store.put_position(spec, game_id, k, persist=False)
             self.store.put_cached(rec.ref, a, ownership=a.ownership is not None)
         return ga

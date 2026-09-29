@@ -1,14 +1,12 @@
 import os
-import sys
+import tempfile
 import tomllib
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
+from _helpers import ROOT  # noqa: E402  (also puts the package on sys.path)
 from katago_mcp.config import load_config  # noqa: E402
 from katago_mcp.engine import KataGoEngine  # noqa: E402
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
 MACHINES = ("m5pro", "m2air", "r5700xt")
 
 
@@ -40,6 +38,20 @@ class TestMachineConfigs(unittest.TestCase):
             first = data[MACHINES[0]].get(section)
             for name in MACHINES[1:]:
                 self.assertEqual(data[name].get(section), first, f"[{section}] differs in {name}.toml")
+
+
+class TestLoadConfig(unittest.TestCase):
+    def test_budget_units_and_throughput_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "box.toml")
+            with open(p, "w") as f:
+                f.write("[budget]\nsurvey_cap = 800\n[budget.unit_base]\nroot = 1234\n[budget.unit_cap]\nplies = 10\n")
+            cfg = load_config(p)
+            self.assertEqual(cfg.budget.survey_cap, 800)
+            self.assertEqual((cfg.budget.unit_base.root, cfg.budget.unit_base.line_node), (1234, 250))
+            self.assertEqual((cfg.budget.unit_cap.plies, cfg.budget.unit_cap.root), (10, 6000))
+            self.assertEqual(str(cfg.throughput_path), os.path.join(tmp, "box.throughput.json"))
+        self.assertIsNone(load_config(None).throughput_path)
 
 
 if __name__ == "__main__":

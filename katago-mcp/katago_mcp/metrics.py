@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, Board
+from .board import BLACK, EMPTY, COLOR_CHAR, Board, opponent
 from .config import Thresholds
 from .coords import chebyshev, gtp_to_idx, idx_to_gtp, neighbors
 from .engine import Analysis
@@ -42,11 +42,7 @@ class GameAnalysis:
     def build_boards(self) -> None:
         if self.boards:
             return
-        b = Board(self.size, to_move=self.first_to_move)
-        for i in self.setup_black:
-            b.place(BLACK, i)
-        for i in self.setup_white:
-            b.place(WHITE, i)
+        b = Board.from_setup(self.size, self.first_to_move, self.setup_black, self.setup_white)
         self.boards = [b]
         for color, idx in self.moves:
             b = b.play(color, idx, self.rules)
@@ -59,11 +55,7 @@ class GameAnalysis:
 
 # ------------------------------------------------------------------ helpers
 def policy_prob(a: Analysis, idx: int | None, size: int) -> float | None:
-    if a.policy is None:
-        return None
-    i = size * size if idx is None else idx
-    v = a.policy[i]
-    return None if v is None or v < 0 else float(v)
+    return None if a.policy is None else prob_at(a.policy, idx, size)
 
 
 def human_prob(a: Analysis, alias_to_profile: dict[str, str], idx: int | None, size: int) -> dict[str, float]:
@@ -74,6 +66,12 @@ def human_prob(a: Analysis, alias_to_profile: dict[str, str], idx: int | None, s
         if arr is not None and 0 <= i < len(arr) and arr[i] >= 0:
             out[alias] = round(float(arr[i]), 4)
     return out
+
+
+def prob_at(arr: list[float], idx: int | None, size: int) -> float | None:
+    """A policy-array entry (pass is the last), None for illegal (-1) points."""
+    v = arr[size * size if idx is None else idx]
+    return None if v is None or v < 0 else float(v)
 
 
 def best_candidate(a: Analysis) -> int | None:
@@ -195,6 +193,27 @@ def group_status_label(mean_own_owner: float, th: Thresholds) -> str:
     return "unsettled"
 
 
+def group_mean_ownership(g, own: list[float], board: Board | None = None) -> float:
+    """Owner-perspective mean ownership of the stones of g; with `board`, stones no longer on it count -1."""
+    s = sign_of(g.color)
+    if board is None:
+        return s * sum(own[i] for i in g.stones) / g.size
+    return sum(s * own[i] if board.cells[i] == g.color else -1.0 for i in g.stones) / g.size
+
+
+def groups_near(board: Board, color: int, idx: int, radius: int, min_size: int = 2) -> list:
+    return [g for g in board.groups() if g.color == color and g.size >= min_size
+            and any(chebyshev(s, idx, board.size) <= radius for s in g.stones)]
+
+
+def near_empty(board: Board, idx: int, radius: int) -> list[str]:
+    """Empty points (GTP) within Chebyshev `radius` of idx."""
+    size = board.size
+    r0, c0 = divmod(idx, size)
+    return [idx_to_gtp(r * size + c, size) for r in range(max(0, r0 - radius), min(size, r0 + radius + 1))
+            for c in range(max(0, c0 - radius), min(size, c0 + radius + 1)) if board.cells[r * size + c] == EMPTY]
+
+
 def group_label(g, board_size: int) -> str:
     return f"{COLOR_CHAR[g.color]} {LABELS[standard_code(g.anchor, board_size)]} ({g.size})"
 
@@ -208,8 +227,7 @@ def group_records(board: Board, ownership: list[float], th: Thresholds, min_size
     for g in board.groups():
         if g.size < min_size:
             continue
-        mean_black = sum(ownership[i] for i in g.stones) / g.size
-        mean_owner = mean_black * sign_of(g.color)
+        mean_owner = group_mean_ownership(g, ownership)
         code = standard_code(g.anchor, board.size)
         rec = {
             "id": f"g_{COLOR_CHAR[g.color]}_{idx_to_gtp(g.anchor, board.size)}",
@@ -236,8 +254,7 @@ def capture_races(board: Board, ownership: list[float] | None, th: Thresholds, m
     for g in board.groups():
         if g.size < min_size or len(g.liberties) > th.race_max_liberties:
             continue
-        mean_owner = sign_of(g.color) * sum(ownership[i] for i in g.stones) / g.size
-        if group_status_label(mean_owner, th) == "unsettled":
+        if group_status_label(group_mean_ownership(g, ownership), th) == "unsettled":
             weak[g.anchor] = g
     races, seen = [], set()
     for a, g in weak.items():
@@ -260,8 +277,7 @@ def territory_by_region(board: Board, ownership: list[float], persp: int) -> dic
     """Expected points per standard region for each side: ownership summed over the points that are not
     the owner's own stones (empty points and the other side's stones, which count as dead)."""
     s = sign_of(persp)
-    own_color = persp
-    opp_color = WHITE if persp == BLACK else BLACK
+    own_color, opp_color = persp, opponent(persp)
     out = {}
     for code, idxs in standard_partition(board.size).items():
         you = opp = 0.0
@@ -286,9 +302,7 @@ def group_changes(board_before: Board, own_before: list[float], own_after: list[
     for g in board_before.groups():
         if g.size < min_size:
             continue
-        s = sign_of(g.color)
-        mb = s * sum(own_before[i] for i in g.stones) / g.size
-        ma = s * sum(own_after[i] for i in g.stones) / g.size
+        mb, ma = group_mean_ownership(g, own_before), group_mean_ownership(g, own_after)
         code = standard_code(g.anchor, board_before.size)
         out.append({"group": f"{COLOR_CHAR[g.color]} {LABELS[code]} ({g.size})", "anchor": idx_to_gtp(g.anchor, board_before.size),
                     "before": f"{group_status_label(mb, th)} {mb:+.2f}", "after": f"{group_status_label(ma, th)} {ma:+.2f}",
@@ -628,7 +642,7 @@ def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before:
             best_region = standard_code(best_idx, ga.size)
             if before.ownership is not None and any(
                     standard_code(g.anchor, ga.size) == best_region and g.size >= 2
-                    and group_status_label(sign_of(g.color) * sum(before.ownership[i] for i in g.stones) / g.size, th) == "unsettled"
+                    and group_status_label(group_mean_ownership(g, before.ownership), th) == "unsettled"
                     for g in ga.boards[n - 1].groups()):
                 tags.append("2")
     # 1 whole-board by ownership attribution, only when the best move is genuinely elsewhere
@@ -734,7 +748,7 @@ def digest(ga: GameAnalysis, th: Thresholds, max_episodes: int = 10, include_pos
     ph = phases(ga, th)
     eps = build_episodes(ga, rows, ph, th, max_episodes)
     student_char = COLOR_CHAR[ga.student_color] if ga.student_color else None
-    opp_char = ("W" if student_char == "B" else "B") if student_char else None
+    opp_char = COLOR_CHAR[opponent(ga.student_color)] if ga.student_color else None
     pl_student = points_lost_summary(rows, ph, student_char) if student_char else None
     pl_opp = points_lost_summary(rows, ph, opp_char) if opp_char else None
     dec, lc = decisive_and_last_chance(ga, rows, th)

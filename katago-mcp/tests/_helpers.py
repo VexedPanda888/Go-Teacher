@@ -1,0 +1,28 @@
+"""Shared test setup: the package on sys.path, and Tools on the mock engine in a temporary directory."""
+import os
+import sys
+
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, ROOT)
+
+from katago_mcp.config import Config  # noqa: E402
+from katago_mcp.engine import MockEngine  # noqa: E402
+from katago_mcp.tools import Tools  # noqa: E402
+
+
+def make_tools(tmp: str, engine=None, **overrides) -> Tools:
+    """Tools on a MockEngine (or `engine`) with reviews/ and games/ under tmp and 650 visits/s.
+    Overrides set config fields, nested with '__': make_tools(tmp, katago__restart_above_mb=0)."""
+    cfg = Config()
+    cfg.reviews_dir = os.path.join(tmp, "reviews")
+    cfg.games_dir = os.path.join(tmp, "games")
+    cfg.throughput.visits_per_second_sustained = 650.0
+    for key, value in overrides.items():
+        *path, name = key.split("__")
+        obj = cfg
+        for p in path:
+            obj = getattr(obj, p)
+        if not hasattr(obj, name):
+            raise AttributeError(f"no config field {key}")
+        setattr(obj, name, value)
+    return Tools(cfg, engine=engine or MockEngine(), start_engine=True)

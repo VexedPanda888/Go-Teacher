@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def canonical(data) -> str:
+    # must match katago_mcp/export.canonical (this skill script is standalone)
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
 
 

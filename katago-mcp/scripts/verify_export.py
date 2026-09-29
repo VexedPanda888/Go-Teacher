@@ -7,10 +7,10 @@
 import hashlib
 import json
 import sys
+from pathlib import Path
 
-
-def canonical(data) -> str:
-    return json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from katago_mcp.export import canonical  # noqa: E402
 
 
 def main() -> int:

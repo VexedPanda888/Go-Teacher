@@ -46,12 +46,8 @@ def survey_one(t: Tools, path: Path, visits: int, student: str | None, episodes:
     s = t.sgf_summary(sgf, student)
     r = t.start_game_analysis(sgf, {"visits_per_move": visits}, student)
     t0 = time.time()
-    while True:
-        st = t.job_status(r["job_id"])
-        if st["state"] in ("done", "failed", "cancelled"):
-            break
-        print(f"\r  {path.name}: {st['positions_done']}/{st['positions_total']}  {st['elapsed_seconds']}s   ", end="", file=sys.stderr)
-        time.sleep(1.0)
+    st = t.wait_for_job(r["job_id"], 1.0, lambda st: print(f"\r  {path.name}: {st['positions_done']}/{st['positions_total']}  "
+                                                             f"{st['elapsed_seconds']}s   ", end="", file=sys.stderr))
     print(file=sys.stderr)
     if st["state"] != "done":
         return {"file": path.name, "game_id": r["game_id"], "error": st.get("error") or st["state"]}
@@ -184,8 +180,6 @@ def main() -> int:
     args = ap.parse_args()
     cfg = load_config(args.config)
     t = Tools(cfg, engine=MockEngine() if args.mock else None, start_engine=not args.mock)
-    if not args.mock:
-        t.engine.start()
     files = sorted(p for p in Path(args.sgf_dir).iterdir() if p.suffix.lower() == ".sgf")
     if not files:
         sys.exit(f"no .sgf files in {args.sgf_dir}")

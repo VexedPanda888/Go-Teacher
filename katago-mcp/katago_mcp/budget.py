@@ -8,14 +8,19 @@ class BudgetError(ValueError):
     pass
 
 
-# Searches per verified episode at line_node visits (contract §1.2.2), p = u.plies:
+# Line-search defaults of the probes (tools.py uses these as option defaults) and the searches per verified
+# episode at line_node visits they imply (contract §1.2.2), p = u.plies:
 INTENT_SEARCHES = 8                       # intent_probe
-REFUTATION_PLIES = 4
+EXPECTATION_REFUTATION_PLIES = 4          # expectation_probe: engine moves played out after the misread
+FORCED_RESISTANCE_NODES = 2               # forced_line: natural resistances tried by the opponent
+FORCED_REFUTATION_PLIES = 3               # forced_line: engine moves refuting each resistance
+PUNISH_PLIES = 3                          # analyze_line: opponent plies in the refutation probability
+REFUTATION_PLIES = EXPECTATION_REFUTATION_PLIES     # older name
 
 
 def line_node_searches(p: int) -> int:
-    expectation = 2 * p + REFUTATION_PLIES + 1            # each imagined move: one search, one more when off the candidates
-    forced = 2 * p + 3 + 2 * (2 + 3)                      # two searches per node, end features, two resistances
+    expectation = 2 * p + EXPECTATION_REFUTATION_PLIES + 1     # each imagined move: one search, one more when off the candidates
+    forced = 2 * p + 3 + FORCED_RESISTANCE_NODES * (2 + FORCED_REFUTATION_PLIES)   # two per node, end features, resistances
     return INTENT_SEARCHES + expectation + 2 * forced      # forced lines from the better and the played move
 
 
@@ -55,7 +60,14 @@ def apply_step(u: Unit, step: str) -> Unit:
     return v
 
 
-def _profiles(survey_visits: int, u: Unit, quick: int = 200) -> dict:
+def survey_visits(cfg: BudgetConfig, vps: float, move_count: int, minutes: float | None = None) -> int:
+    """Survey visits per move so that the survey takes about `minutes` (default: the survey target)."""
+    m = cfg.survey_minutes_target if minutes is None else minutes
+    return cap_clamp(int(vps * m * 60 / max(1, move_count)), cfg.survey_floor, cfg.survey_cap)
+
+
+def search_profiles(survey_visits: int, u: Unit, quick: int = 200) -> dict:
+    """Visits per budget profile (the `profiles` of a plan)."""
     return {
         "survey": survey_visits,
         "root": u.root,
@@ -77,7 +89,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
          self_review_minutes: float | None = None, episodes_requested: int | None = None,
          interview_minutes: float | None = None,
          expected_ld_episodes: int | None = None, selected: list[dict] | None = None,
-         elapsed_minutes: float = 0.0, survey_visits_existing: int | None = None) -> dict:
+         elapsed_minutes: float = 0.0, survey_visits_existing: int | None = None, quick_visits: int = 200) -> dict:
     """Return the allocation dict of tool contract §1.2.  Pure function."""
     if vps <= 0:
         raise BudgetError("throughput unknown: run `katago-mcp benchmark` first")
@@ -108,7 +120,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
     if replan and survey_visits_existing:
         v_s = survey_visits_existing
     else:
-        v_s = cap_clamp(int(vps * S_survey * 60 / move_count), cfg.survey_floor, cfg.survey_cap)
+        v_s = survey_visits(cfg, vps, move_count, S_survey)
     if unlimited and not replan:
         v_s = cfg.survey_cap
     t_s = minutes(move_count * v_s, vps)
@@ -139,7 +151,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
                              "expected_minutes": round(verification_minutes(u, n, ld), 2), "slack_minutes": None},
             "minimum_minutes_for_three_episodes": round(minimum_three, 1),
             "expected_total_minutes": round(expected_total, 1),
-            "profiles": _profiles(v_s, u), "notes": notes,
+            "profiles": search_profiles(v_s, u, quick_visits), "notes": notes,
         }
 
     # ---------------------------------------------------------------- wall clock for verification
@@ -201,7 +213,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
                          "expected_minutes": round(expected_verif, 2), "slack_minutes": round(max(surplus, 0.0), 2)},
         "minimum_minutes_for_three_episodes": round(minimum_three, 1),
         "expected_total_minutes": round(expected_total, 1),
-        "profiles": _profiles(v_s, u), "notes": notes,
+        "profiles": search_profiles(v_s, u, quick_visits), "notes": notes,
     }
 
 

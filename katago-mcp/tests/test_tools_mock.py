@@ -2,19 +2,16 @@ import hashlib
 import json
 import os
 import random
-import sys
 import tempfile
-import time
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
+from _helpers import make_tools  # noqa: E402  (also puts the package on sys.path)
 from katago_mcp import CONTRACT_VERSION  # noqa: E402
 from katago_mcp.board import BLACK, WHITE, Board, IllegalMove  # noqa: E402
-from katago_mcp.config import Config  # noqa: E402
 from katago_mcp.coords import idx_to_gtp, idx_to_sgf, gtp_to_idx, star_points  # noqa: E402
 from katago_mcp.engine import MockEngine  # noqa: E402
-from katago_mcp.tools import Tools, ToolError, encode_ownership, decode_ownership  # noqa: E402
+from katago_mcp.export import canonical, decode_ownership, encode_ownership  # noqa: E402
+from katago_mcp.tools import ToolError  # noqa: E402
 
 
 def synthetic_game(n_moves: int = 70, seed: int = 7, handicap: int = 0) -> str:
@@ -65,21 +62,13 @@ class MockToolsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cfg = Config()
-        cfg.reviews_dir = os.path.join(cls.tmp.name, "reviews")
-        cfg.throughput.visits_per_second_sustained = 650.0
-        cls.tools = Tools(cfg, engine=MockEngine(), start_engine=True)
+        cls.tools = make_tools(cls.tmp.name)
         cls.sgf = synthetic_game(70, seed=7)
         cls.summary = cls.tools.sgf_summary(cls.sgf)
         cls.plan = cls.tools.plan_budget(40, move_count=70)
         cls.started = cls.tools.start_game_analysis(cls.sgf, {"profile": "survey"})
         cls.job_id = cls.started["job_id"]
-        for _ in range(600):
-            st = cls.tools.job_status(cls.job_id)
-            if st["state"] in ("done", "failed", "cancelled"):
-                break
-            time.sleep(0.05)
-        cls.status = st
+        cls.status = cls.tools.wait_for_job(cls.job_id, 0.05, timeout=30)
         cls.digest = cls.tools.job_results(cls.job_id, "digest", max_episodes=6)
 
     @classmethod
@@ -228,6 +217,7 @@ class MockToolsTest(unittest.TestCase):
         for key in ("score_diff", "groups_changed", "territory_changed", "sente", "tempo", "weak_groups"):
             self.assertIn(key, c)
         self.assertAlmostEqual(c["score_diff"], tf["b"]["score_lead"] - tf["a"]["score_lead"], places=1)
+        self.assertIn("seconds_used", tf)
         with self.assertRaises(ToolError) as cm:
             self.tools.forced_line(pos, "W" + best, {"visits": 20})
         self.assertEqual(cm.exception.code, "bad_request")
@@ -278,12 +268,28 @@ class MockToolsTest(unittest.TestCase):
             self.tools.expectation_probe(pos, mv, {"visits": 20}, {"expected_line": [f"B{reply}"]})
         self.assertEqual(cm.exception.code, "bad_request")
 
+    def test_expectation_probe_plies_from_plan(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        mv = self.tools.analyze_position(pos, {"visits": 100})["candidates"][0]["move"]
+        saved = self.tools.plans[self.job_id]
+        plan = json.loads(json.dumps(saved))
+        plan["verification"]["per_episode"]["expectation_plies"] = 2
+        self.tools.plans[self.job_id] = plan
+        try:
+            r = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"misread_margin": 999})
+            self.assertEqual(len(r["nodes"]), 2)
+            r = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"misread_margin": 999, "plies": 3})
+            self.assertEqual(len(r["nodes"]), 3)
+        finally:
+            self.tools.plans[self.job_id] = saved
+
     def test_pass_probe_and_regions(self):
         pos = {"job_id": self.job_id, "move_number": 40}
         r = self.tools.pass_probe(pos, "B", None, {"visits": 60}, {"rank_regions": True})
         self.assertIn("score_if_pass", r)
         self.assertIsNotNone(r["local_value"]["best"])
         self.assertEqual(len(r["urgency"]), 9)
+        self.assertIn("seconds_used", r)
         self.assertGreaterEqual(r["urgency"][0]["value"], r["urgency"][-1]["value"])
         with self.assertRaises(ToolError):
             self.tools.pass_probe(pos, "W", None, {"visits": 20})
@@ -295,6 +301,7 @@ class MockToolsTest(unittest.TestCase):
         r = self.tools.swing_value(pos, pts, {"visits": 40})
         self.assertEqual(len(r["results"]), 3)
         self.assertEqual(len(r["ranked"]), 3)
+        self.assertIn("seconds_used", r)
         self.assertIn(r["results"][0]["sente_gote"]["for_black"], ("sente", "gote", "unclear"))
 
     def test_local_solve_and_status_quiz(self):
@@ -356,6 +363,7 @@ class MockToolsTest(unittest.TestCase):
         blob = r["dashboard_data"]
         self.assertEqual(hashlib.sha256(blob.encode("utf-8")).hexdigest(), r["sha256"])
         data = json.loads(blob)
+        self.assertEqual(canonical(data), blob)
         self.assertEqual(data["game"]["you"], "B")
         self.assertEqual(len(data["moves"]), 70)
         self.assertEqual(len(data["scoreSeries"]), 71)
@@ -435,19 +443,13 @@ class MockToolsTest(unittest.TestCase):
 class HandicapDigestTest(unittest.TestCase):
     def test_handicap_game_uses_score_basis(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config()
-            cfg.reviews_dir = os.path.join(tmp, "reviews")
-            cfg.throughput.visits_per_second_sustained = 650.0
-            t = Tools(cfg, engine=MockEngine(), start_engine=True)
+            t = make_tools(tmp)
             sgf = synthetic_game(40, seed=3, handicap=4)
             s = t.sgf_summary(sgf)
             self.assertEqual(s["rules"]["handicap"], 4)
             self.assertEqual(len(s["rules"]["setup"]["B"]), 4)
             r = t.start_game_analysis(sgf, {"visits_per_move": 60})
-            for _ in range(400):
-                if t.job_status(r["job_id"])["state"] in ("done", "failed"):
-                    break
-                time.sleep(0.05)
+            t.wait_for_job(r["job_id"], 0.05, timeout=20)
             d = t.job_results(r["job_id"])
             self.assertTrue(d["complete"])
             self.assertEqual(d["game"]["handicap"], 4)
@@ -462,17 +464,11 @@ class RestartGuardTest(unittest.TestCase):
 
     def _start(self, memory_mb, limit=4000):
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config()
-            cfg.reviews_dir = os.path.join(tmp, "reviews")
-            cfg.katago.restart_above_mb = limit
             eng = MockEngine()
             eng.fake_memory_mb = memory_mb
-            t = Tools(cfg, engine=eng, start_engine=True)
+            t = make_tools(tmp, eng, katago__restart_above_mb=limit)
             r = t.start_game_analysis(synthetic_game(20, seed=5), {"visits_per_move": 20})
-            for _ in range(400):
-                if t.job_status(r["job_id"])["state"] in ("done", "failed"):
-                    break
-                time.sleep(0.05)
+            t.wait_for_job(r["job_id"], 0.05, timeout=20)
             t.close()
             return eng.restarts
 
@@ -494,11 +490,7 @@ class SgfInputTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        cfg = Config()
-        cfg.reviews_dir = os.path.join(self.tmp.name, "reviews")
-        cfg.games_dir = os.path.join(self.tmp.name, "games")
-        cfg.throughput.visits_per_second_sustained = 650.0
-        self.tools = Tools(cfg, engine=MockEngine())
+        self.tools = make_tools(self.tmp.name)
         self.sgf = synthetic_game(30, seed=41)
 
     def tearDown(self):
@@ -519,10 +511,7 @@ class SgfInputTest(unittest.TestCase):
         r = self.tools.start_game_analysis(p, {"visits_per_move": 30})
         self.assertEqual(r["game_id"], "ogs_555001")
         # let the background job finish before tearDown deletes the folder it writes into
-        for _ in range(400):
-            if self.tools.job_status(r["job_id"])["state"] in ("done", "failed", "cancelled"):
-                break
-            time.sleep(0.02)
+        self.tools.wait_for_job(r["job_id"], 0.02, timeout=20)
 
     def test_ogs_fetch_is_cached_and_used_by_all_entry_points(self):
         import urllib.request
@@ -581,17 +570,11 @@ class LenientInputsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cfg = Config()
-        cfg.reviews_dir = os.path.join(cls.tmp.name, "reviews")
-        cfg.throughput.visits_per_second_sustained = 650.0
-        cls.tools = Tools(cfg, engine=MockEngine())
+        cls.tools = make_tools(cls.tmp.name)
         cls.sgf = synthetic_game(40, seed=61)
         r = cls.tools.start_game_analysis(cls.sgf, {"visits_per_move": 40})
         cls.job = r["job_id"]
-        for _ in range(400):
-            if cls.tools.job_status(cls.job)["state"] == "done":
-                break
-            time.sleep(0.05)
+        cls.tools.wait_for_job(cls.job, 0.05, timeout=20)
 
     @classmethod
     def tearDownClass(cls):
@@ -613,6 +596,13 @@ class LenientInputsTest(unittest.TestCase):
         with self.assertRaises(ToolError) as cm:
             self.tools.analyze_line(pos, ["W" + best], 30, follow_pv_plies=0)
         self.assertEqual(cm.exception.code, "bad_request")
+
+    def test_start_game_analysis_budget_forms(self):
+        r = self.tools.start_game_analysis(self.sgf, 30)                  # bare number = visits per move
+        self.assertEqual(r["visits_per_move"], 30)
+        r = self.tools.start_game_analysis(self.sgf, {"seconds": 0.05})   # seconds per position at the measured rate
+        self.assertEqual(r["visits_per_move"], int(0.05 * 650))
+        self.assertTrue(r["reused"])
 
     def test_bare_ref_and_colour_words(self):
         ref = self.tools.get_position_ref(job_id=self.job, move_number=20)["position_ref"]

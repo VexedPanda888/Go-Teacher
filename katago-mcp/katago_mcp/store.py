@@ -13,6 +13,14 @@ from .board import Board
 from .engine import Analysis, PositionSpec
 
 
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+def timestamp(t: float | None = None) -> str:
+    """Local time (now, or epoch seconds t) as written in logs, analysis.json, exports and the throughput sidecar."""
+    return time.strftime(TIME_FORMAT, time.localtime(t))
+
+
 @dataclass
 class PositionRecord:
     spec: PositionSpec
@@ -138,14 +146,15 @@ class Store:
                     if not keys:
                         del self.by_ref[old_key[0]]
 
-    def any_ownership(self, ref: str) -> list[float] | None:
+    def best_with_ownership(self, ref: str) -> Analysis | None:
+        """The cached analysis of ref with ownership and the most visits, if any."""
         best = None
         with self._lock:
             for key in self.by_ref.get(ref, ()):
                 a = self.cache.get(key)
                 if a is not None and a.ownership is not None and (best is None or a.visits > best.visits):
                     best = a
-        return best.ownership if best else None
+        return best
 
     def forget_game(self, game_id: str) -> int:
         """Drop in-memory analyses and positions of a game (its files under reviews/ stay)."""
@@ -174,7 +183,7 @@ class Store:
 
     def log_query(self, game_id: str | None, entry: dict) -> None:
         entry = dict(entry)
-        entry.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S"))
+        entry.setdefault("ts", timestamp())
         p = self.game_dir(game_id) / "queries.jsonl"
         with self._lock:
             with p.open("a", encoding="utf-8") as f:

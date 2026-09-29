@@ -50,8 +50,8 @@ def cmd_benchmark(args) -> int:
     try:
         r = t.benchmark(args.seconds)
         print(json.dumps(r, indent=2))
-        if t.cfg.path:
-            print(f"saved to {t.cfg.path.rsplit('.', 1)[0]}.throughput.json", file=sys.stderr)
+        if t.cfg.throughput_path:
+            print(f"saved to {t.cfg.throughput_path}", file=sys.stderr)
         return 0
     finally:
         t.close()
@@ -91,12 +91,8 @@ def cmd_selfcheck(args) -> int:
             text = open(args.sgf, encoding="utf-8").read()
             s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student)
             print(f"survey {s['job_id']} started ({s['positions_total']} positions @ {s['visits_per_move']} visits)")
-            while True:
-                st = t.job_status(s["job_id"])
-                print(f"  {st['positions_done']}/{st['positions_total']} elapsed {st['elapsed_seconds']}s", end="\r")
-                if st["state"] in ("done", "failed", "cancelled"):
-                    break
-                time.sleep(2)
+            t.wait_for_job(s["job_id"], 2, lambda st: print(f"  {st['positions_done']}/{st['positions_total']} "
+                                                            f"elapsed {st['elapsed_seconds']}s", end="\r"))
             print()
             d = t.job_results(s["job_id"], "digest", max_episodes=5)
             print(json.dumps({k: d[k] for k in ("game", "phases", "game_type", "decisive", "last_chance", "points_lost")}, indent=2))
@@ -117,11 +113,7 @@ def cmd_survey(args) -> int:
     try:
         text = open(args.sgf, encoding="utf-8").read()
         s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student)
-        while True:
-            st = t.job_status(s["job_id"])
-            if st["state"] in ("done", "failed", "cancelled"):
-                break
-            time.sleep(0.5 if args.mock else 2)
+        t.wait_for_job(s["job_id"], 0.5 if args.mock else 2)
         print(json.dumps(t.job_results(s["job_id"], "digest", max_episodes=args.episodes), indent=2, ensure_ascii=False))
         return 0
     except ToolError as e:

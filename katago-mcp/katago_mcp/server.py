@@ -1,14 +1,16 @@
-"""MCP server (stdio).  Thin layer: every tool delegates to `Tools` and converts ToolError to an error dict."""
+"""MCP server (stdio).  Thin layer: registers the public `Tools` methods (their docstrings are the tool
+descriptions) and converts ToolError to an error dict."""
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 import os
 import sys
 
 from . import __version__
 from .config import load_config
-from .tools import ToolError, Tools
+from .tools import PUBLIC_TOOLS, ToolError, Tools
 
 log = logging.getLogger("katago_mcp")
 
@@ -50,144 +52,9 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
                 return ToolError("internal", f"{type(e).__name__}: {e}", recoverable=True).to_dict()
         return wrapper
 
-    @server.tool()
-    @guarded
-    def engine_info(refresh_benchmark: bool = False) -> dict:
-        """Machine, KataGo/network versions, human model, throughput (visits/s), active job and plan, student profiles."""
-        return tools.engine_info(refresh_benchmark)
-
-    @server.tool()
-    @guarded
-    def plan_budget(total_minutes: float | str, move_count: int | None = None, job_id: str | None = None,
-                    self_review_minutes: float | None = None, episodes_requested: int | None = None,
-                    expected_ld_episodes: int | None = None, selected: list | None = None,
-                    interview_minutes: float | None = None) -> dict:
-        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes (blind self-review and episode interviews reserved). Re-plan with job_id + selected after triage."""
-        return tools.plan_budget(total_minutes, move_count, job_id, self_review_minutes, episodes_requested,
-                                 expected_ld_episodes, selected, interview_minutes)
-
-    @server.tool()
-    @guarded
-    def sgf_summary(sgf: str, student_username: str | None = None, boards_at: list | None = None,
-                    ascii_options: dict | None = None) -> dict:
-        """Parse a game without engine use: players, rules, komi, handicap, result, move count, captures, tension events, ASCII boards, position refs. `sgf` is an OGS game link or id (fetched from online-go.com), the path/name of an .sgf file on this machine (games/ folder), or raw SGF text; prefer the link or the path over pasting text."""
-        return tools.sgf_summary(sgf, student_username, boards_at, ascii_options)
-
-    @server.tool()
-    @guarded
-    def start_game_analysis(sgf: str, budget: dict | None = None, student_username: str | None = None,
-                            game_id: str | None = None, options: dict | None = None) -> dict:
-        """Start the asynchronous whole-game survey. `sgf`: OGS game link/id, .sgf file path, or SGF text (prefer link or path). budget: {visits_per_move} or {profile:'survey'} (from the active plan). Returns a job_id."""
-        return tools.start_game_analysis(sgf, budget, student_username, game_id, options)
-
-    @server.tool()
-    @guarded
-    def job_status(job_id: str, action: str = "status") -> dict:
-        """Progress of a survey job (action 'status'), cancel it ('cancel'), or free a finished job's memory ('release'; its results stay on disk)."""
-        return tools.job_status(job_id, action)
-
-    @server.tool()
-    @guarded
-    def job_results(job_id: str, detail: str = "digest", range: list | None = None, max_episodes: int = 10,
-                    include_positives: bool = True) -> dict:
-        """Survey digest: phases, points lost, episodes (chains) with signatures, candidate tags, human probabilities, decisive move, last chance. detail: digest | moves | full."""
-        return tools.job_results(job_id, detail, range, max_episodes, include_positives)
-
-    @server.tool()
-    @guarded
-    def get_position_ref(job_id: str | None = None, sgf: str | None = None, move_number: int = 0) -> dict:
-        """Position reference for the position after move_number of a job, or of an SGF given as OGS link/id, file path, or text."""
-        return tools.get_position_ref(job_id, sgf, move_number)
-
-    @server.tool()
-    @guarded
-    def analyze_position(position: dict, budget: dict | None = None, options: dict | None = None) -> dict:
-        """Search one position: root score/winrate, candidates with PV and human probabilities, acceptable set, policy top, groups. position: {ref}|{job_id,move_number}|{sgf,move_number}|{moves,...} plus optional then:[...]."""
-        return tools.analyze_position(position, budget, options)
-
-    @server.tool()
-    @guarded
-    def analyze_line(position: dict, line: list, budget: dict | None = None, follow_pv_plies: int | None = None,
-                     options: dict | None = None) -> dict:
-        """Play a line (forced moves and/or engine replies) and evaluate every node; then follow the PV. Returns per-ply evals, deltas, end ownership/groups, refutation probability."""
-        return tools.analyze_line(position, line, budget, follow_pv_plies, options)
-
-    @server.tool()
-    @guarded
-    def pass_probe(position: dict, player: str, move: str | None = None, budget: dict | None = None,
-                   options: dict | None = None) -> dict:
-        """Local value of a move: score if the player passes vs after the best move (and after `move`). options.rank_regions=true ranks the nine regions by the value of playing there."""
-        return tools.pass_probe(position, player, move, budget, options)
-
-    @server.tool()
-    @guarded
-    def swing_value(position: dict, points: list, budget: dict | None = None, options: dict | None = None) -> dict:
-        """Swing (Black-first minus White-first) and sente/gote for up to six points, ranked."""
-        return tools.swing_value(position, points, budget, options)
-
-    @server.tool()
-    @guarded
-    def local_solve(position: dict, group_point: str, region: dict | None = None, budget: dict | None = None,
-                    options: dict | None = None) -> dict:
-        """Life-and-death of the group at group_point: attacker-first and defender-first playouts confined to a region -> alive | dead | unsettled | unclear with confidence."""
-        return tools.local_solve(position, group_point, region, budget, options)
-
-    @server.tool()
-    @guarded
-    def group_status(position: dict, options: dict | None = None) -> dict:
-        """Every group with size, liberties, mean ownership and status (alive/unsettled/dead) from cached or quick ownership."""
-        return tools.group_status(position, options)
-
-    @server.tool()
-    @guarded
-    def ownership_diff(a: dict, b: dict, regions: list | None = None, budget: dict | None = None,
-                       options: dict | None = None) -> dict:
-        """Ownership change between two positions by region and by group; classifies the loss as local, mixed or global."""
-        return tools.ownership_diff(a, b, regions, budget, options)
-
-    @server.tool()
-    @guarded
-    def human_move_distribution(position: dict, profiles: list | None = None, moves_of_interest: list | None = None,
-                                top_n: int = 8) -> dict:
-        """Human-model move probabilities at a position for profiles (peer/target/horizon/opponent or rank_7k...), top moves and moves of interest."""
-        return tools.human_move_distribution(position, profiles, moves_of_interest, top_n)
-
-    @server.tool()
-    @guarded
-    def render_board(position: dict, options: dict | None = None) -> dict:
-        """ASCII board with last move, highlights, region box; optional ownership/policy overlay and low-liberty groups."""
-        return tools.render_board(position, options)
-
-    @server.tool()
-    @guarded
-    def terminal_features(position: dict, compare_to: dict | None = None, budget: dict | None = None,
-                          options: dict | None = None) -> dict:
-        """What an end position looks like (group statuses, weak groups, territory by region, who holds sente, what the next move is worth) and, with compare_to, what is concretely different between two end positions."""
-        return tools.terminal_features(position, compare_to, budget, options)
-
-    @server.tool()
-    @guarded
-    def forced_line(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
-        """Play a move and extend the line while each reply is forced (the second-best loses more than forced_margin), preferring human-legible moves; adds the opponent's natural resistance with its refutation and the terminal features of the end position."""
-        return tools.forced_line(position, move, budget, options)
-
-    @server.tool()
-    @guarded
-    def intent_probe(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
-        """What a move was for: what it threatened if ignored, what it prevented, the character of the best reply, and the belief it implies (needs_defending, group_is_safe, is_sente, behind_must_invade, ahead_can_coast, attack_works, biggest_move) with its evidence."""
-        return tools.intent_probe(position, move, budget, options)
-
-    @server.tool()
-    @guarded
-    def expectation_probe(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
-        """Play the line the student expected (options.expected_line) or the one a player of their rank reads, check every move with the engine, and report the first move that loses more than misread_margin: the misread, the move never considered, and its refutation."""
-        return tools.expectation_probe(position, move, budget, options)
-
-    @server.tool()
-    @guarded
-    def validate_variations(job_id: str, episodes: list, summary: dict | None = None, options: dict | None = None) -> dict:
-        """Validate lesson branches and quizzes against the game (legality, colors, evaluations) and export the checksummed dashboard data blob."""
-        return tools.validate_variations(job_id, episodes, summary, options)
+    for name in PUBLIC_TOOLS:
+        fn = getattr(tools, name)
+        server.tool(name=name, description=inspect.getdoc(fn))(guarded(fn))
 
     server._katago_tools = tools   # for tests and the CLI
     return server
