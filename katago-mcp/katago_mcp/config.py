@@ -22,16 +22,18 @@ class Unit:
 class BudgetConfig:
     overhead_minutes: float = 4.0
     claude_minutes_per_episode: float = 1.0
-    self_review_minutes_default: float = 10.0
+    self_review_minutes_default: float = 5.0     # the blind self-review (four questions)
+    interview_minutes_default: float = 5.0       # the per-episode interviews after triage
+    survey_minutes_target: float = 10.0          # the survey is sized to finish in about this long
     survey_floor: int = 100
     survey_cap: int = 1000
     ld_reserve_episodes: int = 1
     max_episodes: int = 5
     min_episodes: int = 3
     unit_base: Unit = field(default_factory=Unit)
-    unit_cap: Unit = field(default_factory=lambda: Unit(6000, 1000, 12, [4, 16], 4000))
+    unit_cap: Unit = field(default_factory=lambda: Unit(6000, 1000, 8, [4, 16], 4000))
     ladder: list[str] = field(default_factory=lambda: [
-        "root_3000", "line_600", "stability_16x", "plies_12", "solve_4000_all_ld", "root_6000", "line_1000"])
+        "root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000", "line_1000"])
 
 
 @dataclass
@@ -83,6 +85,15 @@ class Thresholds:
     human_margin: float = 1.0                # forced_line: a human-profile move within this of the best replaces it
     territory_diff_min: float = 2.0          # terminal comparison: report regions that differ by at least this
     group_change_min: float = 0.2            # terminal comparison: a status change needs this much ownership movement
+    # belief probes (intent_probe / expectation_probe); calibrate on the seed games
+    defend_radius: int = 2                   # a group "defended" by a move has a stone this close to it
+    neighborhood_radius: int = 3             # local answers / local attacks are confined to this Chebyshev radius
+    needs_defending_alive: float = 0.7       # needs_defending: the group is still owned above this after the attack
+    safe_group_dead: float = 0.3             # group_is_safe: the group left behind falls below this after the reply
+    sente_threat_min: float = 0.5            # is_sente: the move threatened at least this much
+    tenuki_min: float = 0.5                  # is_sente: the opponent gains at least this much by not answering
+    risk_stdev_ratio: float = 1.5            # behind_must_invade / ahead_can_coast: score-stdev ratio played vs best
+    misread_margin: float = 3.0              # expectation_probe: the first imagined move losing more than this is the misread
 
 
 @dataclass

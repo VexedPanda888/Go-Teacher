@@ -119,7 +119,9 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
   total_minutes: number | "unlimited";
   move_count?: number;                   // required unless job_id is given
   job_id?: string;                       // re-plan: move count, elapsed time and job state come from the job
-  self_review_minutes?: number;          // = config self_review_minutes_default (10); 0 for "review just this sequence"
+  self_review_minutes?: number;          // blind self-review; = config self_review_minutes_default (5); 0 for "review just this sequence"
+                                         // (when given, the survey is sized to it, as before v0.3)
+  interview_minutes?: number;            // per-episode interviews after triage; = config interview_minutes_default (5)
   episodes_requested?: number;           // 1–5; caps the episode count (e.g. 1 for a single-sequence review)
   expected_ld_episodes?: number;         // = config ld_reserve_episodes (1); how many episodes will need local solves
   selected?: { id: string; needs_local_solve: boolean }[];   // Phase 3 re-plan with the real selection
@@ -131,12 +133,13 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 {
   feasible: boolean;                     // three or more episodes at base rigor fit
   total_minutes: number | "unlimited"; elapsed_minutes: number; throughput_vps: number;
-  reserved: { overhead_minutes: number; self_review_minutes: number };
+  reserved: { overhead_minutes: number; self_review_minutes: number; interview_minutes: number };
   survey: { visits_per_move: number; expected_minutes: number; runs_past_self_review: boolean; charged_minutes: number };
   verification: {
     wall_minutes_available: number;
     episodes: number;                    // 0–5
-    per_episode: { root_visits: number; line_node_visits: number; follow_pv_plies: number; stability_multipliers: number[]; local_solve_visits: number; lines: 3 };
+    per_episode: { root_visits: number; line_node_visits: number; follow_pv_plies: number; forced_line_plies: number; expectation_plies: number;
+                   stability_multipliers: number[]; local_solve_visits: number; probes: string[] };
     ld_episodes_budgeted: number;
     ladder_steps_applied: string[];      // e.g. ["root_3000", "line_600", "stability_16x"]
     expected_minutes: number;            // engine + Claude time for the episodes
@@ -153,11 +156,13 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 |---|---|---|
 | `O` | fixed overhead: Claude's reasoning, composition, build, memory writes | 4 min |
 | `C_ep` | Claude's think time per verified episode | 1.0 min |
-| `S` | self-review minutes (input; default) | 10 min |
+| `S` | blind self-review minutes (input; default) | 5 min |
+| `I` | episode interview minutes (input; default) | 5 min |
+| `S_survey` | minutes the survey is sized to (`survey_minutes_target`; `S` when `self_review_minutes` is given) | 10 min |
 | `floor`, `cap` | survey visits per move | 100, 1000 |
 | `vps` | sustained visits/s of this machine | measured |
 | base unit | `root=1000`, `line_node=250`, `plies=6`, `stability=[4]`, `solve=1500` | |
-| cap unit | `root=6000`, `line_node=1000`, `plies=12`, `stability=[4,16]`, `solve=4000` | |
+| cap unit | `root=6000`, `line_node=1000`, `plies=8`, `stability=[4,16]`, `solve=4000` | |
 
 #### 1.2.2 Algorithm
 Let `M` be the number of analyzable positions (the game's move count), `T` the total minutes, `E_req` the episode cap (default 5), `LD` the expected life-and-death episodes.
@@ -166,23 +171,29 @@ Let `M` be the number of analyzable positions (the game's move count), `T` the t
 minutes(v) = v / vps / 60                                   # engine minutes for v visits
 
 unit_visits(u) = u.root                                     # root analysis with wide root noise
-               + 3 · (u.plies + 1) · u.line_node            # three forced lines, one search per ply plus the end
                + Σ(u.stability) · u.root                    # stability reruns at multiples of the root visits
+               + (6·u.plies + 39) · u.line_node             # the probes, p = u.plies:
+                                                            #   intent_probe 8
+                                                            #   expectation_probe 2p + 5 (a search per imagined move, one more
+                                                            #     when it is off the candidates, a 4-ply refutation)
+                                                            #   forced_line ×2 (better and played move) 2 · (2p + 13): two searches
+                                                            #     per node, end features, two resistances with 3-ply refutations
 solve_visits(u) = 2 · u.solve                               # attacker-first and defender-first
 ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
 
 1. if T == "unlimited":
        v_s = cap; n = min(5, E_req); u = cap unit; all ladder steps applied
-       expected_total = O + max(S, minutes(M·v_s)) + n·ep_minutes(u) + min(LD, n)·minutes(solve_visits(u))
+       expected_total = O + max(S, minutes(M·v_s)) + I + n·ep_minutes(u) + min(LD, n)·minutes(solve_visits(u))
        return (feasible = true)
 
 2. survey:
-       v_s = clamp( floor(vps · S · 60 / M), floor, cap )    # sized to finish as the self-review ends
+       v_s = clamp( floor(vps · S_survey · 60 / M), floor, cap )   # sized by its own target, not the blind review
        t_s = minutes(M · v_s)
-       c_s = max(0, t_s − S)                                 # the part that runs past the self-review
+       c_s = max(0, t_s − S)                                 # the part that runs past the blind self-review
+                                                             # (Claude asks the optional questions meanwhile)
 
 3. wall-clock available for verification:
-       W = T − O − S − c_s
+       W = T − O − S − I − c_s
        if W ≤ 0: n = 0 (infeasible; go to 5)
 
 4. episode count at base rigor:
@@ -190,7 +201,7 @@ ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
 
 5. if n < 3:  feasible = false
        v_min = floor; c_min = max(0, minutes(M·v_min) − S)
-       minimum_minutes_for_three_episodes = O + S + c_min + 3·ep_minutes(base) + min(LD, 3)·minutes(solve_visits(base))
+       minimum_minutes_for_three_episodes = O + S + I + c_min + 3·ep_minutes(base) + min(LD, 3)·minutes(solve_visits(base))
        still return the allocation for n (0, 1 or 2) so "accept fewer" is possible
 
 6. surplus X = W − [ n·ep_minutes(base) + min(LD, n)·minutes(solve_visits(base)) ]
@@ -198,25 +209,26 @@ ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
          L1  root 1000 → 3000        (also raises the 4× stability rerun to 12,000)
          L2  line_node 250 → 600
          L3  add the 16× stability rerun
-         L4  plies 6 → 12
+         L4  plies 6 → 8             (forced lines and imagined lines)
          L5  solve 1500 → 4000, and budget a solve for every expected L&D episode
          L6  root 3000 → 6000
          L7  line_node 600 → 1000
        no partial steps; surplus after the last applicable step is reported as slack
 
 7. re-plan (job_id + selected given): replace LD with the count of selected episodes needing solves,
-       set W = T − O − elapsed_minutes, skip steps 2–3, recompute 4–6 for exactly len(selected) episodes.
+       set W = T − O − elapsed_minutes − I (the interviews follow the re-plan), skip steps 2–3,
+       recompute 4–6 for exactly len(selected) episodes.
 ```
 The resulting plan becomes the **active plan** for the job; `Budget.profile` values resolve against it. The plan is advisory: Claude may pass explicit budgets, and you may extend `total_minutes` mid-review (call again).
 
 #### 1.2.3 Worked example (illustrative numbers)
-Pro at 650 vps, 187 moves, 40 minutes, S = 10, LD = 1:
+Pro at 650 vps, 187 moves, 40 minutes, S = 5, I = 5, LD = 1:
 - `v_s = clamp(650·600/187 = 2085, 100, 1000) = 1000`; `t_s = 4.8 min`; `c_s = 0`.
-- `W = 40 − 4 − 10 = 26`.
-- Base unit = 1000 + 3·7·250 + 4·1000 = 10,250 visits ≈ 0.26 min; `ep_minutes = 1.26`; solve ≈ 0.08 min. `n = 5` (6.4 min). Surplus 19.6 min.
-- Ladder: L1 (+1.3 min), L2 (+0.9), L3 (+6.2), L4 (+1.4), L5 (+0.1), L6 (+8.1) all fit; L7 (+2.0) does not. Result: five episodes at root 6000 / line 600 / 12 plies / 4× and 16× stability.
+- `W = 40 − 4 − 5 − 5 = 26`.
+- Base unit = 1000 + 4·1000 + 75·250 = 23,750 visits ≈ 0.61 min; `ep_minutes = 1.61`; solve ≈ 0.08 min. `n = 5` (8.1 min).
+- Ladder: L1–L5 fit; L6 does not. Result: five episodes at root 3000 / line 600 / 8 plies / 4× and 16× stability, ≈ 20 min.
 
-Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 0.4`, `W = 5.6`; `ep_minutes(base) = 5.7 + 1.0 = 6.7` → `n = 0`; minimum for three episodes ≈ 4 + 10 + 0.4 + 3·6.7 + 1.7 ≈ 36 min. Claude reports that and asks.
+Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 5.4`, `W = 0.6`; `ep_minutes(base) = 13.2 + 1.0 = 14.2` → `n = 0`; minimum for three episodes ≈ 4 + 5 + 5 + 5.4 + 3·14.2 + 1.7 ≈ 64 min (60 minutes buy two). Claude reports that and asks. Rigor per episode is fixed; slower machines verify fewer episodes.
 
 **Cost.** None. **Errors.** `job_not_found`, `budget_infeasible` is *not* an error — infeasibility is a normal result with `feasible: false`.
 
@@ -666,12 +678,84 @@ type Features = { position_ref: PositionRef; to_move: Color; perspective: Color;
 
 ---
 
+### 1.20 `intent_probe`
+**Purpose.** Recover the belief behind a move. Every move is a threat, a defense or a value claim; three cheap probes say which, and whether it worked.
+
+**Inputs.** `{ position: Position /* before the move */; move: Point | string; budget?: Budget = { profile: "line_node" }; options?: { neighborhood_radius?: number = 3 } }`
+
+**Output.**
+```ts
+{ position_ref: PositionRef; player: Color; perspective: Color;          // perspective = the player
+  move: Point; best_move: Point;
+  score: { before: number; after_move: number; after_best: number; loss: number };
+  reply: ReplyCharacter;                                  // §3.15, the opponent's best answer to the move
+  threat: { follow_up: Point; value: number; opponent_local_answer: Point };   // what the move threatened (local swing)
+  tenuki_value: number;                                   // how much the opponent gains by not answering locally
+  defense: { opponent_local_move: Point | null; value: number | null;           // what the move prevented
+             groups: { label: string; anchor: Point; ownership_before: number; ownership_after_move: number; ownership_if_attacked: number }[] };
+  left_behind: { label: string; anchor: Point; ownership_before: number; ownership_after_reply: number }[];   // when the reply is elsewhere
+  better_move: { gote: boolean | null; groups_that_differ: string[] | null };
+  risk: { score_lead_before: number; stdev_move: number; stdev_best: number | null;
+          human: Record<"peer" | "horizon", { move: number; best: number | null }> };
+  belief: null | { id: BeliefId; evidence: string; categories: string[] };        // the first match
+  matches: BeliefId[];
+  visits_used: number; seconds_used: number; query_id: string }
+type BeliefId = "needs_defending" | "group_is_safe" | "is_sente" | "behind_must_invade" | "ahead_can_coast" | "sequence_works" | "biggest_move";
+```
+**Behavior.** With X the player, G the move, E the engine's best, all scores from X's side, `N(p)` the empty points within `neighborhood_radius` of p (plus pass):
+- *Threat.* `threat.value` = [after G, the opponent passes, X's best move in N(G)] − [after G, the opponent's best move in N(G)]: the local swing, the size of what G threatened. `tenuki_value` = [opponent's best answer in N(G)] − [opponent's best move anywhere]: positive when ignoring G was better for the opponent.
+- *Defense.* X passes instead; the opponent's best move D in N(G); `defense.value` = [after G] − [after pass and D]. `groups` are X's groups (≥ 2 stones) within `defend_radius` of G, with their ownership before, after G, and after the pass and D.
+- *Reply character* (§3.15) of the opponent's best answer R to G. When R is elsewhere, `left_behind` holds X's groups near R and their ownership after R.
+- *Better move.* After E: is the best reply elsewhere (`gote`), and which groups of ≥ 3 stones differ by ≥ `group_change_min` between after G and after E.
+
+Beliefs, in this order (the first is `belief`):
+1. `needs_defending` — `defense.groups` is non-empty and every one stays above `needs_defending_alive` (0.7) after the pass and D.
+2. `group_is_safe` — R is elsewhere and a `left_behind` group falls from ≥ `safe_group_dead` (0.3) to below it.
+3. `is_sente` — R is elsewhere, `threat.value` ≥ `sente_threat_min` (0.5) and `tenuki_value` ≥ `tenuki_min` (0.5).
+4. `behind_must_invade` — X led by ≥ `game_state_close` (5) and G's score stdev ≥ `risk_stdev_ratio` (1.5) × E's; `ahead_can_coast` — X trailed by ≥ 5 and G's stdev × 1.5 ≤ E's.
+5. `sequence_works` — R is local and sharp and (1) did not match: the reading behind G fails; `expectation_probe` finds where.
+6. `biggest_move` — R is elsewhere, E is gote too, and no group differs between the two.
+**Cost.** 7–8 searches at `budget`. **Errors.** `bad_request` (pass, wrong colour), `illegal_move`, `unknown_ref`.
+
+---
+
+### 1.21 `expectation_probe`
+**Purpose.** Find the misread: play out the line the student expected (or the one a player of their rank reads), check it move by move, and return the first move where it stops working and the move they never considered.
+
+**Inputs.**
+```ts
+{ position: Position /* before the move */; move: Point | string; budget?: Budget = { profile: "line_node" };
+  options?: { expected_line?: (string | LineStep)[];     // the student's line after the move, opponent first ("WD10", "BC10", …)
+              plies?: number = 6;                          // imagined moves after the move; the plan's expectation_plies
+              profile?: string = "peer";                  // who fills in the moves after expected_line runs out (both sides)
+              misread_margin?: number = 3; refutation_plies?: number = 4; perspective?: Color } }
+```
+**Output.**
+```ts
+{ position_ref: PositionRef; perspective: Color; profile: string;
+  move: { color: Color; move: Point; loss_vs_best: number };
+  expected_source: "stated" | "mixed" | string;           // "peer" when no line was given
+  nodes: { ply: number; color: Color; move: Point; source: "stated" | string; engine_best: Point; loss: number;
+           human_probability: number | null; score_after: number }[];
+  line: string[];                                         // the imagined line up to the misread
+  misread: null | { ply: number; color: Color; whose: "you" | "opponent"; expected: Point; never_considered: Point; loss: number;
+                    refutation: string[];                  // starts with the move never considered
+                    refutation_end: { position_ref: PositionRef; score_lead: number; capture_races: CaptureRace[] };
+                    line_to_here: string[] };
+  note: string | null; visits_used: number; seconds_used: number; query_id: string }
+```
+**Behavior.** After the move, each imagined move comes from `expected_line` while it lasts, then from the `profile` human model's favourite legal move, for both sides. Each is scored against the engine's best at that node (the candidate's score when it was searched with a real share of visits, else one more search): `loss` for the side that plays it. The first move losing more than `misread_margin` is the misread: `whose: "opponent"` means the student expected a reply the opponent would not play — `never_considered` is the reply they missed; `whose: "you"` means the student's own follow-up fails. The refutation is `never_considered` followed by `refutation_plies` engine moves; its end carries `capture_races`, where liberty counts belong. No misread within `plies` means the reading holds; look for the belief in `intent_probe` (value, not reading).
+**Cost.** 1–2 searches per imagined move, plus `refutation_plies` + 1. **Errors.** `bad_request` (an `expected_line` step for the wrong colour), `illegal_move`, `unknown_ref`.
+
+---
+
 ## 2. Tool × mechanic map
 
 | Mechanic (from the plan) | Tools |
 |---|---|
 | Three-line contrast; plan tests | `analyze_line` |
 | Proof lines (must-moves, natural resistance) and what differs at their ends | `forced_line`, `terminal_features` |
+| The belief behind a move; the misread and the move never considered | `intent_probe`, `expectation_probe` |
 | Pass probe for urgency | `pass_probe` |
 | Swing counting; sente/gote | `swing_value` |
 | Local solve (alive / dead / unsettled) | `local_solve` |
@@ -819,7 +903,9 @@ horizon_rank = "rank_1d"
 [budget]
 overhead_minutes = 4.0
 claude_minutes_per_episode = 1.0
-self_review_minutes_default = 10
+self_review_minutes_default = 5           # blind self-review
+interview_minutes_default = 5             # per-episode interviews
+survey_minutes_target = 10                # the survey is sized to finish in about this long
 survey_floor = 100
 survey_cap = 1000
 ld_reserve_episodes = 1
@@ -832,10 +918,10 @@ solve = 1500
 [budget.unit_cap]
 root = 6000
 line_node = 1000
-plies = 12
+plies = 8
 stability = [4, 16]
 solve = 4000
-ladder = ["root_3000", "line_600", "stability_16x", "plies_12", "solve_4000_all_ld", "root_6000", "line_1000"]
+ladder = ["root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000", "line_1000"]
 
 [thresholds]
 acceptable_margin = 1.0
@@ -863,6 +949,14 @@ forced_margin = 3.0                       # §1.19
 human_margin = 1.0                        # §1.19
 territory_diff_min = 2.0                  # §1.18
 group_change_min = 0.2                    # §1.18
+defend_radius = 2                         # §1.20
+neighborhood_radius = 3                   # §1.20
+needs_defending_alive = 0.7               # §1.20
+safe_group_dead = 0.3                     # §1.20
+sente_threat_min = 0.5                    # §1.20
+tenuki_min = 0.5                          # §1.20
+risk_stdev_ratio = 1.5                    # §1.20
+misread_margin = 3.0                      # §1.21
 
 [paths]
 reviews_dir = "reviews"
@@ -919,3 +1013,5 @@ Changes from v0.2 to v0.3 (causal evidence; the plan is `docs/plan-causal-lesson
 2. Tag 2 fires on an unsettled group in the best move's region instead of a group with ≤ 3 liberties (§3.7).
 3. Digest episodes carry `best_reply` (§3.15).
 4. New `terminal_features` (§1.18) and `forced_line` (§1.19); thresholds `forced_margin`, `human_margin`, `territory_diff_min`, `group_change_min`.
+5. New `intent_probe` (§1.20) and `expectation_probe` (§1.21) with their thresholds.
+6. `plan_budget`: the per-episode unit counts the probes instead of three lines (≈ 2.3× the old base unit); the plies step of the ladder is 6 → 8; the blind self-review (5) and the episode interviews (5) are reserved separately, and the survey is sized by `survey_minutes_target` (10) so the shorter blind review does not cut its visits.

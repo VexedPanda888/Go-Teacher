@@ -70,13 +70,25 @@ player's best follow-up F and v_F. Defensive value: the player passes, the oppon
 local-calm / local-sharp (score or ownership stdev). Returns `belief: { id, evidence }` or null by the
 §0.2 signatures, computed deterministically.
 
+*As built (A4):* the threat is measured as a local swing — X's best follow-up confined to G's
+neighbourhood after the opponent passes, against the opponent's best local answer — because an
+unrestricted follow-up is just "a second move in a row" (move 96 of ogs_91122267 reported O3, far from
+E3). `is_sente` needs `tenuki_value ≥ 0.5`. "This cut/attack works" became `sequence_works` ("this cut /
+attack / save works"): on move 114 (D11) the belief is that D11 saves the group, not an attack. On
+ogs_91122267 the probes give: move 44 Q7 `needs_defending` (both groups stay at 0.96 after P9) with the
+imagined line S11 R10 S10 R9 breaking at R9 and O3 never considered; move 96 E3 `is_sente` (threatened
+F2, worth 10.9; Black gains 1.3 more with S4); move 114 D11 `sequence_works`; move 32 S14 no belief
+(its lesson is the misread: Black answers P9, not Q7).
+
 **A5. `expectation_probe(position, move, options: { expected_line?, plies = 6, misread_margin = 3 })`.**
 Play `peer`-profile moves for both sides (the student's `expected_line` from the interview first, when
 given), verify every node with the strong net. The first node losing > `misread_margin` for either side
 is the misread; report it, the engine's move there, and a short refutation line (with liberties when a
 capture race is involved).
 
-**A6. `plan_budget`.** Per-episode unit = intent probe + expectation probe + two forced lines with
+**A6. `plan_budget`.** *As built:* the unit is `root·(1 + Σstability) + (6p + 39)·line_node`, 23,750
+visits at base (2.3× the old 10,250). The Pro still verifies five episodes in 40 minutes; the Air needs
+about 64 minutes for three (was 36) and gets two in 60. Per-episode unit = intent probe + expectation probe + two forced lines with
 second-best re-searches + resistance branches (estimate ~2× today's unit; measure). Rigor floor fixed;
 `n` drops when the time does not fit (decision 1). Self-review split into `blind_minutes` (default 5)
 and `interview_minutes` (default 5). The survey is sized by a separate `survey_minutes_target` (default

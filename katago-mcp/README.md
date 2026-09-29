@@ -1,7 +1,7 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.3.0** (19 tools): whole-game surveys, budgeted verification
+It implements **tool contract v0.3.0** (21 tools): whole-game surveys, budgeted verification
 (`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
 human-model move distributions, and the checksummed dashboard export.
 
@@ -30,7 +30,7 @@ katago_mcp/
   store.py      position refs, analysis cache, reviews/<game_id>/ persistence, query log
   metrics.py    derived metrics (contract §3): points lost, episodes, phases, tags, style axis, …
   jobs.py       asynchronous survey jobs
-  tools.py      the 19 tools as plain Python
+  tools.py      the 21 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
   seed.py       katago-mcp-seed: survey a folder of SGFs for the WS8 calibration pass
@@ -94,7 +94,7 @@ python -m pytest            # if pytest is installed
 
 The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
 variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget` against the two
-worked examples of contract §1.2.3, all 19 tools end to end on synthetic games including the
+worked examples of contract §1.2.3, all 21 tools end to end on synthetic games including the
 dashboard export and its checksum, job reuse across a server restart, and a handicap game. It also
 checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
 that `docs/tool-contract.md` matches the skill's copy.

@@ -232,6 +232,52 @@ class MockToolsTest(unittest.TestCase):
             self.tools.forced_line(pos, "W" + best, {"visits": 20})
         self.assertEqual(cm.exception.code, "bad_request")
 
+    def test_intent_probe(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        a = self.tools.analyze_position(pos, {"visits": 100})
+        mv = a["candidates"][-1]["move"]
+        r = self.tools.intent_probe(pos, mv, {"visits": 60})
+        self.assertEqual(r["player"], "B")
+        self.assertEqual(r["move"], mv)
+        for key in ("score", "reply", "threat", "tenuki_value", "defense", "left_behind", "better_move", "risk", "matches"):
+            self.assertIn(key, r)
+        self.assertIn(r["reply"]["character"], ("tenuki", "local_calm", "local_sharp"))
+        self.assertGreaterEqual(r["score"]["loss"], 0.0)
+        ids = {"needs_defending", "group_is_safe", "is_sente", "behind_must_invade", "ahead_can_coast", "sequence_works", "biggest_move"}
+        self.assertTrue(set(r["matches"]) <= ids)
+        if r["belief"]:
+            self.assertEqual(r["belief"]["id"], r["matches"][0])
+            self.assertTrue(r["belief"]["categories"])
+        with self.assertRaises(ToolError):
+            self.tools.intent_probe(pos, "pass", {"visits": 20})
+
+    def test_expectation_probe(self):
+        pos = {"job_id": self.job_id, "move_number": 40}
+        a = self.tools.analyze_position(pos, {"visits": 100})
+        mv = a["candidates"][0]["move"]
+        # a negative margin makes the first imagined move that is not the engine's the misread
+        r = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"plies": 4, "misread_margin": -1})
+        self.assertEqual(r["move"]["move"], mv)
+        m = r["misread"]
+        if m is None:
+            self.assertEqual(len(r["nodes"]), 4)
+            self.assertTrue(all(n["move"] == n["engine_best"] for n in r["nodes"]))
+        else:
+            self.assertEqual(len(r["nodes"]), m["ply"])
+            self.assertEqual(m["whose"], "opponent" if m["color"] == "W" else "you")
+            self.assertEqual(m["refutation"][0], m["color"] + m["never_considered"])
+            self.assertEqual(len(m["line_to_here"]), m["ply"])
+        # a stated line is followed move for move
+        board_after = self.tools._resolve_position({**pos, "then": [["B", mv]]}).board
+        reply = idx_to_gtp(board_after.empties()[100])
+        r2 = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"plies": 1, "expected_line": [f"W{reply}"], "misread_margin": 999})
+        self.assertEqual(r2["nodes"][0]["move"], reply)
+        self.assertEqual(r2["nodes"][0]["source"], "stated")
+        self.assertIsNone(r2["misread"])
+        with self.assertRaises(ToolError) as cm:
+            self.tools.expectation_probe(pos, mv, {"visits": 20}, {"expected_line": [f"B{reply}"]})
+        self.assertEqual(cm.exception.code, "bad_request")
+
     def test_pass_probe_and_regions(self):
         pos = {"job_id": self.job_id, "move_number": 40}
         r = self.tools.pass_probe(pos, "B", None, {"visits": 60}, {"rank_regions": True})

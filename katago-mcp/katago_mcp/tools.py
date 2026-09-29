@@ -23,8 +23,8 @@ from .config import Config
 from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, parse_move
 from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
 from .jobs import Job, JobManager, game_id_of, resolve_profiles, student_color_of
-from .metrics import (acceptable_set, capture_races, classify_local, decisive_and_last_chance, group_changes, group_records,
-                      group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution,
+from .metrics import (acceptable_set, capture_races, classify_local, decisive_and_last_chance, group_changes, group_label,
+                      group_records, group_status_label, move_rows, phases as phases_fn, race_anchor_set, regional_attribution,
                       reply_character, sign_of, territory_by_region)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
 from .render import LEGEND, low_liberty_groups, render_board, render_overlay
@@ -41,6 +41,13 @@ class ToolError(Exception):
     def to_dict(self) -> dict:
         return {"error": {"code": self.code, "message": self.message, "details": self.details,
                           "recoverable": self.recoverable, "suggestion": self.suggestion}}
+
+
+BELIEF_CATEGORIES = {
+    "needs_defending": ["14", "2"], "group_is_safe": ["3", "2"], "is_sente": ["11", "15"],
+    "behind_must_invade": ["9", "8"], "ahead_can_coast": ["9"], "sequence_works": ["5", "4", "3", "9"],
+    "biggest_move": ["1", "15", "11"],
+}
 
 
 def _wrap_engine_error(e: EngineError) -> ToolError:
@@ -338,7 +345,7 @@ class Tools:
         b = self.cfg.budget
         if self.vps <= 0:
             return 300
-        return max(b.survey_floor, min(b.survey_cap, int(self.vps * b.self_review_minutes_default * 60 / max(1, move_count))))
+        return max(b.survey_floor, min(b.survey_cap, int(self.vps * b.survey_minutes_target * 60 / max(1, move_count))))
 
     # ---------------------------------------------------------------- engine access
     def _analyze(self, rec: PositionRecord, visits: int, ownership: bool = True, ownership_stdev: bool = False,
@@ -481,7 +488,8 @@ class Tools:
     # ================================================================ 1.2 plan_budget
     def plan_budget(self, total_minutes, move_count: int | None = None, job_id: str | None = None,
                     self_review_minutes: float | None = None, episodes_requested: int | None = None,
-                    expected_ld_episodes: int | None = None, selected: list[dict] | None = None) -> dict:
+                    expected_ld_episodes: int | None = None, selected: list[dict] | None = None,
+                    interview_minutes: float | None = None) -> dict:
         if isinstance(total_minutes, str):
             if total_minutes.strip().lower() not in ("unlimited", "unbounded", "as long as it needs"):
                 try:
@@ -502,7 +510,7 @@ class Tools:
         try:
             p = plan_budget_fn(self.cfg.budget, self.vps, int(move_count), total_minutes,
                                self_review_minutes=self_review_minutes, episodes_requested=episodes_requested,
-                               expected_ld_episodes=expected_ld_episodes, selected=selected, elapsed_minutes=elapsed,
+                               interview_minutes=interview_minutes, expected_ld_episodes=expected_ld_episodes, selected=selected, elapsed_minutes=elapsed,
                                survey_visits_existing=existing_survey)
         except BudgetError as e:
             raise ToolError("budget_infeasible", str(e), suggestion="run engine_info with refresh_benchmark=true")
@@ -1470,6 +1478,277 @@ class Tools:
                "end": end, "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
         out["query_id"] = self._log(start.game_id, "forced_line", {"ref": start.ref, "move": move, "max_plies": max_plies}, total,
                                     time.time() - t0, False, {"line": line, "stop": stop_reason, "score_end": end["score_lead"]})
+        return out
+
+    # ================================================================ belief probes: helpers
+    @staticmethod
+    def _near_empty(board: Board, idx: int, radius: int) -> list[str]:
+        size = board.size
+        r0, c0 = divmod(idx, size)
+        out = []
+        for r in range(max(0, r0 - radius), min(size, r0 + radius + 1)):
+            for c in range(max(0, c0 - radius), min(size, c0 + radius + 1)):
+                if board.cells[r * size + c] == EMPTY:
+                    out.append(idx_to_gtp(r * size + c, size))
+        return out
+
+    @staticmethod
+    def _groups_near(board: Board, color: int, idx: int, radius: int, min_size: int = 2) -> list:
+        return [g for g in board.groups() if g.color == color and g.size >= min_size
+                and any(chebyshev(s, idx, board.size) <= radius for s in g.stones)]
+
+    @staticmethod
+    def _group_own(g, board_now: Board, own: list[float]) -> float:
+        """Owner-perspective mean ownership of the stones of g; stones no longer on the board count −1."""
+        s = sign_of(g.color)
+        return round(sum(s * own[i] if board_now.cells[i] == g.color else -1.0 for i in g.stones) / g.size, 3)
+
+    # ================================================================ 1.20 intent_probe
+    def intent_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        o = options or {}
+        th = self.cfg.thresholds
+        rec = self._resolve_position(position)
+        job = self._job_for_game(rec.game_id)
+        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        size = rec.spec.size
+        x = rec.to_move
+        opp = opponent(x)
+        sx = sign_of(x)
+        g_idx = self._own_move(move, rec)
+        if g_idx is None:
+            raise ToolError("bad_request", "intent_probe needs a board move, not a pass")
+        nr = int(o.get("neighborhood_radius", th.neighborhood_radius))
+        t0 = time.time()
+        total = 0
+
+        def search(r: PositionRecord, ownership: bool = False, allow: list | None = None) -> Analysis:
+            nonlocal total
+            a, hit = self._analyze(r, visits, ownership=ownership, policy=False, allow=allow)
+            total += 0 if hit else a.visits
+            return a
+
+        def top(a: Analysis):
+            return a.candidates[0] if a.candidates else None
+
+        a_p = search(rec, ownership=True)
+        e = top(a_p)
+        e_idx = e.move if e else None
+        rec_g = self._play(rec, g_idx, x)
+        a_g = search(rec_g, ownership=True)
+        s_g = a_g.score_lead
+        r = top(a_g)
+        r_idx = r.move if r else None
+        rc = reply_character(a_g, g_idx, size, th)
+        # the opponent's best local answer, and X's best local follow-up if the opponent ignores the move:
+        # the difference is the local swing, i.e. the size of what G threatened
+        loc = self._near_empty(rec_g.board, g_idx, nr) + ["pass"]
+        a_gloc = search(rec_g, allow=[{"player": COLOR_CHAR[opp], "moves": loc, "untilDepth": 1}])
+        s_gloc = a_gloc.score_lead
+        rec_gpass = self._play(rec_g, None, opp)
+        a_gpass = search(rec_gpass, allow=[{"player": COLOR_CHAR[x], "moves": self._near_empty(rec_gpass.board, g_idx, nr) + ["pass"],
+                                            "untilDepth": 1}])
+        f = top(a_gpass)
+        v_f = round(sx * (a_gpass.score_lead - s_gloc), 2) + 0.0
+        tenuki_value = round(sx * (s_gloc - s_g), 2) + 0.0
+        # what G prevented: X passes, the opponent plays its strongest move near G
+        rec_ppass = self._play(rec, None, x)
+        a_ppass = search(rec_ppass, allow=[{"player": COLOR_CHAR[opp], "moves": self._near_empty(rec.board, g_idx, nr) + ["pass"],
+                                            "untilDepth": 1}])
+        d = top(a_ppass)
+        d_idx = d.move if d else None
+        defended = self._groups_near(rec.board, x, g_idx, th.defend_radius)
+        groups_def, v_d = [], None
+        if d_idx is not None:
+            rec_pd = self._play(rec_ppass, d_idx, opp)
+            a_pd = search(rec_pd, ownership=True)
+            v_d = round(sx * (s_g - a_pd.score_lead), 2) + 0.0
+            for gr in defended:
+                groups_def.append({"label": group_label(gr, size), "anchor": idx_to_gtp(gr.anchor),
+                                   "ownership_before": self._group_own(gr, rec.board, a_p.ownership),
+                                   "ownership_after_move": self._group_own(gr, rec_g.board, a_g.ownership),
+                                   "ownership_if_attacked": self._group_own(gr, rec_pd.board, a_pd.ownership)})
+        # groups left behind when the opponent's best reply is elsewhere
+        left = []
+        if r_idx is not None and rc and not rc["local"]:
+            rec_gr = self._play(rec_g, r_idx, opp)
+            a_gr = search(rec_gr, ownership=True)
+            for gr in self._groups_near(rec.board, x, r_idx, th.defend_radius):
+                left.append({"label": group_label(gr, size), "anchor": idx_to_gtp(gr.anchor),
+                             "ownership_before": self._group_own(gr, rec.board, a_p.ownership),
+                             "ownership_after_reply": self._group_own(gr, rec_gr.board, a_gr.ownership)})
+        # was the better move gote too, and did anything change status between the two?
+        e_gote, status_changes = None, None
+        if e_idx is not None and e_idx != g_idx:
+            rec_e = self._play(rec, e_idx, x)
+            a_e = search(rec_e, ownership=True)
+            rce = reply_character(a_e, e_idx, size, th)
+            e_gote = bool(rce and not rce["local"])
+            status_changes = [group_label(gr, size) for gr in rec.board.groups() if gr.size >= 3
+                              and abs(self._group_own(gr, rec_e.board, a_e.ownership) - self._group_own(gr, rec_g.board, a_g.ownership))
+                              >= th.group_change_min]
+        # risk against the score
+        cand_g = next((c for c in a_p.candidates if c.move == g_idx), None)
+        stdev_g = round(cand_g.score_stdev if cand_g else a_g.score_stdev, 2)
+        stdev_e = round(e.score_stdev, 2) if e else None
+        lead = round(sx * a_p.score_lead, 2)
+        profiles = self._profiles(["peer", "horizon"], rec)
+        hp = {}
+        for alias, prof in profiles.items():
+            try:
+                pol = self._human_policy(rec, prof)
+                hp[alias] = {"move": round(pol[g_idx], 4), "best": round(pol[e_idx], 4) if e_idx is not None else None}
+            except ToolError:
+                pass
+        # beliefs, most specific first
+        matches: list[dict] = []
+        if groups_def and all(gd["ownership_if_attacked"] > th.needs_defending_alive for gd in groups_def):
+            matches.append({"id": "needs_defending", "evidence": f"after a pass, the opponent's strongest local move {idx_to_gtp(d_idx)} "
+                            f"leaves {', '.join(gd['label'] for gd in groups_def)} owned "
+                            f"{min(gd['ownership_if_attacked'] for gd in groups_def):.2f}; the move was worth {v_d} locally"})
+        fallen = [lg for lg in left if lg["ownership_before"] >= th.safe_group_dead and lg["ownership_after_reply"] < th.safe_group_dead]
+        if fallen:
+            matches.append({"id": "group_is_safe", "evidence": f"the opponent's best reply {idx_to_gtp(r_idx)} attacks "
+                            f"{', '.join(lg['label'] for lg in fallen)}: ownership falls to "
+                            f"{min(lg['ownership_after_reply'] for lg in fallen):.2f}"})
+        if rc and not rc["local"] and v_f >= th.sente_threat_min and tenuki_value >= th.tenuki_min:
+            matches.append({"id": "is_sente", "evidence": f"the move threatened {idx_to_gtp(f.move) if f else '?'} (worth {v_f}), but "
+                            f"the opponent gains {tenuki_value} more by playing {idx_to_gtp(r_idx)} instead of answering"})
+        if stdev_e:
+            if lead >= th.game_state_close and stdev_g >= th.risk_stdev_ratio * stdev_e:
+                matches.append({"id": "behind_must_invade", "evidence": f"you were {lead} ahead and chose a move with score stdev "
+                                f"{stdev_g} against {stdev_e} for the best move"})
+            elif lead <= -th.game_state_close and stdev_g * th.risk_stdev_ratio <= stdev_e:
+                matches.append({"id": "ahead_can_coast", "evidence": f"you were {-lead} behind and chose a move with score stdev "
+                                f"{stdev_g} against {stdev_e} for the best move"})
+        if rc and rc["character"] == "local_sharp" and not any(m["id"] == "needs_defending" for m in matches):
+            matches.append({"id": "sequence_works", "evidence": f"the reply {idx_to_gtp(r_idx)} is local and sharp (worth "
+                            f"{rc['gap']} more than playing elsewhere): the local sequence you read does not work; "
+                            "expectation_probe finds the move you did not consider"})
+        if rc and not rc["local"] and e_gote and not status_changes:
+            matches.append({"id": "biggest_move", "evidence": f"both {idx_to_gtp(g_idx)} and {idx_to_gtp(e_idx)} are gote and no group "
+                            f"changes status; {idx_to_gtp(e_idx)} is simply larger"})
+        for m in matches:
+            m["categories"] = BELIEF_CATEGORIES[m["id"]]
+        cand_e_score = e.score_lead if e else a_p.score_lead
+        out = {
+            "position_ref": rec.ref, "player": COLOR_CHAR[x], "perspective": COLOR_CHAR[x],
+            "move": idx_to_gtp(g_idx), "best_move": idx_to_gtp(e_idx) if e_idx is not None else None,
+            "score": {"before": lead, "after_move": round(sx * s_g, 2), "after_best": round(sx * cand_e_score, 2),
+                      "loss": round(max(0.0, sx * (cand_e_score - s_g)), 2)},
+            "reply": rc,
+            "threat": {"follow_up": idx_to_gtp(f.move) if f else None, "value": v_f,
+                       "opponent_local_answer": idx_to_gtp(a_gloc.candidates[0].move) if a_gloc.candidates else None},
+            "tenuki_value": tenuki_value,
+            "defense": {"opponent_local_move": idx_to_gtp(d_idx) if d_idx is not None else None, "value": v_d, "groups": groups_def},
+            "left_behind": left,
+            "better_move": {"gote": e_gote, "groups_that_differ": status_changes},
+            "risk": {"score_lead_before": lead, "stdev_move": stdev_g, "stdev_best": stdev_e, "human": hp},
+            "belief": matches[0] if matches else None, "matches": [m["id"] for m in matches],
+            "visits_used": total, "seconds_used": round(time.time() - t0, 2),
+        }
+        out["query_id"] = self._log(rec.game_id, "intent_probe", {"ref": rec.ref, "move": move}, total, time.time() - t0, False,
+                                    {"belief": out["belief"]["id"] if out["belief"] else None, "matches": out["matches"]})
+        return out
+
+    # ================================================================ 1.21 expectation_probe
+    def expectation_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        o = options or {}
+        th = self.cfg.thresholds
+        rec = self._resolve_position(position)
+        job = self._job_for_game(rec.game_id)
+        visits = self._budget_visits(budget, job.job_id if job else None, "line_node")
+        size = rec.spec.size
+        x = rec.to_move
+        persp = self._perspective(o.get("perspective"), rec)
+        sp = sign_of(persp)
+        plies = int(o.get("plies", 6))
+        margin = float(o.get("misread_margin", th.misread_margin))
+        refute_plies = int(o.get("refutation_plies", 4))
+        prof_alias = o.get("profile", "peer")
+        prof = self._profiles([prof_alias], rec)[prof_alias]
+        expected = list(norm_list(o.get("expected_line")) or [])
+        g_idx = self._own_move(move, rec)
+        t0 = time.time()
+        total = 0
+
+        def search(r: PositionRecord, ownership: bool = False) -> Analysis:
+            nonlocal total
+            a, hit = self._analyze(r, visits, ownership=ownership, policy=False)
+            total += 0 if hit else a.visits
+            return a
+
+        def score_of(a: Analysis, r: PositionRecord, mv: int | None) -> float:
+            c = next((c for c in a.candidates if c.move == mv and c.visits >= th.acceptable_min_visit_share * max(1, a.visits)), None)
+            if c is not None:
+                return c.score_lead
+            return search(self._play(r, mv)).score_lead
+
+        a0 = search(rec)
+        g_loss = round(max(0.0, sign_of(x) * (a0.candidates[0].score_lead - score_of(a0, rec, g_idx))), 2) if a0.candidates else None
+        cur = self._play(rec, g_idx, x)
+        nodes, misread, line = [], None, [f"{COLOR_CHAR[x]}{idx_to_gtp(g_idx)}"]
+        for ply in range(1, plies + 1):
+            c = cur.to_move
+            sc = sign_of(c)
+            if ply <= len(expected):
+                step = norm_line_step(expected[ply - 1], c, size)
+                if step.get("engine") or CHAR_COLOR.get(step["color"]) != c:
+                    raise ToolError("bad_request", f"expected_line step {ply}: {expected[ply - 1]!r} is not a move for "
+                                    f"{COLOR_CHAR[c]}, who is to move", {"ply": ply})
+                try:
+                    mv = gtp_to_idx(step["move"], size)
+                except CoordError as e:
+                    raise ToolError("bad_request", f"expected_line step {ply}: {e}", {"ply": ply})
+                source = "stated"
+            else:
+                mv, _p = self._human_top(cur, prof)
+                if mv is None:
+                    break
+                source = prof_alias
+            a = search(cur)
+            if not a.candidates:
+                break
+            best = a.candidates[0]
+            try:
+                s_m = score_of(a, cur, mv)
+            except ToolError as e:
+                e.details["ply"] = ply
+                raise
+            loss = round(max(0.0, sc * (best.score_lead - s_m)), 2)
+            try:
+                hprob = round(self._human_policy(cur, prof)[size * size if mv is None else mv], 4)
+            except ToolError:
+                hprob = None
+            node = {"ply": ply, "color": COLOR_CHAR[c], "move": idx_to_gtp(mv), "source": source,
+                    "engine_best": idx_to_gtp(best.move), "loss": loss, "human_probability": hprob,
+                    "score_after": round(sp * s_m, 2)}
+            nodes.append(node)
+            if loss > margin and best.move != mv:
+                ref_start = self._play(cur, best.move, c)
+                ref_moves, ref_end, _a, tv = self._engine_continuation(ref_start, refute_plies, visits)
+                total += tv
+                a_end = search(ref_end, ownership=True)
+                races = capture_races(ref_end.board, a_end.ownership, th)
+                misread = {"ply": ply, "color": COLOR_CHAR[c], "whose": "you" if c == x else "opponent",
+                           "expected": idx_to_gtp(mv), "never_considered": idx_to_gtp(best.move), "loss": loss,
+                           "refutation": [f"{COLOR_CHAR[c]}{idx_to_gtp(best.move)}"] + ref_moves,
+                           "refutation_end": {"position_ref": ref_end.ref, "score_lead": round(sp * a_end.score_lead, 2),
+                                              "capture_races": races},
+                           "line_to_here": list(line)}
+                break
+            line.append(f"{COLOR_CHAR[c]}{idx_to_gtp(mv)}")
+            cur = self._play(cur, mv, c)
+        out = {"position_ref": rec.ref, "perspective": COLOR_CHAR[persp], "profile": prof,
+               "move": {"color": COLOR_CHAR[x], "move": idx_to_gtp(g_idx), "loss_vs_best": g_loss},
+               "expected_source": "stated" if expected and len(expected) >= len(nodes) else ("mixed" if expected else prof_alias),
+               "nodes": nodes, "line": line, "misread": misread,
+               "note": None if misread else f"the line a {prof} player reads holds for {len(nodes)} plies; look for the belief "
+                                            "in intent_probe (value, not reading)",
+               "visits_used": total, "seconds_used": round(time.time() - t0, 2)}
+        out["query_id"] = self._log(rec.game_id, "expectation_probe", {"ref": rec.ref, "move": move, "expected_line": expected},
+                                    total, time.time() - t0, False,
+                                    {"misread_ply": misread["ply"] if misread else None,
+                                     "never_considered": misread["never_considered"] if misread else None})
         return out
 
     # ================================================================ 1.17 validate_variations

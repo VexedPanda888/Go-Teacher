@@ -60,10 +60,11 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     @guarded
     def plan_budget(total_minutes: float | str, move_count: int | None = None, job_id: str | None = None,
                     self_review_minutes: float | None = None, episodes_requested: int | None = None,
-                    expected_ld_episodes: int | None = None, selected: list | None = None) -> dict:
-        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes. Re-plan with job_id + selected after triage."""
+                    expected_ld_episodes: int | None = None, selected: list | None = None,
+                    interview_minutes: float | None = None) -> dict:
+        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes (blind self-review and episode interviews reserved). Re-plan with job_id + selected after triage."""
         return tools.plan_budget(total_minutes, move_count, job_id, self_review_minutes, episodes_requested,
-                                 expected_ld_episodes, selected)
+                                 expected_ld_episodes, selected, interview_minutes)
 
     @server.tool()
     @guarded
@@ -169,6 +170,18 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
     def forced_line(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
         """Play a move and extend the line while each reply is forced (the second-best loses more than forced_margin), preferring human-legible moves; adds the opponent's natural resistance with its refutation and the terminal features of the end position."""
         return tools.forced_line(position, move, budget, options)
+
+    @server.tool()
+    @guarded
+    def intent_probe(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """What a move was for: what it threatened if ignored, what it prevented, the character of the best reply, and the belief it implies (needs_defending, group_is_safe, is_sente, behind_must_invade, ahead_can_coast, attack_works, biggest_move) with its evidence."""
+        return tools.intent_probe(position, move, budget, options)
+
+    @server.tool()
+    @guarded
+    def expectation_probe(position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
+        """Play the line the student expected (options.expected_line) or the one a player of their rank reads, check every move with the engine, and report the first move that loses more than misread_margin: the misread, the move never considered, and its refutation."""
+        return tools.expectation_probe(position, move, budget, options)
 
     @server.tool()
     @guarded
