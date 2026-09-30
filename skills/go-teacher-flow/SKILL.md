@@ -75,7 +75,9 @@ go-teaching §3 "Words that must be cashed out" and cut what is not cashed out. 
 **Phase 6 — Deliver and remember.** `validate_variations` with the episodes and summary → build with
 `build_dashboard.py` → publish the dashboard artifact → share the link and a 6–10 line spoken summary in
 chat. Then update memory (`references/memory.md`, "Phase 6: write"). Finish by asking whether
-anything on the page is unclear.
+anything on the page is unclear. Every line tested in a follow-up after that goes on the same page
+(review-dashboard, "Follow-up questions"), and every line named in chat, in any phase, is shown with a
+`render_board` line diagram (go-teaching §6).
 
 ## Calibration / seeding pass (WS8)
 
@@ -112,5 +114,6 @@ the score delta), concept words and liberty counts: go-teaching §3. Memory: `re
   student how the disputed groups were scored. A count that matches the SGF means the engine's score
   includes unfinished play: proceed. Otherwise note the unexplained gap and distrust only endgame figures.
 - The student disagrees with a verdict: test their line with `analyze_line`, add it to the ledger,
-  report the numbers; the engine's line and theirs both go on the dashboard.
+  report the numbers; the engine's line and theirs both go on the dashboard (review-dashboard,
+  "Follow-up questions").
 - Time is up before verification finished: deliver fewer lessons rather than unverified ones.

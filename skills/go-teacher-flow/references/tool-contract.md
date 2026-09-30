@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.3.0, as implemented in katago-mcp 0.2.1)
+# katago-mcp — Tool Contract (v0.3.1, as implemented in katago-mcp 0.2.2)
 
 **Status:** current; describes the implemented server, 21 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
@@ -568,10 +568,12 @@ type SolveRun = { sequence: Move[]; final_position_ref: PositionRef; final_group
   options?: RenderOptions }
 type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" | "ownership_stdev" | "policy" = null;
                        highlight?: Point[]; region_box?: Region; label_low_liberties?: boolean = false;  // list groups with ≤ 3 liberties (off by default since v0.3)
-                       coordinates?: boolean = true };
+                       coordinates?: boolean = true;
+                       line?: Move[] };                  // ≤ 35 moves from `position`, colors alternating from its side to move (v0.3.1)
 ```
-**Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups?: { label: string; liberties: number; liberty_points: Point[] }[] }`
-**Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. **Errors.** `unknown_ref`, `illegal_move`.
+**Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups?: { label: string; liberties: number; liberty_points: Point[] }[];
+  line?: { moves: Move[]; first: Color; notes: string[]; end_ref: PositionRef } }`
+**Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. With `line`, `ascii` is a numbered diagram of the sequence (§4.1) instead of the position with its last move: no engine call, so it may be shown while results are sealed. `position_ref`, `to_move`, `last_move`, `captures` and any overlay still describe `position`; `line.end_ref` is the position after the line (render or analyze it next, e.g. for a line longer than 35 moves). `notes` carries what the grid cannot: `"4 at 1"` (a move on a point already labelled), `"2 captures 1 stone (1 among them)"`, `"5: W passes"`. **Errors.** `unknown_ref`, `illegal_move`, `wrong_color` (a `line` move of the side not to move), `bad_request` (a `line` longer than 35 moves).
 
 ---
 
@@ -587,10 +589,11 @@ type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" 
   options?: { evaluate_missing?: boolean = true; budget?: Budget = { profile: "line_node" }; ownership_at?: "roots_and_branch_ends" = "roots_and_branch_ends" }
 }
 type DashboardEpisodeSpec = {
-  id: string; moves: [number, number]; title: string; category: string; tags: string[]; points_lost: number;
+  id: string; kind?: "lesson" | "question" = "lesson";     // "question": a follow-up the student asked after the lessons (v0.3.1)
+  moves: [number, number]; title: string; category: string; tags: string[]; points_lost: number;
   commentary: { at_move: number; text: string }[];
   branches: { id: string; label: string; from_move?: number; moves: Move[]; ledger_ref?: string;
-              kind?: "as_played" | "expected" | "misread" | "better" | "resistance" | "fix";
+              kind?: "as_played" | "expected" | "misread" | "better" | "resistance" | "fix" | "question";
               from_branch?: string; at_ply?: number }[];   // from_branch: start after at_ply moves of an earlier branch (then from_move is the parent's)
   comparison?: { a: string; b: string };                    // two branch ids; the server compares their end positions (§1.18)
   rule_check?: string; belief?: { id: string; source: "stated" | "inferred"; statement?: string };
@@ -862,6 +865,18 @@ Low liberties: B P8 group (4 stones) 2 libs at O9 P9 · W R6 group (2) 3 libs
 ```
 `X` Black, `O` White, `.` empty, `,` star point, `@` the last move (its color is in the header), `*` highlighted points. Rows are printed from 19 down to 1; the row number appears on both sides.
 
+With `line` the grid shows the position after the line, each line move labelled at its point by its number, `1`–`9` then `a`–`z` (moves 10–35), like a book diagram; the header names the first mover:
+```
+Line of 4 from here: 1 = White, colors alternate · then White to move · captures B 1, W 0
+    A B C D E F G H J K L M N O P Q R S T
+ …
+  5 . . . X . . . . . . . . . . . . . . .  5
+  4 . . X 1 X . . . . , . . . . . O . . .  4
+  3 . . . 2 . . . . . . . . . . . . . . .  3
+ …
+```
+A label stays on its point after its stone is captured; a later move on the same point is not drawn but listed in `line.notes` (`"4 at 1"`), as are captures and passes.
+
 ### 4.2 Overlay grid
 `overlay_ascii` prints every point (stones included) by value: for `ownership`, `B` (≥ +0.6), `b` (+0.2 to +0.6), `.` (−0.2 to +0.2), `w` (−0.6 to −0.2), `W` (≤ −0.6), Black-positive; for `ownership_stdev`, digits `0`–`9` for tenths; for `policy`, `9`–`1` for the top nine moves by prior, `.` elsewhere.
 
@@ -878,7 +893,7 @@ The exported JSON is what `validate_variations` assembles (§1.17) and what the 
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.3.0", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.3.1", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
@@ -1023,3 +1038,8 @@ Changes from v0.2 to v0.3 (causal evidence; the archived plan is `docs/archive/p
 5. New `intent_probe` (§1.20) and `expectation_probe` (§1.21) with their thresholds.
 6. `plan_budget`: the per-episode unit counts the probes instead of three lines (≈ 2.3× the old base unit); the plies step of the ladder is 6 → 8; the blind self-review (5) and the episode interviews (5) are reserved separately, and the survey is sized by `survey_minutes_target` (10) so the shorter blind review does not cut its visits.
 7. `validate_variations`: branches off branches (`from_branch`, `at_ply`), branch `kind`, a server-computed end comparison of two branches, `rule_check` and `belief` (§1.17); the dashboard shows the comparison table and the check.
+
+Changes from v0.3.0 to v0.3.1 (every line visible):
+
+1. `render_board.line`: a numbered diagram of a sequence from the position, with `notes` and `end_ref`, no engine call (§1.16, §4.1).
+2. `validate_variations`: episode `kind` (`"lesson"` default, `"question"` for a follow-up asked after the lessons; error `bad_kind`) and branch kind `"question"`; the dashboard lists questions apart from the lessons (§1.17).

@@ -338,6 +338,28 @@ class MockToolsTest(unittest.TestCase):
         self.assertNotIn("low_liberty_groups", rb)             # off by default since contract v0.3
         self.assertIn("low_liberty_groups", self.tools.render_board(a, {"label_low_liberties": True}))
 
+    def test_render_board_line_diagram(self):
+        pos = {"moves": ["BC4", "WQ16", "BE4", "WQ4", "BD5"]}             # White to move; D4 is one liberty short
+        rb = self.tools.render_board(pos, {"line": ["WD4", "BD3", "WK10", "BD4"]})
+        grid = rb["ascii"].splitlines()
+        self.assertEqual(len(grid), 22)
+        self.assertTrue(grid[0].startswith("Line of 4 from here: 1 = White"))
+        row = lambda r: grid[2 + 19 - r].split()[1:-1]                 # noqa: E731  cells of board row r
+        self.assertEqual(row(4)[3], "1")                                # D4: first move, captured, then replayed at
+        self.assertEqual(row(3)[3], "2")
+        self.assertEqual(row(10)[9], "3")
+        self.assertEqual(rb["line"]["moves"], ["WD4", "BD3", "WK10", "BD4"])
+        self.assertEqual(rb["line"]["first"], "W")
+        self.assertEqual(rb["line"]["notes"], ["2 captures 1 stone (1 among them)", "4 at 1"])
+        self.assertEqual(rb["to_move"], "W")                            # describes the start position
+        end = self.tools.render_board({"ref": rb["line"]["end_ref"]})
+        self.assertEqual(end["to_move"], "W")
+        self.assertEqual(end["last_move"], ["B", "D4"])
+        for line, code in ((["BD4"], "wrong_color"), (["WC4"], "illegal_move"), (["WD4", "BD3"] * 18, "bad_request")):
+            with self.assertRaises(ToolError) as cm:
+                self.tools.render_board(pos, {"line": line})
+            self.assertEqual(cm.exception.code, code)
+
     # ---------------------------------------------------------------- export
     def test_validate_variations_export(self):
         d = self.digest
@@ -410,6 +432,17 @@ class MockToolsTest(unittest.TestCase):
         bad_nested = [{**nested[0], "branches": [nested[0]["branches"][2]], "comparison": {"a": "B1", "b": "B9"}}]
         r4 = self.tools.validate_variations(self.job_id, bad_nested)
         self.assertEqual({e["code"] for e in r4["errors"]}, {"bad_branch_parent", "bad_comparison"})
+        # a follow-up question is its own episode kind; unknown kinds are rejected
+        question = [{"id": "Q1", "kind": "question", "moves": [n, n], "title": "What about the engine's move?",
+                     "commentary": [{"at_move": n, "text": "You asked about this."}],
+                     "branches": [{"id": "B1", "label": "Your question", "kind": "question", "from_move": n - 1, "moves": branch_moves}]}]
+        r5 = self.tools.validate_variations(self.job_id, episodes + question, {"headline": "x"})
+        self.assertTrue(r5["valid"], r5["errors"])
+        eps5 = json.loads(r5["dashboard_data"])["episodes"]
+        self.assertEqual([e["kind"] for e in eps5], ["lesson", "question"])
+        self.assertEqual(eps5[1]["branches"][0]["kind"], "question")
+        r6 = self.tools.validate_variations(self.job_id, [{**question[0], "kind": "aside"}])
+        self.assertEqual({e["code"] for e in r6["errors"]}, {"bad_kind"})
         # illegal branch and wrong color are reported, not exported
         bad = [{"id": "E2", "moves": ep["moves"], "branches": [
             {"id": "B1", "from_move": n - 1, "moves": ["WK10"]},

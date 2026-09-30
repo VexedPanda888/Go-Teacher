@@ -25,6 +25,27 @@ blob whose checksum does not match, so nothing unverified can reach the student.
    That link is the deliverable; the student can also open it on a phone.
 6. If the text needs a change after publishing, change the episode input, re-run `validate_variations`,
    rebuild, and republish the same artifact URL. Never patch the HTML or the blob by hand.
+7. Keep the `validate_variations` input you sent (`dashboard_input.json` next to the handoff files):
+   follow-up questions add to it.
+
+## Follow-up questions (after publishing)
+
+Every line you test for the student after the page is published goes on the page, so they can step
+through it at the board instead of reading coordinates in chat.
+
+1. Test it as usual (`analyze_line`, `forced_line`, …) and add it to the ledger. In chat, show it with
+   `render_board` and `options.line` (go-teaching §6).
+2. Add it to the saved input as a branch, with `"kind": "question"` and a label that names the question
+   ("Your question: P8 first?"):
+   - about a position inside a lesson's move range: a branch of that lesson, next to its lines;
+   - otherwise: a question episode, `{"id": "Q1", "kind": "question", "moves": [k, m], "title": "…",
+     "commentary": [{"at_move": k, "text": "the answer, 1–3 sentences"}], "branches": […]}`, numbered
+     Q1, Q2, … in the order asked. `comparison` works in a question episode too.
+3. Re-run `validate_variations` with the whole input, rebuild, and republish the same artifact URL
+   (step 6). Batch the questions of one exchange into one republish; tell the student the page is updated.
+
+A line the engine did not play or evaluate never goes on the page; one that fails validation is fixed
+from the error or left in chat with the reason.
 
 ## validate_variations input (what you write)
 
@@ -70,7 +91,10 @@ blob whose checksum does not match, so nothing unverified can reach the student.
   `resistance.move` plus its `refutation` for "If White resists".
 - `from_branch` + `at_ply` starts a branch inside another one (after `at_ply` of its moves; the parent
   must come earlier in the list). The page opens it at the fork. `kind` is one of `as_played`,
-  `expected`, `misread`, `better`, `resistance`, `fix`.
+  `expected`, `misread`, `better`, `resistance`, `fix`, `question`.
+- Episode `kind` is `"lesson"` (the default) or `"question"`: a follow-up the student asked after the
+  lessons (see "Follow-up questions"). Question episodes are listed apart under "Your questions" and
+  need only `id`, `kind`, `moves`, `title`, `commentary` and `branches`.
 - `comparison` names two branches (`a` = the played line, `b` = the better line); the server computes
   what differs at their ends (groups, territory, who plays next freely, the next biggest move, weak
   groups) with `terminal_features`, and the page shows it as a table. Write no numbers of your own
@@ -100,7 +124,7 @@ blob whose checksum does not match, so nothing unverified can reach the student.
   from the better line's end. Concept words and "the engine ranks/prefers": go-teaching §3.
 - Put the "what to notice" cue in `cue`, the check in `rule_check`. One sentence each.
 - Label branches by what they are for the student: "As played", "What you expected", "Where it breaks
-  (move k)", "Better: forced line", "If White resists at X", "Your fix (P8)". Never "Engine's line".
+  (move k)", "Better: forced line", "If White resists at X", "Your fix (P8)", "Your question: P8 first?". Never "Engine's line".
 - Every number on the page comes from the engine; do not restate scores in the text unless they came
   from a tool result you can cite in the ledger.
 

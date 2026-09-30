@@ -181,7 +181,8 @@ student's move (`render_board`, no overlay) and ask, one episode at a time:
 
 > "Move N, you played X. What was it for, and what did you expect to happen next?"
 
-If they name a sequence, ask them to give it as moves. Save the answers verbatim in `thinking.md`.
+If they name a sequence, ask them to give it as moves, and show it back to them with `render_board`
+(`options.line`) so they can confirm it is the line they meant. Save the answers verbatim in `thinking.md`.
 Then:
 - A **stated belief** overrides the inferred one; the lesson's part 3 quotes it.
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
@@ -210,6 +211,12 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - The last recoverable moment of a lost game is more valuable than the biggest blunder after it.
 - Difficult correct moves are lessons too: one strength per review, with its move number.
 - GTP coordinates only. Never invent one: copy points from tool results; when unsure, ask the tool again.
+- Every line visible. Whenever you name two or more moves in a row in chat (the student's expected line,
+  a refutation, a better line, an answer to a follow-up), show it the same turn with `render_board`
+  and `options.line`, and copy `line.notes` under the diagram. It uses no engine, so it is allowed while
+  results are sealed; what is sealed is any evaluation of the line, not the diagram. After the dashboard
+  is published, every line you test for the student also goes on the page (review-dashboard,
+  "Follow-up questions").
 - Do not compute Go on your own (liberties, ladders, life and death) for the student; use the tool and
   report what it says, in your words.
 - Concept words, liberty counts and the *why* (the end comparison, never the score delta): §3.

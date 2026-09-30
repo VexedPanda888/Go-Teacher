@@ -33,7 +33,7 @@ from .metrics import (acceptable_set, best_candidate, candidate_for, capture_rac
                       move_rows, near_empty, phases as phases_fn, prob_at, race_anchor_set, regional_attribution, reply_character,
                       sign_of, territory_by_region)
 from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices, standard_code, standard_partition
-from .render import LEGEND, low_liberty_groups, render_board, render_overlay
+from .render import LEGEND, LINE_LABELS, low_liberty_groups, render_board, render_overlay
 from .sgf import OGS_GAME_RE, SgfError, parse, rank_to_profile
 from .store import PositionRecord, Store, timestamp
 
@@ -1174,7 +1174,8 @@ class Tools:
 
     # ================================================================ 1.16 render_board
     def render_board(self, position: dict, options: dict | None = None) -> dict:
-        """ASCII board with last move, highlights, region box; optional ownership/policy overlay and low-liberty groups."""
+        """ASCII board with last move, highlights, region box; optional ownership/policy overlay and low-liberty groups.
+        With `line` (moves from this position), a numbered diagram of the sequence, like a book diagram; no engine needed."""
         o = options or {}
         rec = self._resolve_position(position)
         size = rec.spec.size
@@ -1186,10 +1187,17 @@ class Tools:
                 box = region_indices(o["region_box"], size)
             except RegionError as e:
                 raise ToolError("bad_region", str(e))
-        ascii_board = render_board(rec.board, last, o.get("mark_last", True), hl, box, o.get("coordinates", True))
+        line_out = self._line_diagram(rec, o["line"]) if o.get("line") else None
+        if line_out is None:
+            ascii_board = render_board(rec.board, last, o.get("mark_last", True), hl, box, o.get("coordinates", True))
+        else:
+            end_board, labels, line_out = line_out
+            ascii_board = render_board(end_board, None, False, hl, box, o.get("coordinates", True), labels, line_out.pop("header"))
         out = {"position_ref": rec.ref, "to_move": COLOR_CHAR[rec.to_move],
                "last_move": None if last is None else [COLOR_CHAR[last[0]], idx_to_gtp(last[1])],
                "captures": {"B": rec.board.captures[BLACK], "W": rec.board.captures[WHITE]}, "ascii": ascii_board, "legend": LEGEND}
+        if line_out is not None:
+            out["line"] = line_out
         overlay = o.get("overlay")
         if overlay in ("ownership", "ownership_stdev"):
             if overlay == "ownership":
@@ -1204,6 +1212,48 @@ class Tools:
         if o.get("label_low_liberties", False):
             out["low_liberty_groups"] = low_liberty_groups(rec.board, 3, 1)[:8]
         return out
+
+    def _line_diagram(self, rec: PositionRecord, line: list) -> tuple[Board, dict[int, str], dict]:
+        """Play `line` from `rec` and label each move by its number: (end board, labels, the `line` output with its header)."""
+        if len(line) > len(LINE_LABELS):
+            raise ToolError("bad_request", f"line has {len(line)} moves; at most {len(LINE_LABELS)} fit in one diagram",
+                            suggestion="split the line: render its first part, then the rest from line.end_ref")
+        size, rules = rec.spec.size, rec.spec.rules
+        board, labels, notes, moves = rec.board, {}, [], []
+        spec = rec.spec
+        for ply, m in enumerate(line, 1):
+            lab = LINE_LABELS[ply - 1]
+            try:
+                color, idx = parse_move(m, size)
+            except CoordError as e:
+                raise ToolError("bad_request", f"line[{ply}]: {e}", {"ply": ply, "move": m})
+            if color != board.to_move:
+                raise ToolError("wrong_color", f"line[{ply}]: {COLOR_CHAR[color]} played but {COLOR_CHAR[board.to_move]} is to move",
+                                {"ply": ply, "move": m}, suggestion="colors alternate from the position's side to move; add a pass to skip a turn")
+            before = board
+            try:
+                board = board.play(color, idx, rules)
+            except IllegalMove as e:
+                raise ToolError("illegal_move", f"line[{ply}] {e}", {"ply": ply, "move": m, "reason": e.reason})
+            moves.append(f"{COLOR_CHAR[color]}{idx_to_gtp(idx, size)}")
+            spec = PositionSpec(spec.size, spec.rules, spec.komi, spec.setup_black, spec.setup_white,
+                                spec.moves + [(color, idx)], spec.first_to_move)
+            if idx is None:
+                notes.append(f"{lab}: {COLOR_CHAR[color]} passes")
+            elif idx in labels:
+                notes.append(f"{lab} at {labels[idx]}")
+            captured = board.captures[color] - before.captures[color]
+            if idx is not None and idx not in labels:
+                labels[idx] = lab
+            if captured:
+                gone = [labels[i] for i in labels if before.cells[i] != EMPTY and board.cells[i] == EMPTY]
+                notes.append(f"{lab} captures {captured} stone{'s' if captured > 1 else ''}"
+                             + (f" ({', '.join(gone)} among them)" if gone else ""))
+        end = self.store.put_position(spec, rec.game_id, None, persist=False)
+        first = COLOR_CHAR[rec.to_move]
+        header = (f"Line of {len(moves)} from here: 1 = {'Black' if first == 'B' else 'White'}, colors alternate · then "
+                  f"{'Black' if board.to_move == BLACK else 'White'} to move · captures B {board.captures[BLACK]}, W {board.captures[WHITE]}")
+        return board, labels, {"moves": moves, "first": first, "notes": notes, "end_ref": end.ref, "header": header}
 
     # ================================================================ causal evidence: shared helpers
     def _human_top(self, rec: PositionRecord, profile: str, exclude: set | None = None) -> tuple[int | None, float | None]:
@@ -1723,6 +1773,10 @@ class Tools:
             if root_n is None or not 1 <= root_n <= ga.M:
                 v.errors.append({"episode_id": eid, "code": "bad_from_move", "message": "episode moves range missing or out of game"})
                 continue
+            kind = ep.get("kind", "lesson")
+            if kind not in ("lesson", "question"):
+                v.errors.append({"episode_id": eid, "code": "bad_kind", "message": f"episode kind {kind!r} is not 'lesson' or 'question'"})
+                continue
             for n in (root_n - 1, root_n):
                 if ga.positions[n].ownership is not None:
                     v.ownership[f"m{n}"] = encode_ownership(ga.positions[n].ownership)
@@ -1734,7 +1788,7 @@ class Tools:
                     branch_ends[done[0]["id"]] = done[1]
             comparison_out = self._vv_comparison(v, ep["comparison"], eid, branches_out, branch_ends) if ep.get("comparison") else None
             quiz_out = self._vv_quiz(v, ep["quiz"], eid, root_n) if ep.get("quiz") else None
-            eps_out.append({"id": eid, "moves": ep.get("moves"), "title": ep.get("title", ""), "category": ep.get("category", ""),
+            eps_out.append({"id": eid, "kind": kind, "moves": ep.get("moves"), "title": ep.get("title", ""), "category": ep.get("category", ""),
                             "tags": ep.get("tags", []), "pointsLost": ep.get("points_lost"),
                             "commentary": [{"atMove": int(c["at_move"]), "text": c["text"]} for c in ep.get("commentary", [])],
                             "branches": branches_out, "quiz": quiz_out, "principle": ep.get("principle", ""), "cue": ep.get("cue", ""),

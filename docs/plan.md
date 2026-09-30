@@ -194,16 +194,16 @@ so you know which skills and server produced which review.
 
 ## 3. Status, 29 Sep 2026
 
-katago-mcp **0.2.1**, **21 tools**, tool contract **v0.3.0** (causal evidence: belief probes, forced
+katago-mcp **0.2.2**, **21 tools**, tool contract **v0.3.1** (causal evidence: belief probes, forced
 lines, end comparisons; the build plan is archived in `docs/archive/plan-causal-lessons.md`).
 
 | Workstream | State | Notes |
 |---|---|---|
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
-| WS2 katago-mcp server | running, 0.2.1 | 21 tools; runs against live KataGo on the Pro; offline test suite with the mock engine |
+| WS2 katago-mcp server | running, 0.2.2 | 21 tools; runs against live KataGo on the Pro; offline test suite with the mock engine |
 | WS3 katago-analysis skill | delivered | belief protocol and proof tree |
 | WS4 go-teaching skill | delivered | beliefs, lesson template, concept-word rule, blind review + interview |
-| WS5 review-dashboard | delivered | branches off branches, end comparison panel, `rule_check` |
+| WS5 review-dashboard | delivered | branches off branches, end comparison panel, `rule_check`; follow-up questions as their own episodes (0.2.2) |
 | WS6 memory artifact | delivered | "Go teacher memory" artifact with `db`; the read-only page does not show `beliefs` / `belief_insight` yet |
 | WS7 review flow | delivered | project instructions plus the `go-teacher-flow` skill |
 | WS8 seeding (20 games) | **in progress** | 20 games surveyed at 500 visits/move; calibration draft (`seed/calibration.md`, local) awaits the correction pass; belief thresholds not yet tuned on the seed games (`katago-mcp-seed --probes`); the causal-lesson calibration on the fixed test set with your ratings (WS8 acceptance) not yet run |

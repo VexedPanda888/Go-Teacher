@@ -7,17 +7,20 @@ from .coords import GTP_COLS, idx_to_gtp, star_points
 
 def render_board(board: Board, last_move: tuple[int, int | None] | None = None, mark_last: bool = True,
                  highlight: set[int] | None = None, region_box: set[int] | None = None,
-                 coordinates: bool = True) -> str:
+                 coordinates: bool = True, labels: dict[int, str] | None = None, header: str | None = None) -> str:
+    """`labels` (point -> one character) are drawn over everything else; `header` replaces the first line."""
     size = board.size
     stars = star_points(size)
     highlight = highlight or set()
+    labels = labels or {}
     last_idx = last_move[1] if (last_move and mark_last) else None
-    header = f"{'Black' if board.to_move == BLACK else 'White'} to move"
-    if last_move is not None:
-        header += f" · last move: {COLOR_CHAR[last_move[0]]} {idx_to_gtp(last_move[1], size)}"
-        if last_idx is not None and mark_last:
-            header += " (@)"
-    header += f" · captures B {board.captures[BLACK]}, W {board.captures[WHITE]}"
+    if header is None:
+        header = f"{'Black' if board.to_move == BLACK else 'White'} to move"
+        if last_move is not None:
+            header += f" · last move: {COLOR_CHAR[last_move[0]]} {idx_to_gtp(last_move[1], size)}"
+            if last_idx is not None and mark_last:
+                header += " (@)"
+        header += f" · captures B {board.captures[BLACK]}, W {board.captures[WHITE]}"
     lines = [header]
     col_line = "    " + " ".join(GTP_COLS[:size])
     if coordinates:
@@ -27,7 +30,9 @@ def render_board(board: Board, last_move: tuple[int, int | None] | None = None, 
         for c in range(size):
             i = r * size + c
             v = board.cells[i]
-            if i == last_idx:
+            if i in labels:
+                ch = labels[i]
+            elif i == last_idx:
                 ch = "@"
             elif i in highlight:
                 ch = "*" if v == EMPTY else ("X" if v == BLACK else "O")
@@ -51,7 +56,9 @@ def render_board(board: Board, last_move: tuple[int, int | None] | None = None, 
 
 
 LEGEND = ("X Black · O White · . empty · , star point · @ last move · * highlighted · - region box; "
+          "line: 1-9 then a-z in order, colors alternating from the first mover in the header; "
           "overlay: B/b Black (strong/weak), W/w White, . neutral")
+LINE_LABELS = "123456789abcdefghijklmnopqrstuvwxyz"   # render_board `line`: one character per move
 
 
 def render_overlay(values: list[float], size: int, kind: str = "ownership", board: Board | None = None) -> str:

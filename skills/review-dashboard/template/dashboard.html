@@ -92,6 +92,9 @@ a { color: var(--accent); }
 .strip { position: relative; height: 22px; margin: 2px 0 0; }
 .strip .ep { position: absolute; top: 4px; height: 14px; border-radius: 3px; background: var(--accent-soft); border: 1px solid var(--accent); cursor: pointer; font-size: 11px; line-height: 12px; color: var(--ink); padding: 0 4px; overflow: hidden; white-space: nowrap; }
 .strip .ep.active { background: var(--accent); color: #fff; }
+.strip.has-q { height: 40px; }
+.strip .ep.q { top: 22px; border-style: dashed; background: var(--panel); }   /* questions on their own row */
+.strip .ep.q.active { background: var(--accent); }
 .strip .marker { position: absolute; top: 0; width: 2px; height: 22px; background: var(--loss); }
 .strip .marker.lc { background: var(--gain); }
 .varbar { display: none; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-soft); font-size: 14px; }
@@ -110,6 +113,8 @@ a { color: var(--accent); }
 .eplist button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 10px; cursor: pointer; text-align: left; font-size: 13px; line-height: 1.3; }
 .eplist button .r { color: var(--muted); display: block; font-size: 12px; }
 .eplist button.active { border-color: var(--accent); background: var(--accent-soft); }
+.eplist.q button { border-style: dashed; }
+.lesson h2.qhead { margin-top: 2px; }
 .lesson h3 { font-family: var(--serif); font-weight: 600; font-size: 20px; margin: 4px 0 2px; letter-spacing: -0.005em; }
 .lesson .meta { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
 .lesson .meta .lost { color: var(--loss); }
@@ -208,6 +213,8 @@ a { color: var(--accent); }
       <div class="panel lesson" id="lesson">
         <h2>Lessons</h2>
         <ul class="eplist" id="eplist"></ul>
+        <h2 class="qhead" id="qhead" hidden>Your questions</h2>
+        <ul class="eplist q" id="qlist" hidden></ul>
         <div id="epbody"></div>
       </div>
     </aside>
@@ -300,8 +307,10 @@ if (typeof module !== "undefined") module.exports = Core;
   const M = D.moves.length;
   const game = Core.replay(D.setup, D.moves);
   const episodes = D.episodes || [];
+  const isQuestion = (e) => e.kind === "question";   // follow-up questions: same shape as a lesson, shown apart
+  const lessonEps = episodes.filter((e) => !isQuestion(e));
   const $ = (id) => document.getElementById(id);
-  const state = { move: 0, mode: "game", ep: episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false };
+  const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false };
 
   // ---------- theme ----------
   const themeBtn = $("themeBtn");
@@ -440,7 +449,8 @@ if (typeof module !== "undefined") module.exports = Core;
     if (state.mode === "variation") exitVariation(false);
     if (state.mode === "quiz") { state.mode = "game"; state.quiz = null; }
     state.move = n;
-    const covering = episodes.find((e) => n >= e.moves[0] - 1 && n <= e.moves[1]);
+    const covers = (e) => n >= e.moves[0] - 1 && n <= e.moves[1];
+    const covering = lessonEps.find(covers) || episodes.find(covers);
     if (covering) state.ep = covering;
     renderAll();
   }
@@ -463,10 +473,10 @@ if (typeof module !== "undefined") module.exports = Core;
 
   // ---------- strip ----------
   function renderStrip() {
-    const st = $("strip"); st.innerHTML = "";
+    const st = $("strip"); st.innerHTML = ""; st.classList.toggle("has-q", episodes.some(isQuestion));
     for (const e of episodes) {
       const a = (e.moves[0] - 1) / M * 100, b = Math.max((e.moves[1] - e.moves[0] + 2) / M * 100, 1.2);
-      const d = document.createElement("button"); d.type = "button"; d.className = "ep" + (state.ep === e ? " active" : ""); d.style.left = a + "%"; d.style.width = b + "%";
+      const d = document.createElement("button"); d.type = "button"; d.className = "ep" + (isQuestion(e) ? " q" : "") + (state.ep === e ? " active" : ""); d.style.left = a + "%"; d.style.width = b + "%";
       d.textContent = e.id; d.title = e.title + " (moves " + e.moves[0] + "–" + e.moves[1] + ")"; d.addEventListener("click", () => { state.ep = e; setMove(e.moves[0] - 1); });
       st.appendChild(d);
     }
@@ -481,7 +491,7 @@ if (typeof module !== "undefined") module.exports = Core;
   function drawGraph() {
     while (G.firstChild) G.removeChild(G.firstChild);
     const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || G).appendChild(e); return e; };
-    for (const e of episodes) mk("rect", { x: gx(e.moves[0] - 1), y: GT, width: Math.max(2, gx(e.moves[1]) - gx(e.moves[0] - 1)), height: GH - GT - GB, fill: "var(--accent-soft)" });
+    for (const e of lessonEps) mk("rect", { x: gx(e.moves[0] - 1), y: GT, width: Math.max(2, gx(e.moves[1]) - gx(e.moves[0] - 1)), height: GH - GT - GB, fill: "var(--accent-soft)" });
     mk("line", { x1: GL, y1: gy(0), x2: GW - GR, y2: gy(0), stroke: "var(--rule)", "stroke-width": 1 });
     for (const v of [maxAbs, 0, -maxAbs]) { const t = mk("text", { x: GL - 6, y: gy(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": "var(--sans)" }); t.textContent = Core.fmtScore(v); }
     const ph = D.phases || {};
@@ -507,26 +517,32 @@ if (typeof module !== "undefined") module.exports = Core;
 
   // ---------- lesson panel ----------
   function renderEpList() {
-    const ul = $("eplist"); ul.innerHTML = "";
-    for (const e of episodes) {
-      const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = state.ep === e ? "active" : "";
-      b.innerHTML = esc(e.id) + " " + esc(e.title || "") + "<span class='r'>moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", " + (+e.pointsLost).toFixed(1) + " points" : "") + "</span>";
-      b.addEventListener("click", () => { state.ep = e; setMove(e.moves[0] - 1); });
-      li.appendChild(b); ul.appendChild(li);
-    }
+    const fill = (ul, list) => {
+      ul.innerHTML = "";
+      for (const e of list) {
+        const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = state.ep === e ? "active" : "";
+        b.innerHTML = esc(e.id) + " " + esc(e.title || "") + "<span class='r'>moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", " + (+e.pointsLost).toFixed(1) + " points" : "") + "</span>";
+        b.addEventListener("click", () => { state.ep = e; setMove(e.moves[0] - 1); });
+        li.appendChild(b); ul.appendChild(li);
+      }
+    };
+    fill($("eplist"), lessonEps);
+    const qs = episodes.filter(isQuestion);
+    fill($("qlist"), qs);
+    $("qhead").hidden = $("qlist").hidden = !qs.length;
   }
   function renderEpBody() {
     const body = $("epbody"); const e = state.ep;
     if (!e) { body.innerHTML = "<p class='commentary'><span class='empty'>No lessons in this review.</span></p>"; return; }
     const cur = state.mode === "quiz" ? state.quiz.at - 1 : state.mode === "variation" ? state.br.fromMove : state.move;
     const inRange = cur >= e.moves[0] - 1 && cur <= e.moves[1];
-    let html = "<h3>" + esc(e.title || e.id) + "</h3><div class='meta'>" + (e.category ? esc(e.category) + ", " : "") + "moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", <span class='lost'>" + (+e.pointsLost).toFixed(1) + " points lost</span>" : "") + "</div>";
+    let html = "<h3>" + esc(e.title || e.id) + "</h3><div class='meta'>" + (isQuestion(e) ? "Your question, " : "") + (e.category ? esc(e.category) + ", " : "") + "moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", <span class='lost'>" + (+e.pointsLost).toFixed(1) + " points lost</span>" : "") + "</div>";
     html += "<div class='commentary'>";
     if (state.mode === "variation") {
       html += "<p><span class='at'>Variation: " + esc(state.br.label) + "</span><br>" + esc(variationText()) + "</p>";
     } else {
       const entries = (e.commentary || []).filter((c) => c.atMove <= (state.mode === "quiz" ? cur : cur));
-      if (!inRange) html += "<p><span class='empty'>This lesson starts at move " + (e.moves[0] - 1) + ". </span><button type='button' class='chip' data-jump='" + (e.moves[0] - 1) + "'>Go there</button></p>";
+      if (!inRange) html += "<p><span class='empty'>" + (isQuestion(e) ? "This question" : "This lesson") + " starts at move " + (e.moves[0] - 1) + ". </span><button type='button' class='chip' data-jump='" + (e.moves[0] - 1) + "'>Go there</button></p>";
       else if (!entries.length) html += "<p><span class='empty'>Step forward for the commentary.</span></p>";
       else { const c = entries[entries.length - 1]; html += "<p><span class='at'>at move " + c.atMove + "</span><br>" + esc(c.text) + "</p>"; }
     }
@@ -615,7 +631,7 @@ if (typeof module !== "undefined") module.exports = Core;
     const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
     if (S.headline) html += "<p class='headline'>" + esc(S.headline) + "</p>";
     html += "<div class='cols'>";
-    const lessons = S.lessons && S.lessons.length ? S.lessons : episodes.filter((e) => e.ruleCheck || e.principle).map((e) => ({ episodeId: e.id, title: e.title, ruleCheck: e.ruleCheck, principle: e.principle, cue: e.cue }));
+    const lessons = S.lessons && S.lessons.length ? S.lessons : lessonEps.filter((e) => e.ruleCheck || e.principle).map((e) => ({ episodeId: e.id, title: e.title, ruleCheck: e.ruleCheck, principle: e.principle, cue: e.cue }));
     if (lessons.length) html += "<div><h4>Take with you</h4><ul>" + lessons.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.ruleCheck || l.principle || "") + (l.cue ? " <span style='color:var(--muted)'>Cue: " + esc(l.cue) + "</span>" : "") + "</li>").join("") + "</ul></div>";
     if (S.strengths && S.strengths.length) html += "<div><h4>What went well</h4><ul>" + S.strengths.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
     if (S.selfReview && ((S.selfReview.agreements || []).length || (S.selfReview.blindSpots || []).length)) {
@@ -630,7 +646,7 @@ if (typeof module !== "undefined") module.exports = Core;
 
   function renderAll() { drawStones(); renderReadout(); renderStrip(); drawGraph(); renderEpList(); renderEpBody(); }
   renderSummary();
-  const startEp = episodes[0];
+  const startEp = lessonEps[0] || episodes[0];
   if (startEp) { state.ep = startEp; state.move = startEp.moves[0] - 1; }
   renderAll();
 })();
