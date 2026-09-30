@@ -192,7 +192,7 @@ class Store:
     def write_json(self, game_id: str | None, name: str, obj) -> Path:
         p = self.game_dir(game_id) / name
         tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(json.dumps(obj, ensure_ascii=False))
+        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
         tmp.replace(p)
         return p
 
@@ -200,4 +200,4 @@ class Store:
         p = self.game_dir(game_id) / name
         if not p.exists():
             return None
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))

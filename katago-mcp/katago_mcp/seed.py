@@ -197,8 +197,8 @@ def main() -> int:
             except ToolError as e:
                 records.append({"file": p.name, "error": e.to_dict()["error"]})
                 print(f"  failed: {e.code}: {e.message}", file=sys.stderr)
-            out.write_text(json.dumps(records, indent=1, ensure_ascii=False))
-            out.with_suffix(".md").write_text(markdown(records))
+            out.write_text(json.dumps(records, indent=1, ensure_ascii=False), encoding="utf-8")
+            out.with_suffix(".md").write_text(markdown(records), encoding="utf-8")
     finally:
         t.close()
     print(f"wrote {out} and {out.with_suffix('.md')}", file=sys.stderr)
