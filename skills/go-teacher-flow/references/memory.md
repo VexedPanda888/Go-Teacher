@@ -13,7 +13,7 @@ never progress or improvement.
 ```json
 {
   "schema_version": 1,
-  "student": {"username": "cwhay888", "rank": "7k", "server": "OGS", "rules": "japanese"},
+  "student": {"username": "<ogs-name>", "rank": "7k", "server": "OGS", "rules": "japanese"},
   "games_reviewed": 12, "updated_at": "2026-10-04",
   "summary": "Three or four sentences: what keeps recurring, in the student's terms.",
   "watch": "One sentence for the next review: the pattern most likely to show up.",

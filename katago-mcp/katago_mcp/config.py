@@ -102,8 +102,8 @@ class Thresholds:
 
 @dataclass
 class StudentConfig:
-    username: str = "cwhay888"
-    rank: str = "7k"
+    username: str = ""                      # the student's OGS name, set per machine in [student]
+    rank: str = "7k"                        # fallback when the SGF has no rank for the student
     target_offset_stones: int = 3
     horizon_rank: str = "rank_1d"
 

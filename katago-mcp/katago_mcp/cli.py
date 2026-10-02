@@ -3,7 +3,7 @@
   katago-mcp serve --config config/m5pro.toml
   katago-mcp benchmark --config config/m5pro.toml [--seconds 20]
   katago-mcp selfcheck --config config/m5pro.toml [--sgf game.sgf]
-  katago-mcp sgf-summary game.sgf [--student cwhay888]
+  katago-mcp sgf-summary game.sgf [--student <ogs-name>]
   katago-mcp survey game.sgf --config ... [--visits 300] [--mock]
 """
 from __future__ import annotations

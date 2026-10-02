@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Seed the teacher's memory: survey every SGF in a folder and write one compact summary.
 
-  katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ [--visits 500] [--student cwhay888]
+  katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ [--visits 500] [--student <ogs-name>]
                   [--out seed/seed_summary.json] [--episodes 6] [--mock]
                   [--probes] [--probe-episodes 5] [--probe-visits 200]
 

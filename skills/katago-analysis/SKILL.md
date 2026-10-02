@@ -86,8 +86,8 @@ per episode that the student proposes (`per_episode.student_lines`): their fix o
    `learnability` (target-rank probability of the teachable move), `candidate_tags` (taxonomy hints, not
    verdicts), `stability`, `got_away_with_it`, `group_status_change`, `persistent_best` (other episodes whose best
    point is the same: one big point left open — often one lesson, usually category 2 or 15).
-5. `positives` — correct moves that a 7k usually misses. Mention one in the summary; skip passes and
-   dame-like first/last-line moves, which the list still contains.
+5. `positives` — correct moves that the student's rank (peer) usually misses, only where the position
+   offered a real choice (passes and dame are excluded). Mention one in the summary; the list can be empty.
 
 The digest's tags and teachable move are *hypotheses*. Phase 4 decides.
 
@@ -143,7 +143,7 @@ A human proof is a narrow tree of must-moves ending in a position the student ca
 
 - `forced_line` extends while replies are forced (the second-best, re-searched with the best avoided,
   loses > 3) and, by default (`extend: "local"`), while the fight stays local; nodes marked
-  `forced: false` were choices — say "Black would play", not "Black must play". It prefers the move a 3k
+  `forced: false` were choices — say "Black would play", not "Black must play". It prefers the move the target rank
   plays when it is within a point of the engine's, so the line stays legible.
 - `resistance` on an opponent node is the move a player of the opponent's rank would most likely try,
   with its refutation — the answer to "what if he doesn't cooperate?". Show it when it differs from the

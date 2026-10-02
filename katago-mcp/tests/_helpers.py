@@ -17,6 +17,7 @@ def make_tools(tmp: str, engine=None, **overrides) -> Tools:
     cfg.reviews_dir = os.path.join(tmp, "reviews")
     cfg.games_dir = os.path.join(tmp, "games")
     cfg.throughput.visits_per_second_sustained = 650.0
+    cfg.student.username = "student1"
     for key, value in overrides.items():
         *path, name = key.split("__")
         obj = cfg

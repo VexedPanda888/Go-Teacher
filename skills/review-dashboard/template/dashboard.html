@@ -683,7 +683,7 @@ function App(D) {
         const picked = state.quiz.picked; const cand = q.candidates.find((c) => c.move === picked);
         html += "<div class='result'>" + (cand ? "You chose <b>" + esc(picked) + "</b>: " + (cand.pointsLost <= 0.5 ? "as good as the engine's best." : "loses " + (+cand.pointsLost).toFixed(1) + " points against the engine's best.") : "<b>" + esc(picked) + "</b> was not among the evaluated moves; the engine's answers are below.") + "</div>";
         const rows = q.candidates.slice().sort((a, b) => a.pointsLost - b.pointsLost);
-        html += "<table><tr><th>Move</th><th></th><th class='num'>Points lost</th></tr>" + rows.map((c) => "<tr><td>" + esc(c.move) + (c.move === picked ? "<span class='tag you'>your pick</span>" : "") + "</td><td>" + (c.labels || []).map((l) => "<span class='tag'>" + esc(l === "actual" ? "played in the game" : l === "peer" ? "typical 7k move" : l === "best" ? "engine's best" : l) + "</span>").join("") + (c.note ? " " + esc(c.note) : "") + "</td><td class='num'>" + (+c.pointsLost).toFixed(1) + "</td></tr>").join("") + "</table>";
+        html += "<table><tr><th>Move</th><th></th><th class='num'>Points lost</th></tr>" + rows.map((c) => "<tr><td>" + esc(c.move) + (c.move === picked ? "<span class='tag you'>your pick</span>" : "") + "</td><td>" + (c.labels || []).map((l) => "<span class='tag'>" + esc(l === "actual" ? "played in the game" : l === "peer" ? (D.game.yourRank ? "typical " + esc(D.game.yourRank) + " move" : "typical move at your rank") : l === "best" ? "engine's best" : l) + "</span>").join("") + (c.note ? " " + esc(c.note) : "") + "</td><td class='num'>" + (+c.pointsLost).toFixed(1) + "</td></tr>").join("") + "</table>";
       }
     }
     return html + "</div>";

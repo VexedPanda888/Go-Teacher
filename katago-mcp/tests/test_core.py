@@ -11,7 +11,7 @@ from katago_mcp.render import render_board  # noqa: E402
 from katago_mcp import sgf  # noqa: E402
 
 HANDICAP_SGF = """(;GM[1]FF[4]CA[UTF-8]AP[OGS]SZ[19]HA[3]AB[pd][dp][pp]KM[0.5]RU[Japanese]
-PB[cwhay888]BR[7k]PW[strongopp]WR[4k]RE[W+12.5]DT[2026-09-20]
+PB[student1]BR[7k]PW[strongopp]WR[4k]RE[W+12.5]DT[2026-09-20]
 PC[OGS: https://online-go.com/game/99887766]
 ;W[dd];B[fc]BL[500];W[cf]WL[498];B[jd](;W[qf];B[nc])(;W[qn]))"""
 

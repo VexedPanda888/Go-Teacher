@@ -54,7 +54,7 @@ def synthetic_game(n_moves: int = 70, seed: int = 7, handicap: int = 0) -> str:
     body = "".join(f";{'B' if c == BLACK else 'W'}[{idx_to_sgf(i)}]" for c, i in moves)
     ab = f"HA[{handicap}]AB" + "".join(f"[{s}]" for s in setup) if handicap else ""
     komi = "0.5" if handicap else "6.5"
-    return (f"(;GM[1]FF[4]SZ[19]{ab}KM[{komi}]RU[Japanese]PB[cwhay888]BR[7k]PW[rival]WR[6k]RE[W+R]"
+    return (f"(;GM[1]FF[4]SZ[19]{ab}KM[{komi}]RU[Japanese]PB[student1]BR[7k]PW[rival]WR[6k]RE[W+R]"
             f"PC[OGS: https://online-go.com/game/{1000 + seed}]{body})")
 
 
@@ -497,9 +497,9 @@ class SharedOpeningTest(unittest.TestCase):
         """Two games with the same moves, the student Black in one and White in the other: a position
         of the second game is the second game's, even where the first game reached it first."""
         with tempfile.TemporaryDirectory() as tmp:
-            t = make_tools(tmp, student__username="cwhay888")
+            t = make_tools(tmp)
             g1 = synthetic_game(30, seed=7)
-            g2 = (g1.replace("PB[cwhay888]", "PB[tmp]").replace("PW[rival]", "PW[cwhay888]").replace("PB[tmp]", "PB[rival]")
+            g2 = (g1.replace("PB[student1]", "PB[tmp]").replace("PW[rival]", "PW[student1]").replace("PB[tmp]", "PB[rival]")
                   .replace("game/1007", "game/2007"))
             jobs = []
             for sgf in (g1, g2):

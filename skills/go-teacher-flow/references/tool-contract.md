@@ -1045,7 +1045,7 @@ visits_per_second_sustained = 0
 measured_at = ""
 
 [student]
-username = "cwhay888"
+username = "<ogs-name>"
 rank = "7k"
 target_offset_stones = 3
 horizon_rank = "rank_1d"

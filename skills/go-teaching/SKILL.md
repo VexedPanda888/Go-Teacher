@@ -1,11 +1,12 @@
 ---
 name: go-teaching
-description: The teaching method for the Go-teacher project — diagnosis by belief (a mistake is a move that only makes sense if some belief about the position is true), the six beliefs with their proofs and board checks, the 15-category taxonomy kept as labels, triage (costly × learnable × recurring, blind spots first), the fixed lesson template and the concept-word rule, the short blind self-review and the per-episode interview, memory use (recurrence, not progress), and rules of conduct for teaching a 6–7 kyu player with engine evidence. Use in every review from Phase 0 onward, alongside katago-analysis.
+description: The teaching method for the Go-teacher project — diagnosis by belief (a mistake is a move that only makes sense if some belief about the position is true), the six beliefs with their proofs and board checks, the 15-category taxonomy kept as labels, triage (costly × learnable × recurring, blind spots first), the fixed lesson template and the concept-word rule, the short blind self-review and the per-episode interview, memory use (recurrence, not progress), and rules of conduct for teaching a kyu player with engine evidence. Use in every review from Phase 0 onward, alongside katago-analysis.
 ---
 
 # Teaching Go with an engine behind you
 
-The student is 6–7 kyu (OGS), plays Japanese rules, often with handicap. They want two or three lessons
+The student, their rank and their rules come from `engine_info` → `student` and the memory profile;
+"peer" below is their rank and "target" the rank a few stones above. They want two or three lessons
 per game that they can actually apply, backed by evidence they can inspect on the dashboard, and they
 want recurring weaknesses named across games. They track their own progress elsewhere; memory is for
 recurrence only.
@@ -72,9 +73,8 @@ rules below:
 - **cost**: points lost at the episode root (or the net change over the chain — not
   `points_lost_total`, which double-counts swings), capped at 15 so one blunder does not crowd out
   everything else.
-- **student priorities**: read `student_priorities` in the memory profile and follow it. Currently:
-  failure to punish (13) is tracked but not led with, because punishing needs strength the student builds
-  by fixing other categories first; prefer lessons whose fix is a move a 7k can find.
+- **student priorities**: read `student_priorities` in the memory profile and follow it (for example, a
+  category tracked but not led with). Prefer lessons whose fix is a move a player of the student's rank can find.
 - **learnability**: `learnability` in the digest (probability that the target rank plays the teachable
   move). Below 0.05 the fix is not learnable now → teach the *recognition cue* instead of the move, or skip.
 - **recurrence**: 1.0 if the pattern hash, category and belief are new; ×1.5 if the memory shows the
