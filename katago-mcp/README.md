@@ -1,7 +1,7 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.5.2** (25 tools): whole-game surveys, budgeted verification
+It implements **tool contract v0.5.3** (25 tools): whole-game surveys, budgeted verification
 (`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
 human-model move distributions, background verification during the student interviews
 (`start_verification`, `record_interview`, `verification_results`), checksummed rows for the live review

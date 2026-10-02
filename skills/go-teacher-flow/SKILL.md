@@ -50,11 +50,14 @@ verification **before the first interview question** (katago-analysis §1 steps 
 **Phase 3b — Episode interviews → `thinking.md`.** go-teaching §4.2, in the `interview_order`
 returned; `record_interview` after each answer, then go straight to the next episode. Update the
 ledger with each stated belief. If `verification_results(job_id)` still shows minutes of work
-afterwards, ask go-teaching §4.3.
+afterwards, ask go-teaching §4.3, then recall quizzes (§4.4).
 
-**Phase 4 — Verify → ledger verdicts, `verified.md`.** For each episode
-`verification_results(job_id, episode, wait_seconds=120)` returns the belief protocol already run
-(katago-analysis §3, §5); add what a stated belief needs beyond it. Fill in query ids and verdicts.
+**Phase 4 — Verify → ledger verdicts, `verified.md`.** Read the episodes as they finish:
+`verification_results(job_id)` shows each one's `state`; `verification_results(job_id, episode)` on a
+`done` one returns the belief protocol already run (katago-analysis §3, §5). A tool call blocks your
+turn, so while nothing is done and the next result is more than about a minute away, ask go-teaching
+§4.3, then a recall quiz (§4.4), instead of waiting; use `wait_seconds` only for the last short
+stretch. Add what a stated belief needs beyond the protocol. Fill in query ids and verdicts.
 Stop when the verification minutes are used; what is left stays UNTESTED. verified.md, per episode:
 verdict, belief and source (stated / inferred), the misread (ply, move never considered, refutation),
 the proof lines (forced vs chosen moves, resistance), the end comparison, the teachable move, refs.

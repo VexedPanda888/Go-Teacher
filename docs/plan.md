@@ -194,7 +194,7 @@ so you know which skills and server produced which review.
 
 ## 3. Status, 1 Oct 2026
 
-katago-mcp **0.4.2**, **25 tools**, tool contract **v0.5.2** (causal evidence: belief probes, forced
+katago-mcp **0.4.3**, **25 tools**, tool contract **v0.5.3** (causal evidence: belief probes, forced
 lines, end comparisons, archived in `docs/archive/plan-causal-lessons.md`; v0.4 runs the verification
 in the background during the episode interviews; v0.5 opens the review page in Phase 0 and grows it
 with the review).
@@ -202,7 +202,7 @@ with the review).
 | Workstream | State | Notes |
 |---|---|---|
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
-| WS2 katago-mcp server | running, 0.4.2 | 25 tools; runs against live KataGo on the Pro; offline test suite with the mock engine; the background verification (0.3.0) is tested on the mock engine only |
+| WS2 katago-mcp server | running, 0.4.3 | 25 tools; runs against live KataGo on the Pro; offline test suite with the mock engine; the background verification (0.3.0) is tested on the mock engine only |
 | WS3 katago-analysis skill | delivered | belief protocol and proof tree |
 | WS4 go-teaching skill | delivered | beliefs, lesson template, concept-word rule, blind review + interview |
 | WS5 review-dashboard | delivered | branches off branches, end comparison panel, `rule_check`; follow-up questions as their own episodes (0.2.2); live from Phase 0 with boards and clicked answers (0.4.0), tested in headless Chrome with a stand-in database, not yet on claude.ai |
@@ -232,6 +232,7 @@ with the review).
 | 13 | Taxonomy (29 Sep) | the 15 categories stay as labels so memory stays continuous; `belief` is added alongside them |
 | 14 | Interviews and engine overlap (1 Oct) | a tool call blocks Claude's turn, so the answer-free probes run in a server-side background queue during the interviews (`start_verification`); the server seals each episode until `record_interview`; a planned survey precomputes its top 4 episodes; the planner counts the overlap and budgets one student line per episode |
 | 15 | Review page from the start (1 Oct) | the dashboard is published live in Phase 0 with the `db` capability and grows with the review: boards (positions, lines, questions) replace ASCII diagrams in chat, and the student answers moves by clicking on the board; rows come from `dashboard_row` with a SHA-256 the page checks; no engine data on the page before the lessons; Phase 6 rebuilds it in place; `render_board` in chat is the fallback |
+| 16 | Recall quizzes (2 Oct) | old lessons are quizzed only to fill verification waits (Phases 3b and 4), after the §4.3 questions about the current episodes and never in place of a ready result; at most three per review, chosen missed-first from the open lessons; graded against the lesson's move with a quick search for any other move; results are kept per lesson (`recall`), never reported as a trend |
 
 ---
 

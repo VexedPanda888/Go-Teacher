@@ -66,3 +66,8 @@ Changes from v0.5.1 to v0.5.2 (the rest of the WS8 calibration, measured on the 
 2. Positives exclude passes and positions without a real choice, `positive_min_choice` (§3.10b): 13 of 24 games had a pass among them, mostly first.
 3. Tag 14's thresholds are config (`tag_passive_own_up`, `tag_passive_opp_down`, 0.5 each; the old 1 / 3 never fired), and the survey requests `ownership_stdev`, without which tag 10 could not fire (§3.7).
 4. `last_chance` is documented as the code computes it: at or before `decisive` (§3.6).
+
+Changes from v0.5.2 to v0.5.3 (recall quizzes on past lessons):
+
+1. `dashboard_row` boards take `from_game`: a position of a past game, shown on this review's page with that game's record in the row (§1.25). go-teaching §4.4 uses it to quiz old lessons while the verification runs.
+2. `sgf` inputs accept the memory's game id form `ogs_12345678`.

@@ -479,8 +479,8 @@ function App(D) {
     if (state.mode === "board") {
       const bd = state.bd, mv = state.bply > 0 ? state.bpos.parsed[state.bply - 1] : null, n = state.bpos.positions.length - 1;
       $("moveNum").textContent = bd.at_move;
-      $("lastMove").textContent = mv ? "Move " + state.bply + " of " + n + " on this board: " + (mv.color === B ? "Black" : "White") + " " + Core.gtp(mv.idx) : "The position after move " + bd.at_move;
-      slider.value = bd.at_move;
+      $("lastMove").textContent = mv ? "Move " + state.bply + " of " + n + " on this board: " + (mv.color === B ? "Black" : "White") + " " + Core.gtp(mv.idx) : boardWhere(bd).replace(/^./, (c) => c.toUpperCase());
+      if (!bd.from_game) slider.value = bd.at_move;
       $("btnPrev").disabled = state.bply === 0; $("btnNext").disabled = state.bply >= n;
       $("tglOwn").disabled = true; $("tglOwn").setAttribute("aria-pressed", "false"); $("tglNums").disabled = true;
       $("tglOwn").hidden = LIVE; $("tglNums").hidden = LIVE;
@@ -724,16 +724,24 @@ function App(D) {
   // A board is a position of the game with an optional numbered line and highlighted points that Claude
   // sends during the review, instead of an ASCII diagram in chat. With `ask`, the student answers by
   // clicking: one move ("move") or a sequence ("line"), starting with `ask_color`, then Send.
+  // A board with `from_game` is a position of a past game (a quiz on an old lesson): it carries that
+  // game's setup and moves up to `at_move`, and is replayed from them instead of this review's game.
+  function boardBase(r) {
+    if (!r.from_game) return game.positions[r.at_move];
+    const fg = r.from_game; if (!Array.isArray(fg.moves) || fg.moves.length !== r.at_move) throw new Error("bad from_game");
+    const ps = Core.replay(fg.setup || { AB: [], AW: [] }, fg.moves).positions; return ps[ps.length - 1];
+  }
+  function boardWhere(bd) { const fg = bd.from_game; return fg ? "your game" + (fg.opponent ? " vs " + fg.opponent : "") + (fg.date ? " (" + fg.date + ")" : "") + ", after move " + bd.at_move : "the position after move " + bd.at_move; }
   function boardsInOrder() { return Array.from(live.boards.values()).sort((a, b) => a.seq - b.seq); }
   function boardMoves(bd) { const ans = live.answers.get(bd.id); const draft = live.drafts.get(bd.id); return bd.line.concat(draft || (ans ? ans.moves : [])); }
   function enterBoard(bd, atEnd) {
     if (state.mode === "variation") exitVariation(false);
     state.mode = "board"; state.bd = bd; state.quiz = null;
-    state.bpos = Core.playLine(game.positions[bd.at_move], boardMoves(bd));
+    state.bpos = Core.playLine(bd._base, boardMoves(bd));
     state.bply = atEnd ? state.bpos.positions.length - 1 : Math.min(bd.line.length, state.bpos.positions.length - 1);
     renderAll();
   }
-  function exitBoard(render) { const at = state.bd ? state.bd.at_move : state.move; state.mode = "game"; state.bd = null; state.bpos = null; state.bply = 0; state.move = at; if (render) renderAll(); }
+  function exitBoard(render) { const at = state.bd && !state.bd.from_game ? state.bd.at_move : state.move; state.mode = "game"; state.bd = null; state.bpos = null; state.bply = 0; state.move = at; if (render) renderAll(); }
   function refreshBoard(atEnd) {
     if (state.mode !== "board" || !state.bd) return;
     const k = state.bply; enterBoard(live.boards.get(state.bd.id) || state.bd, atEnd);
@@ -745,7 +753,7 @@ function App(D) {
     const base = live.drafts.get(bd.id) || (live.answers.get(bd.id) ? live.answers.get(bd.id).moves.slice() : []);
     const moves = bd.ask === "move" ? [] : base.slice();
     // replay the line and the answer so far, then check the clicked move
-    const pos = Core.playLine(game.positions[bd.at_move], bd.line.concat(moves)).positions;
+    const pos = Core.playLine(bd._base, bd.line.concat(moves)).positions;
     const firstColor = bd.ask_color === "W" ? W : B;
     const color = moves.length % 2 === 0 ? firstColor : (firstColor === B ? W : B);
     const before = pos[pos.length - 1], beforePrev = pos.length >= 2 ? pos[pos.length - 2] : null;
@@ -787,14 +795,14 @@ function App(D) {
       const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button";
       const ans = live.answers.get(bd.id);
       b.className = (state.mode === "board" && state.bd && state.bd.id === bd.id ? "active" : "") + (bd.seq > live.seen ? " new" : "");
-      b.innerHTML = esc(bd.title) + "<span class='r'>after move " + bd.at_move + (bd.ask ? (ans ? " · answered" : " · your answer") : "") + "</span>";
+      b.innerHTML = esc(bd.title) + "<span class='r'>" + (bd.from_game ? "past game, move " : "after move ") + bd.at_move + (bd.ask ? (ans ? " · answered" : " · your answer") : "") + "</span>";
       b.addEventListener("click", () => { live.seen = Math.max(live.seen, bd.seq); enterBoard(bd, !!(bd.ask && (live.drafts.get(bd.id) || ans))); showBoardOnPhones(); });
       li.appendChild(b); ul.appendChild(li);
     }
     for (const id of live.bad) { const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = "bad"; b.disabled = true; b.textContent = id + ": did not arrive intact; ask Claude to send it again"; li.appendChild(b); ul.appendChild(li); }
     const body = $("boardbody"); const bd = state.mode === "board" ? state.bd : null;
     if (!bd) { body.innerHTML = list.length ? "<p class='commentary'><span class='empty'>Pick a board to show it.</span></p>" : ""; return; }
-    let html = "<h3>" + esc(bd.title) + "</h3><div class='meta'>the position after move " + bd.at_move + (bd.line.length ? ", then " + bd.line.length + (bd.line.length === 1 ? " move" : " moves") + " numbered on the board" : "") + "</div>";
+    let html = "<h3>" + esc(bd.title) + "</h3><div class='meta'>" + esc(boardWhere(bd)) + (bd.line.length ? ", then " + bd.line.length + (bd.line.length === 1 ? " move" : " moves") + " numbered on the board" : "") + "</div>";
     if (bd.text) html += "<div class='commentary'><p>" + esc(bd.text) + "</p></div>";
     if (bd.ask) {
       const ans = live.answers.get(bd.id), draft = live.drafts.get(bd.id), moves = draft || (ans ? ans.moves : []);
@@ -820,8 +828,8 @@ function App(D) {
     const ok = await Promise.all(rows.map((r) => Core.rowIntact(r)));
     const fresh = new Map(), bad = new Set();
     rows.forEach((r, k) => {
-      if (!ok[k] || r.game_id !== D.game.id || !(r.at_move >= 0 && r.at_move <= M)) { bad.add(r.id || "?"); return; }
-      try { Core.playLine(game.positions[r.at_move], r.line || []); fresh.set(r.id, Object.assign({ line: [], highlight: [] }, r)); } catch (e) { bad.add(r.id || "?"); }
+      if (!ok[k] || r.game_id !== D.game.id || !(r.at_move >= 0 && (r.from_game || r.at_move <= M))) { bad.add(r.id || "?"); return; }
+      try { const base = boardBase(r); Core.playLine(base, r.line || []); fresh.set(r.id, Object.assign({ line: [], highlight: [] }, r, { _base: base })); } catch (e) { bad.add(r.id || "?"); }
     });
     const newest = Array.from(fresh.values()).filter((r) => r.seq > live.seen).sort((a, b) => b.seq - a.seq)[0];
     live.boards = fresh; live.bad = bad;

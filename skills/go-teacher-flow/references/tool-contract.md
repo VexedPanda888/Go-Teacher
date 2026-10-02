@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.5.2, as implemented in katago-mcp 0.4.2)
+# katago-mcp — Tool Contract (v0.5.3, as implemented in katago-mcp 0.4.3)
 
 **Status:** current; describes the implemented server, 25 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Decisions and the version history are in `docs/contract-changes.md`. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
@@ -260,7 +260,7 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
 
 ### 1.3 `sgf_summary`
 
-> **Input forms (v0.2.1):** `sgf` may be raw SGF text, the path or file name of an `.sgf` on the server machine (looked up in `games/`), or an OGS game id / link, which the server fetches from `https://online-go.com/api/v1/games/<id>/sgf` and caches as `games/ogs_<id>.sgf`. The same applies to `start_game_analysis.sgf`, `get_position_ref.sgf` and `Position.sgf`. Errors: `ogs_fetch_failed`. Prefer link or path: SGF text retyped into a tool call by the model is unreliable for long games.
+> **Input forms (v0.2.1):** `sgf` may be raw SGF text, the path or file name of an `.sgf` on the server machine (looked up in `games/`), or an OGS game id / link (`12345678`, `ogs_12345678` as memory writes it, or the URL), which the server fetches from `https://online-go.com/api/v1/games/<id>/sgf` and caches as `games/ogs_<id>.sgf`. The same applies to `start_game_analysis.sgf`, `get_position_ref.sgf` and `Position.sgf`. Errors: `ogs_fetch_failed`. Prefer link or path: SGF text retyped into a tool call by the model is unreliable for long games.
 
 **Purpose.** Everything Claude needs for intake and blind self-review, from the SGF alone. No engine.
 
@@ -860,7 +860,8 @@ A sealed episode returns its `EpisodeView` (states only) and a `note`. `stabilit
             line?: (string | LineStep)[];// moves from there, numbered on the board; colours alternate from the side to move
             highlight?: Point[];         // marked with a square
             ask?: "move" | "line";       // the student answers by clicking one move, or a sequence, starting with ask_color
-            episode?: string } }
+            episode?: string;
+            from_game?: string } }          // a past game (OGS link/id or .sgf name): the position comes from it; at_move counts in it
 ```
 **Output.**
 ```ts
@@ -873,9 +874,11 @@ type GameRow = { kind: "game"; game_id: string; you: Color | null; players: { B:
                  sha256: string };
 type BoardRow = { kind: "board"; id: string; seq: number; game_id: string; title: string; text: string; at_move: number;
                   line: string[]; highlight: Point[]; ask: "move" | "line" | null; ask_color: Color | null; episode: string | null;
+                  from_game?: { game_id: string; date: string | null; you: Color | null; opponent: string | null;
+                                setup: { AB: Point[]; AW: Point[] }; moves: string[] /* that game's first at_move moves */ };
                   sha256: string };
 ```
-**Behavior.** `line` is legality-checked from the position after `at_move` (errors as `record_interview`); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`).
+**Behavior.** `line` is legality-checked from the position after `at_move` (errors as `record_interview`); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`). With `from_game` the row still belongs to this review (`game_id`, `seq`, the log) and carries the past game's record up to `at_move`, which the page replays instead of the review's game (a recall quiz on an old lesson, go-teaching §4.4).
 
 **The page side** (review-dashboard skill). The live page (`build_dashboard.py --live`) is published with `capabilities: { db: { rules: [{ path: "", read: "view", write: "owner" }] }, user: {} }` and reads `review/game`, `boards/*` and `answers/*`. It shows no engine data: no score, graph or ownership. A row whose checksum fails is listed as "did not arrive intact". The student's answer to a board with `ask` is written by the page to `answers/<board id>` as `{ board, moves: string[] /* "WQ7" */, sent_at }` (one move for `ask: "move"`); the page refuses an occupied point, suicide and an immediate ko retake, and `record_interview` checks the moves again. The Phase 6 dashboard is republished to the same URL; the `db` survives the republish, and the page lists its boards under "During the review".
 **Cost.** None. **Errors.** `bad_request` (unknown `kind`, no `title`, `at_move` out of range, a bad `ask` or `highlight` point), `illegal_move`, `wrong_color`, `invalid_sgf`, `job_not_found`.

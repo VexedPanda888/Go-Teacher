@@ -199,11 +199,12 @@ the answer while the interview goes on. Then:
 - When the probes contradict the stated belief, that contradiction *is* the lesson.
 - "I don't remember" / "no idea" is fine: use the inferred belief and say it is inferred.
 
-### 4.3 While the engine finishes (Phase 3b, optional)
+### 4.3 While the engine finishes (Phases 3b and 4, optional)
 
-On a slow machine the verification can still need minutes after the last interview. Check with
-`verification_results(job_id)`. While `eta_seconds` is above about a minute, ask questions from
-this list, one or two at a time. Use only the SGF and the student's own words, never an engine result.
+On a slow machine the verification can still need minutes after the last interview, and an episode
+you want to read in Phase 4 may still be running. Check with `verification_results(job_id)`. While
+the next result is more than about a minute away, ask questions from this list first (their answers
+give the engine work it can still do), then recall quizzes (§4.4), one at a time. Use only the SGF and the student's own words, never an engine result.
 Record each answer with `record_interview` on its episode. Stop as soon as the queue is done; never
 make the student wait for a question. At most one line per episode is budgeted
 (`per_episode.student_lines`).
@@ -219,6 +220,30 @@ make the student wait for a question. At most one line per episode is budgeted
    `confidence`. A confident misread and a guess are different lessons.
 4. **The watch-list.** For a category on the memory watch-list: "Your list has *defending groups that
    were already alive*. Was move N a defence?" Save the answer in `thinking.md` with the episode.
+
+### 4.4 Recall quizzes on past lessons (filling the remaining wait)
+
+When the §4.3 questions are used up and the engine still needs more than about a minute, quiz the
+student on a lesson from an earlier review: the recall list in `intake.md` (`references/memory.md`,
+"Phase 0: read"). Retrieval a few games later is what makes a lesson stick. Only during a wait: never
+in place of an episode result that is ready, and never make the student wait for one.
+
+1. **Ask.** One board per quiz: `dashboard_row(kind: "board", game: <job_id>, board: {title: "From an
+   old lesson", text: "Your game of <date>, move N: where do you play?", at_move: N − 1,
+   from_game: <the lesson's game_id>, ask: "move"})`. Give no hint: not the title, the rule or the cue
+   of the old lesson. The position is the cue.
+2. **Grade.** Their move is the lesson's `teachable_move` → say so, then the lesson's `rule_check` in
+   one sentence. Any other move: `analyze_position({sgf: <game_id>, move_number: N − 1}, {"profile":
+   "quick"})` (a few seconds, ahead of the background queue): within `acceptable_set` → as good, say
+   so and name the lesson's move as the one the lesson used; otherwise give its points lost, rewrite the
+   board (same `id`, no `ask`) with the lesson's move as its `line`, and give the `rule_check`. The same move as in the game is
+   worth saying plainly ("the same move as in the game").
+3. **Record** each quiz in `thinking.md` under "Recall": lesson id, the move clicked, `found` /
+   `acceptable` / `missed`, the query id. Phase 6 writes it to the lesson (`references/memory.md`).
+
+At most three per review. Report the answer about that lesson, never a trend ("you found it", not
+"you are improving"; §5). A quiz is about an old game, so sealing (§6) does not apply to it, but say
+nothing about the current episodes while it runs.
 
 ## 5. Memory use (recurrence only)
 

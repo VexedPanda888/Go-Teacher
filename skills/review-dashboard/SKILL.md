@@ -38,6 +38,9 @@ the page ("On the page: Move 41").
   two sentences. You may reword both later; every other field is checked against the SHA-256.
 - The open page shows the newest board at once and keeps the list. Rewriting a board (same `id`)
   updates it in place.
+- `from_game` (an OGS link or game id, e.g. `ogs_12345678`, or an `.sgf` name) shows a position of
+  that past game instead, with `at_move` counted in that game: a recall quiz (go-teaching §4.4). The
+  page labels it with the game's opponent and date.
 - A board shows no engine data. Never put an engine line on it before its episode's interview is
   recorded (go-teaching §6). The server checks legality, not sealing.
 

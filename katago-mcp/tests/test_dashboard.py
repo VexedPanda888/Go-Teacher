@@ -86,6 +86,29 @@ class DashboardRowTest(unittest.TestCase):
         with self.assertRaises(ToolError):
             self.tools.dashboard_row("chart", "g.sgf")
 
+    def test_board_from_a_past_game(self):
+        """A quiz on an old lesson: the row belongs to this review (its game_id, its numbering) and
+        carries the past game's record up to at_move, which may lie beyond this game's last move."""
+        old = synthetic_game(60, seed=9).replace("game/1009", "game/123456")
+        with open(os.path.join(self.tmp.name, "games", "ogs_123456.sgf"), "w") as f:
+            f.write(old)
+        this = self.tools.dashboard_row("game", "g.sgf")["row"]
+        self.tools.dashboard_row("board", "g.sgf", {"title": "Move 12", "at_move": 11})
+        r = self.tools.dashboard_row("board", "g.sgf", {"title": "From an old lesson", "at_move": 50,
+                                                         "from_game": "ogs_123456", "ask": "move"})
+        row = r["row"]
+        self.assertEqual(row["game_id"], this["game_id"])
+        self.assertEqual(row["seq"], 2)
+        fg = row["from_game"]
+        self.assertEqual(fg["game_id"], "ogs_123456")
+        self.assertEqual(len(fg["moves"]), 50)
+        self.assertEqual(fg["you"], "B")
+        self.assertEqual(row["ask_color"], "B")                 # 50 moves played from an even start: Black to move
+        self.assertNotEqual(dashboard_row_sha({**row, "from_game": {**fg, "moves": fg["moves"][:-1]}}), row["sha256"])
+        with self.assertRaises(ToolError):
+            self.tools.dashboard_row("board", "g.sgf", {"title": "x", "at_move": 61, "from_game": "ogs_123456"})
+        self.assertEqual(self.tools.sgf_summary("ogs_123456")["game_id"], "ogs_123456")   # memory's id form
+
     def test_rows_for_a_job_match_the_survey_game_id(self):
         self.tools.plan_budget(40, move_count=40)
         jid = self.tools.start_game_analysis("g.sgf", {"profile": "survey"})["job_id"]
@@ -267,6 +290,28 @@ setTimeout(() => {{ out.answer = window.__store['answers/{ask["doc_id"]}'] || nu
         self.assertIn("done", out["sentMsg"])
         self.assertTrue(any("did not arrive intact" in x for x in out["list"]))
         self.assertTrue(any("answered" in x for x in out["list"]))
+
+    def test_live_page_shows_a_board_from_a_past_game(self):
+        t = self.tools
+        old = os.path.join(self.tmp.name, "games", "old.sgf")
+        with open(old, "w") as f:
+            f.write(synthetic_game(90, seed=11).replace("PW[rival]", "PW[oldrival]"))
+        game = t.dashboard_row("game", "g.sgf")
+        past = t.dashboard_row("board", "g.sgf", {"title": "An old lesson", "at_move": 80, "from_game": "old.sgf", "ask": "move"})
+        script = """
+setTimeout(() => { const out = {};
+  out.title = (document.querySelector('#boardbody h3') || {}).textContent || null;
+  out.meta = (document.querySelector('#boardbody .meta') || {}).textContent || null;
+  out.list = Array.from(document.querySelectorAll('#boardlist button')).map((b) => b.textContent);
+  document.title = 'RESULT:' + JSON.stringify(out); }, 1200);
+"""
+        out = self.run_page(self.build("--live", "--title", "Go review: vs rival"),
+                            {"review/game": game["row"], "boards/" + past["doc_id"]: past["row"]}, script)
+        self.assertEqual(out["title"], "An old lesson")
+        self.assertIn("your game vs oldrival", out["meta"])
+        self.assertIn("after move 80", out["meta"])               # beyond this game's 70 moves
+        self.assertFalse(any("did not arrive intact" in x for x in out["list"]), out["list"])
+        self.assertTrue(any("past game, move 80" in x for x in out["list"]), out["list"])
 
     def test_final_review_keeps_the_boards(self):
         t = self.tools

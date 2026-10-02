@@ -67,8 +67,12 @@ awareness value.
 ```json
 {"game_id": "ogs_12345678", "date": "2026-10-04", "title": "…", "category": "2", "belief": "needs_defending",
  "rule_check": "…", "cue": "…",
- "episode_ids": ["ogs_12345678-E1"], "pattern_hash": "ph_3f9a…", "status": "open"}
+ "episode_ids": ["ogs_12345678-E1"], "pattern_hash": "ph_3f9a…", "status": "open",
+ "recall": [{"date": "2026-10-11", "game_id": "ogs_12399999", "answer": "R8", "result": "found"}]}
 ```
+`recall` lists the recall quizzes on this lesson (go-teaching §4.4), oldest first; `result` is `found`
+(the lesson's move), `acceptable` (another move within the acceptable set) or `missed`. Older lessons
+have none.
 `status` becomes `"retired"` when the category has not appeared in the last five reviewed games.
 Lessons written before v0.3 have `principle` instead of `rule_check`, and no `belief`; read either.
 
@@ -100,13 +104,20 @@ Copy `watch`, `belief_insight` and the `recurring` and `beliefs` entries with `r
 episodes or patterns only when the survey digest shows a matching category, belief or pattern hash
 (`read_db` `query` on `episodes` with `where: [["category","eq","2"]]`, or `get` on `patterns/<hash>`).
 
+The recall list (go-teaching §4.4): `get` up to five of the profile's `open_lesson_ids`, and for each
+the first of its `episode_ids` (`episodes/<id>`). Order them: last `recall` result `missed` first, then
+never quizzed, then the longest since the last quiz; a recurring category breaks ties. Keep the first
+three in `intake.md`: lesson id, game id, date, the episode's first move N, `teachable_move`,
+`played`, `rule_check`. Skip a lesson whose episode has no `teachable_move`.
+
 ## Phase 6: write
 
 After the dashboard is published, in this order (each write pins `if_version` when the document was
 read earlier; new documents need no version):
 
 1. `write_db` `batch` (≤ 50 writes) with `set` for: `games/<game_id>`, each CONFIRMED
-   `episodes/<game_id>-<Eid>`, each `lessons/<game_id>-L<n>`.
+   `episodes/<game_id>-<Eid>`, each `lessons/<game_id>-L<n>`; and `update` for each lesson quizzed in
+   this review ("Recall" in `thinking.md`), with its `recall` list plus the new entry.
 2. For each episode's `pattern_hash`: `read_db` `get` `patterns/<hash>`; if it exists, `update` with the
    appended `occurrences` and the new `count` (pin `if_version`); else `set` it with `count: 1`.
 3. Recompute the profile from the last 10 games (query `games` ordered by `date` desc, limit 10, then

@@ -255,7 +255,7 @@ class Tools:
                             "or an OGS game id or link")
         if s.startswith("(") or s.startswith("\ufeff("):
             return s.lstrip("\ufeff"), None, {"kind": "text", "chars": len(s)}
-        m = OGS_GAME_RE.search(s) or re.fullmatch(r"(\d{3,12})", s)
+        m = OGS_GAME_RE.search(s) or re.fullmatch(r"(?:ogs_)?(\d{3,12})", s)       # a link, 12345678 or ogs_12345678
         if m and not os.path.exists(s):
             return self._fetch_ogs(m.group(1))
         p = Path(s).expanduser()
@@ -2103,7 +2103,7 @@ class Tools:
 
     # ================================================================ 1.25 dashboard_row
     def dashboard_row(self, kind: str, game: str, board: dict | None = None) -> dict:
-        """A row for the live review page, to write with ArtifactData exactly as returned (collection, doc_id, row). kind 'game': the record (players, setup, moves), written once in Phase 0. kind 'board': a position of the game for the student to look at, with an optional numbered line, highlighted points, a question, and ask 'move' | 'line' when the student should answer by clicking on the page. game: a job_id, or the OGS link/id or .sgf file name. board: {id?, title, text?, at_move, line?, highlight?, ask?, episode?}. Legality-checked, no engine (allowed while results are sealed); the row carries a sha256 the page checks."""
+        """A row for the live review page, to write with ArtifactData exactly as returned (collection, doc_id, row). kind 'game': the record (players, setup, moves), written once in Phase 0. kind 'board': a position of the game for the student to look at, with an optional numbered line, highlighted points, a question, and ask 'move' | 'line' when the student should answer by clicking on the page. game: a job_id, or the OGS link/id or .sgf file name. board: {id?, title, text?, at_move, line?, highlight?, ask?, episode?, from_game?}; from_game (an OGS link/id or .sgf name) shows a position of that past game on this review's page, e.g. a quiz on an old lesson. Legality-checked, no engine (allowed while results are sealed); the row carries a sha256 the page checks."""
         g, game_id, student = self._dashboard_game(game)
         size = g.size
         if kind == "game":
@@ -2118,14 +2118,18 @@ class Tools:
             b = dict(board or {})
             if not str(b.get("title") or "").strip():
                 raise ToolError("bad_request", "board.title is required (what the student is looking at)")
-            M = len(g.moves)
+            # the position comes from this game, or from a past one (from_game); the row stays this review's
+            pg, pgid, pstudent = (self._dashboard_game(b["from_game"]) if b.get("from_game") else (g, game_id, student))
+            if pg.size != size:
+                raise ToolError("bad_request", "board.from_game must be a 19x19 game")
+            M = len(pg.moves)
             try:
                 at = int(b.get("at_move", 0))
             except (TypeError, ValueError):
                 raise ToolError("bad_request", "board.at_move must be a move number")
             if not 0 <= at <= M:
                 raise ToolError("bad_request", f"board.at_move must be 0..{M} (the position after that move)")
-            rec = self.store.put_position(self.jobs.spec_at(g, at), game_id, at, persist=False)
+            rec = self.store.put_position(self.jobs.spec_at(pg, at), pgid, at, persist=False)
             line = self._normalize_line(rec, b["line"], "board.line") if b.get("line") else []
             highlight = []
             for p in norm_list(b.get("highlight")) or []:
@@ -2141,6 +2145,14 @@ class Tools:
             data = {"kind": "board", "id": bid, "seq": seq, "game_id": game_id, "title": str(b["title"]).strip(),
                     "text": str(b.get("text") or "").strip(), "at_move": at, "line": line, "highlight": highlight,
                     "ask": ask, "ask_color": COLOR_CHAR[to_move] if ask else None, "episode": b.get("episode") or None}
+            if pgid != game_id:
+                # the page replays this record instead of the review's game
+                opp = None if pstudent is None else COLOR_CHAR[opponent(pstudent)]
+                data["from_game"] = {
+                    "game_id": pgid, "date": pg.date, "you": None if pstudent is None else COLOR_CHAR[pstudent],
+                    "opponent": pg.players[opp]["name"] if opp else None,
+                    "setup": {"AB": [idx_to_gtp(i, size) for i in pg.setup_black], "AW": [idx_to_gtp(i, size) for i in pg.setup_white]},
+                    "moves": [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in pg.moves[:at]]}
             collection, doc_id = "boards", bid
         else:
             raise ToolError("bad_request", "kind must be 'game' or 'board'")
