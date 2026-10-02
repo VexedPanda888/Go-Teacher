@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.5.1, as implemented in katago-mcp 0.4.1)
+# katago-mcp — Tool Contract (v0.5.2, as implemented in katago-mcp 0.4.2)
 
 **Status:** current; describes the implemented server, 25 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
@@ -346,7 +346,7 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
   decisive: null | { move: number; by: "student" | "opponent"; basis: "winrate" | "score"; before: number; after: number };
   last_chance: null | { move: number; played: Point; best: Point; eval_if_best: number; eval_actual: number; basis: "winrate" | "score" };
   points_lost: { student: PhaseLoss; opponent: PhaseLoss };      // PhaseLoss = { opening, middlegame, endgame, total, per_move }
-  episodes: Episode[];                                            // ranked by points_lost_total, ≤ max_episodes
+  episodes: Episode[];                                            // ranked by root.points_lost, ≤ max_episodes
   positives: { move: number; played: Point; points_lost: number; peer_probability: number; target_probability: number }[];
   reliability: { low_visit_positions: number[]; unstable_episodes: string[] };
 }
@@ -918,7 +918,7 @@ Notation: `P_k` is the position after move `k` (`P_0` after setup). `s_k` is the
 Candidates with `visits ≥ 0.05 × root visits` and `σ_n · score_lead ≥ σ_n · best − acceptable_margin` (1.0). `violation = σ_n · (best − played)` when the played move is outside the set.
 
 ### 3.3 Episodes (chains)
-Seeds: the student's moves with `points_lost ≥ episode_min_loss` (2.0). Two seeds join a chain when they are within `cluster_plies` (12) of each other and their played points or best moves lie within Chebyshev distance `cluster_distance` (4), or when they are within 6 plies and fall in the same standard region; a chain spans at most `cluster_max_span` (24) plies and `cluster_max_moves` (6) student moves. The chain's root is its first seed; `points_lost_total` sums the chain's seeds; `moves` spans from the root to the last seed. Region = standard region of the root's played point; `bbox` covers all seed points.
+Seeds: the student's moves with `points_lost ≥ episode_min_loss` (2.0). Two seeds join a chain when they are within `cluster_plies` (12) of each other and their played points or best moves lie within Chebyshev distance `cluster_distance` (4), or when they are within 6 plies and fall in the same standard region; a chain spans at most `cluster_max_span` (24) plies and `cluster_max_moves` (6) student moves. The chain's root is its first seed; chains are ranked by the root's `points_lost` (the chain sum counts a group again each time both sides swing it: in the seed games 58 of 118 chains summed to more than 5× their root); `points_lost_total` sums the chain's seeds; `moves` spans from the root to the last seed. Region = standard region of the root's played point; `bbox` covers all seed points.
 
 ### 3.4 Phases from ownership settledness
 `settled_k` = fraction of points with `|ownership| ≥ settled_abs` (0.8) at `P_k`. `opening_end` = the first `k` with `settled_k ≥ opening_settledness` (0.35) or `k ≥ 50`, whichever comes first. `endgame_start` = the first `k` with `settled_k ≥ endgame_settledness` (0.75) such that `settled_j ≥ 0.70` for all `j > k`. Between them is the middlegame. `middlegame` or `endgame` is `null` when the game ends before that phase begins (short or resigned games).
@@ -927,7 +927,7 @@ Seeds: the student's moves with `points_lost ≥ episode_min_loss` (2.0). Two se
 `top_episode_share = max episode points_lost_total / student total points lost`. `single_blunder` if ≥ 0.40; `accumulation` if ≤ 0.20; else `mixed`.
 
 ### 3.6 Decisive moment and last chance
-Student perspective series `w'_k = w_k` (Black) or `1 − w_k` (White). If the student lost: `decisive` = the first student move `n` with `w'_n ≤ decided_winrate` (0.15) and `w'_j ≤ recovery_winrate` (0.35) for all `j > n`. If the student won: the first opponent move `n` with `w'_n ≥ 1 − decided_winrate` and `w'_j ≥ 1 − recovery_winrate` thereafter, reported as `by: "opponent"`. In handicap games (or whenever `w'` is below 0.05 or above 0.95 for the first 30 moves) the same rule is applied to score with `decided_score_handicap` (−15) and `recovery_score_handicap` (−8), and `basis: "score"`. `last_chance` = the last student move `n` before `decisive` such that the best move at `P_{n−1}` evaluates to `w' ≥ recovery_winrate` (or score ≥ recovery score), with that counterfactual evaluation reported.
+Student perspective series `w'_k = w_k` (Black) or `1 − w_k` (White). If the student lost: `decisive` = the first student move `n` with `w'_n ≤ decided_winrate` (0.15) and `w'_j ≤ recovery_winrate` (0.35) for all `j > n`. If the student won: the first opponent move `n` with `w'_n ≥ 1 − decided_winrate` and `w'_j ≥ 1 − recovery_winrate` thereafter, reported as `by: "opponent"`. In handicap games (or whenever `w'` is below 0.05 or above 0.95 for the first 30 moves) the same rule is applied to score with `decided_score_handicap` (−15) and `recovery_score_handicap` (−8), and `basis: "score"`. `last_chance` = the last student move `n` at or before `decisive` (it is often the decisive move itself, when a move there still kept the game) such that the best move at `P_{n−1}` evaluates to `w' ≥ recovery_winrate` (or score ≥ recovery score), with that counterfactual evaluation reported.
 
 ### 3.7 Search-signature candidate tags
 Computed at each episode root (taxonomy ids from `go-teaching` §1). Up to three tags, in this order of precedence:
@@ -937,11 +937,11 @@ Thresholds calibrated in WS8 (20 seed games; notes in `seed/calibration.md`, whi
 - **6 / 15 / 1 / 2**: intuition failed — `prior_best ≥ 0.20` and `prior_played ≤ 0.10`, or (when 3/4/5 did not fire) target(best) ≥ `tag_intuition_best_min` (0.20) and peer(played) ≤ `tag_intuition_played_max` (0.10) → 6 if `dist(best, played) ≤ 2`; else 15 if the best move is in the same standard region; else, when `dist ≥ tag_direction_min_distance` (5), 1, plus 2 when the best move's region contains an unsettled group (§3.9, ownership at `P_{n−1}`, ≥ 2 stones) of either color.
 - **1**: `local_loss_share ≤ local_share_global` (0.4) and `dist(best, played) ≥ tag_direction_min_distance` (5), unless 6 or 15 already applies.
 - **9**: `style_axis = overplay` and `score_stdev_played ≥ 1.5 × score_stdev_best`.
-- **10**: the best move's region has mean `ownership_stdev ≥ 0.35` and the played move is elsewhere.
+- **10**: the best move's region has mean `ownership_stdev ≥ 0.35` and the played move is elsewhere (the survey requests `ownership_stdev` from katago-mcp 0.4.1; older surveys lack it and never fire 10).
 - **11**: phase is endgame and none of 3/4/5 applies.
 - **12**: a ko capture is legal for either side at `P_{n−1}`.
 - **7**: opening phase, best move in a corner region, `n ≤ 40`.
-- **14**: the played move raises the student's own groups' ownership by ≥ 1 point while the best move lowers the opponent's by ≥ 3.
+- **14**: the played move raises the student's own groups' ownership by ≥ `tag_passive_own_up` (0.5) points while the best move lowers the opponent's by ≥ `tag_passive_opp_down` (0.5). (The earlier 1 and 3 never fired: on 210 seed episodes the opponent's drop is ≤ 0.7 at the 90th percentile; 0.5/0.5 fires on about 3 %. Not yet rated by the student.)
 `local_loss_share` is the primary region's share from `ownership_diff(P_{n−1}, P_n)`.
 
 ### 3.8 Style axis
@@ -952,6 +952,9 @@ Owner-perspective mean ownership: `alive` if ≥ `alive` (0.6); `dead` if ≤ `d
 
 ### 3.10 Got away with it
 Student move `n` with `points_lost ≥ 3` where the opponent's move `n+1` or `n+3` has `points_lost ≥ got_away_ratio × points_lost_n`; `restored_points` is that opponent loss.
+
+### 3.10b Positives
+Student moves with `points_lost ≤ 0.5` that the peer rank rarely plays (peer probability ≤ 0.10), excluding passes and positions without a real choice: the best two candidates must differ by ≥ `positive_min_choice` (0.5) points (otherwise every move was as good, as in dame). Sorted by peer probability, at most 5.
 
 ### 3.11 Learnability and preliminary teachable move
 Within the acceptable set at the root, the preliminary teachable move is the one with the highest `target` human probability; `learnability` is that probability. Verification may change the teachable move; the final value is whatever Claude records in the ledger from the verified `analyze_position`.
@@ -1194,3 +1197,10 @@ Changes from v0.5.0 to v0.5.1 (fixes):
 1. A `PositionRef` names its game (§0): the same position in two games has two refs, so each resolves to its own game's student colour, plan and log. A position given as `{sgf, move_number}` now belongs to that SGF's game.
 2. SGF input: setup stones in nodes before the first move join the setup; stones added or removed after a move are refused (`invalid_sgf`), not dropped; compressed point lists (`aa:cc`) and results in any case (`b+r`) are read.
 3. A KataGo warning about a query field is logged and the query waits for the real result (it was taken as the result: 0 visits, no candidates); a query terminated before it was searched is an error.
+
+Changes from v0.5.1 to v0.5.2 (the rest of the WS8 calibration, measured on the saved seed surveys):
+
+1. Episodes are ranked by the root's `points_lost`, not the chain sum (§3.4); `game_type` takes the largest chain.
+2. Positives exclude passes and positions without a real choice, `positive_min_choice` (§3.10b): 13 of 24 games had a pass among them, mostly first.
+3. Tag 14's thresholds are config (`tag_passive_own_up`, `tag_passive_opp_down`, 0.5 each; the old 1 / 3 never fired), and the survey requests `ownership_stdev`, without which tag 10 could not fire (§3.7).
+4. `last_chance` is documented as the code computes it: at or before `decisive` (§3.6).

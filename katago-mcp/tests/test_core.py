@@ -234,5 +234,24 @@ class TestPersistentBest(unittest.TestCase):
         self.assertEqual(eps[3]["persistent_best"], [])   # passes never link
 
 
+class TestPositives(unittest.TestCase):
+    def test_only_real_choices_count(self):
+        """A good, unusual move counts only when it is not a pass and the position offered a real
+        choice (the second candidate is clearly worse); with every move as good, it is dame."""
+        from types import SimpleNamespace as NS
+        from katago_mcp.config import Thresholds
+        from katago_mcp.metrics import positives
+        human = [0.0] * 362                     # the peer rank never plays any of these: all "unusual"
+
+        def pos(*scores):
+            return NS(candidates=[NS(score_lead=v) for v in scores], human={"rank_7k": human})
+        ga = NS(student_color=BLACK, profiles={"peer": "rank_7k"}, size=19,
+                positions=[pos(5.0, 3.0), pos(5.0, 4.8), pos(5.0, 2.0), pos(5.0)])
+        rows = [{"n": n, "color": "B", "idx": idx, "move": m, "points_lost": 0.0}
+                for n, idx, m in ((1, 60, "D16"), (2, 61, "E16"), (3, None, "pass"), (4, 62, "F16"))]
+        got = [p["played"] for p in positives(ga, rows, Thresholds())]
+        self.assertEqual(got, ["D16"])          # E16: no real choice; pass; F16: one candidate only
+
+
 if __name__ == "__main__":
     unittest.main()

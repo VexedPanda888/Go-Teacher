@@ -76,6 +76,9 @@ class Thresholds:
     tag_intuition_played_max: float = 0.10   # 6/15/1: peer-rank probability of the played move
     tag_punish_min_loss: float = 5.0         # 13: the opponent's previous move lost at least this
     tag_direction_min_distance: int = 5      # 1 by ownership attribution: best this far from played
+    tag_passive_own_up: float = 0.5          # 14: the played move raises the student's groups' ownership this much
+    tag_passive_opp_down: float = 0.5        # 14: ... while the best move lowers the opponent's this much
+    positive_min_choice: float = 0.5         # positives: the second candidate is this many points worse than the best
     quick_visits: int = 200
     stable_stop_delta: float = 0.5
     # causal evidence (contract v0.3): races, reply character

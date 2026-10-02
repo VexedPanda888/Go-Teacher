@@ -163,8 +163,8 @@ class JobManager:
                     break
                 spec = self.spec_at(game, k)
                 rec = self.store.put_position(spec, job.game_id, k, persist=False)
-                a = self.engine.analyze(spec, job.visits_per_move, include_ownership=True, include_policy=True,
-                                        human_profiles=profiles, priority=0)
+                a = self.engine.analyze(spec, job.visits_per_move, include_ownership=True, include_ownership_stdev=True,
+                                        include_policy=True, human_profiles=profiles, priority=0)
                 self.store.put_cached(rec.ref, a, ownership=True)
                 analyses.append(a)
                 refs.append(rec.ref)

@@ -460,7 +460,8 @@ def build_episodes(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds,
                 break
         if not placed:
             chains.append([r])
-    chains.sort(key=lambda ch: -sum(x["points_lost"] for x in ch))
+    # ranked by the root's loss: the chain sum counts the same group again each time both sides swing it
+    chains.sort(key=lambda ch: -ch[0]["points_lost"])
     episodes = []
     s = sign_of(ga.student_color)
     for k, ch in enumerate(chains[:max_episodes], 1):
@@ -677,7 +678,7 @@ def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before:
                      for g in b.groups() if g.color == ga.student_color)
         opp_down = sum(-sign_of(g.color) * sum(ga.after_best_ownership[n][i] - before.ownership[i] for i in g.stones)
                        for g in b.groups() if g.color != ga.student_color)
-        if own_up >= 1.0 and opp_down >= 3.0:
+        if own_up >= th.tag_passive_own_up and opp_down >= th.tag_passive_opp_down:
             tags.append("14")
     # dedupe, keep order, cap 3
     seen = []
@@ -708,7 +709,7 @@ def points_lost_summary(rows: list[dict], ph: dict, color_char: str) -> dict:
 def game_type(episodes: list[dict], student_total: float, th: Thresholds) -> dict:
     if not episodes or student_total <= 0:
         return {"type": "mixed", "top_episode_share": 0.0}
-    share = episodes[0]["points_lost_total"] / student_total
+    share = max(e["points_lost_total"] for e in episodes) / student_total
     t = "single_blunder" if share >= th.single_blunder_share else "accumulation" if share <= th.accumulation_share else "mixed"
     return {"type": t, "top_episode_share": round(share, 3)}
 
@@ -728,11 +729,16 @@ def reconciliation(ga: GameAnalysis, th: Thresholds) -> dict:
 def positives(ga: GameAnalysis, rows: list[dict], th: Thresholds, top: int = 5) -> list[dict]:
     if ga.student_color is None:
         return []
+    s = sign_of(ga.student_color)
     out = []
     for r in rows:
-        if r["color"] != COLOR_CHAR[ga.student_color] or r["points_lost"] > 0.5:
+        if r["color"] != COLOR_CHAR[ga.student_color] or r["points_lost"] > 0.5 or r["idx"] is None:
             continue
         before = ga.positions[r["n"] - 1]
+        # a real choice: the second candidate is clearly worse (otherwise every move was as good: dame)
+        values = sorted((s * c.score_lead for c in before.candidates), reverse=True)
+        if len(values) < 2 or values[0] - values[1] < th.positive_min_choice:
+            continue
         hp = human_prob(before, ga.profiles, r["idx"], ga.size)
         peer = hp.get("peer")
         if peer is not None and peer <= 0.10:

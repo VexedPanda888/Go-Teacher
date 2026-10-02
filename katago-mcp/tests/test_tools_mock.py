@@ -102,8 +102,8 @@ class MockToolsTest(unittest.TestCase):
         self.assertEqual(d["points_lost"]["student"]["moves"], 35)
         eps = d["episodes"]
         self.assertTrue(eps, "mock game should produce at least one episode")
-        totals = [e["points_lost_total"] for e in eps]
-        self.assertEqual(totals, sorted(totals, reverse=True))
+        roots = [e["root"]["points_lost"] for e in eps]       # ranked by root loss, not the chain sum
+        self.assertEqual(roots, sorted(roots, reverse=True))
         e = eps[0]
         for key in ("root", "region", "phase", "acceptable_set", "signature", "style_axis", "human", "learnability",
                     "candidate_tags", "pattern_hash", "stability", "group_status_change"):

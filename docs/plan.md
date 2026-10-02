@@ -194,7 +194,7 @@ so you know which skills and server produced which review.
 
 ## 3. Status, 1 Oct 2026
 
-katago-mcp **0.4.1**, **25 tools**, tool contract **v0.5.1** (causal evidence: belief probes, forced
+katago-mcp **0.4.2**, **25 tools**, tool contract **v0.5.2** (causal evidence: belief probes, forced
 lines, end comparisons, archived in `docs/archive/plan-causal-lessons.md`; v0.4 runs the verification
 in the background during the episode interviews; v0.5 opens the review page in Phase 0 and grows it
 with the review).
@@ -202,7 +202,7 @@ with the review).
 | Workstream | State | Notes |
 |---|---|---|
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
-| WS2 katago-mcp server | running, 0.4.1 | 25 tools; runs against live KataGo on the Pro; offline test suite with the mock engine; the background verification (0.3.0) is tested on the mock engine only |
+| WS2 katago-mcp server | running, 0.4.2 | 25 tools; runs against live KataGo on the Pro; offline test suite with the mock engine; the background verification (0.3.0) is tested on the mock engine only |
 | WS3 katago-analysis skill | delivered | belief protocol and proof tree |
 | WS4 go-teaching skill | delivered | beliefs, lesson template, concept-word rule, blind review + interview |
 | WS5 review-dashboard | delivered | branches off branches, end comparison panel, `rule_check`; follow-up questions as their own episodes (0.2.2); live from Phase 0 with boards and clicked answers (0.4.0), tested in headless Chrome with a stand-in database, not yet on claude.ai |
