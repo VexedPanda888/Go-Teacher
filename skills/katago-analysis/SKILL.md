@@ -9,7 +9,7 @@ You are an interpreter of engine output, never a source of Go truth. Everything 
 about a position must trace to a tool result recorded in the ledger. If a hypothesis is not CONFIRMED by
 the protocol below, it is not taught; it may be mentioned as "not verified" at most.
 
-## 0. Conventions (from tool contract v0.3.1)
+## 0. Conventions (from tool contract v0.4.0)
 
 - Coordinates are GTP: columns A–T without I, rows 1–19. Never SGF letters. Copy points from tool output.
 - Scores are **points** from the stated `perspective` (default: the student's colour). Winrate is never
@@ -41,13 +41,28 @@ Then:
    `"line_node"`, `"stability"`, `"local_solve"`, `"quick"` — never invent visit counts unless the plan is
    unlimited and you have a reason.
 5. After triage (Phase 3) call `plan_budget(total_minutes, job_id, selected=[{id, needs_local_solve}])`
-   to re-plan the remaining time for the chosen episodes. Follow its `per_episode` sizes.
+   to re-plan the remaining time for the chosen episodes. Follow its `per_episode` sizes. When the
+   server already precomputed some selected episodes after the survey, the re-plan keeps the earlier
+   sizes so that work stays valid (a note says so); pass `keep_sizes: false` only to deepen instead.
+6. Straight after the re-plan, before the first interview question:
+   `start_verification(job_id, episodes=[{id, teachable?, local_solve?}])`. `teachable` defaults to
+   `teachable_move_preliminary`; pass the engine's best when learnability is very low. `local_solve` is
+   `true` for the episodes the re-plan counted as needing one (the server picks the group from the
+   belief), or `{group_point, at}` when you know the group. Interview in the returned `interview_order`.
+   After each answer, `record_interview(job_id, episode, answer, expected_line, fix)`. Then read each
+   episode with `verification_results(job_id, episode, wait_seconds=120)`.
+
+A tool call blocks your turn: you cannot talk to the student while a probe runs. That is why the
+probes go through `start_verification`. Calling them one by one after the interviews leaves the engine
+idle while the student answers and the student idle while the engine searches. The plan already
+assumes this overlap (`overlapped_with_interviews_minutes`).
 
 Costs to keep in mind: one root search = 1 unit; the probes run at `line_node` visits — `intent_probe`
 ≈ 8 searches, `expectation_probe` ≈ 1–2 per imagined move plus a 4-move refutation, `forced_line` ≈ 2 per
 node plus resistances and 2 for its end; `terminal_features` reuses the searches `forced_line` already
 cached. `local_solve` = 2 playouts × up to 20 restricted searches; `pass_probe` with `rank_regions` = 9
-extra restricted searches. `human_move_distribution` is nearly free.
+extra restricted searches. `human_move_distribution` is nearly free. The budget also allows one line
+per episode that the student proposes (`per_episode.student_lines`): their fix or a resistance line.
 
 ## 2. Reading the survey digest
 
@@ -77,6 +92,12 @@ extra restricted searches. `human_move_distribution` is nearly free.
 The digest's tags and teachable move are *hypotheses*. Phase 4 decides.
 
 ## 3. The belief protocol (every episode you intend to teach)
+
+After `start_verification` and `record_interview`, `verification_results` returns steps 1–4, the
+stability searches, and a supporting test when the inferred belief names one (`is_sente`,
+`biggest_move`: `swing_value`; `local_solve` when asked). Each result keeps its own `query_id` for the
+ledger. Run the rest yourself, such as the test a *stated* belief needs. The same call returns at once
+whenever the background already ran it (`precomputed`).
 
 A mistake is a move that only makes sense if some belief about the position is true. For each
 selected episode, from `position_ref_before`, with the played move G and the teachable move E
@@ -147,7 +168,8 @@ Before a CONFIRMED verdict, re-run the decisive searches at the plan's `stabilit
 is `{"profile": "stability", "multiplier": 16}`): the episode root, and the node where
 `expectation_probe` found the misread. A hypothesis is stable when the top move is unchanged and the
 score moved < 0.5. If it flips, either lower the claim ("the engine is divided") or drop it. Episodes
-flagged `unstable` in the digest need this before anything else.
+flagged `unstable` in the digest need this before anything else. `verification_results` reports the
+check as `stability_check` (`runs[].stable`, `misread_node.stable`); cite its query ids.
 
 ## 6. The ledger (`ledger.md`)
 
@@ -178,4 +200,6 @@ may be the right practical choice; say both. `decisive` in the digest already us
 - `illegal_move` / `wrong_color`: fix the move list; never guess a coordinate.
 - Resigned games end at the resignation; do not analyse "what would have happened after".
 - Sealed results (go-teaching §6): no verification queries while the student is still writing the
-  blind self-review; nothing about an episode is shown before its interview answer is saved.
+  blind self-review; nothing about an episode is shown before its interview answer is saved. From
+  `start_verification` on, the server enforces the second rule: probes at a selected episode's
+  positions return `sealed` until `record_interview`.

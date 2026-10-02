@@ -1,10 +1,11 @@
-# katago-mcp — Tool Contract (v0.3.1, as implemented in katago-mcp 0.2.2)
+# katago-mcp — Tool Contract (v0.4.0, as implemented in katago-mcp 0.3.0)
 
-**Status:** current; describes the implemented server, 21 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
+**Status:** current; describes the implemented server, 24 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
 Two design points worth knowing up front:
 1. The self-review minutes are part of the total time you give, so the budget formula reserves them (§1.2).
 2. Numeric dashboard data cannot pass through Claude by retyping without error, so `validate_variations` also assembles the complete dashboard data blob and returns it with a checksum (§1.17, §5).
+3. A tool call blocks Claude's turn, so Claude cannot talk to the student while a probe runs. The verification probes therefore run in the background (`start_verification`, §1.22) while Claude interviews the student, and the server keeps their results sealed per episode until the interview answer is recorded (§1.23).
 
 ---
 
@@ -70,6 +71,8 @@ For `root`, `stability` and `local_solve` profiles the server issues one KataGo 
 - Results are cached by (`position_ref`, effective visits, options). `cached: true` marks a hit. A request for more visits than cached re-searches.
 - Every tool call appends one line to `reviews/<game_id>/queries.jsonl` (or `reviews/_adhoc/queries.jsonl` when no game is in context). Every response carries `query_id` (`"q_<game_id>_<seq>"`). Ledger entries cite these ids.
 - Whole-game analysis persists incrementally to `reviews/<game_id>/analysis.json`, so a crash or timeout leaves partial results available.
+- **Stored results (v0.4).** `analyze_position`, `analyze_line`, `swing_value`, `local_solve`, `terminal_features`, `forced_line`, `intent_probe` and `expectation_probe` keep their whole result, keyed by (tool, `position_ref`, effective visits, the move, the plan's plies the tool defaults to, the other arguments and `options`). An identical later call returns the stored result at once, with a fresh `query_id` and `precomputed: { query_id, seconds_saved }` naming the call that computed it (`cached: true` where the output has that field). A call identical to one being computed waits for it rather than searching again. This is how the background verification (§1.22) hands its work to Claude's own calls. In memory only; `job_status(action: "release")` drops a game's stored results.
+- **Sealing (v0.4).** Between `start_verification` and `record_interview` for an episode, the server refuses (`sealed`) every stored-result tool on the position before or after its played move, any stored result computed for it, and `render_board` overlays there; `get_position_ref` omits `cached_analysis` there. Plain `render_board` (and `line` diagrams) stay available. The blind self-review is not enforced by the server (no episode is selected yet); it stays a rule of conduct.
 
 ### 0.9 Errors
 ```ts
@@ -78,9 +81,10 @@ type ErrorCode =
   | "engine_unavailable" | "engine_busy" | "human_model_unavailable" | "timeout" | "internal"
   | "invalid_sgf" | "unsupported_board_size" | "illegal_move" | "unknown_ref" | "bad_region" | "no_group_at_point"
   | "job_not_found" | "job_not_finished" | "budget_infeasible" | "validation_failed"
-  | "bad_request" | "ogs_fetch_failed"
+  | "bad_request" | "ogs_fetch_failed" | "wrong_color"
+  | "sealed" | "verification_not_started" | "episode_not_found" | "episode_not_selected"
 ```
-`bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.3). `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
+`bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.3). `sealed`: an engine result about an episode whose interview is not recorded (§0.8); `details.episode` names it. `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
 `suggestion` is written for Claude to act on ("start the engine with `katago-mcp serve`", "the job is 62% done; call job_status again in ~90 s").
 
 ---
@@ -128,6 +132,8 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
   episodes_requested?: number;           // 1–5; caps the episode count (e.g. 1 for a single-sequence review)
   expected_ld_episodes?: number;         // = config ld_reserve_episodes (1); how many episodes will need local solves
   selected?: { id: string; needs_local_solve: boolean }[];   // Phase 3 re-plan with the real selection
+  keep_sizes?: boolean;                  // re-plan: keep the earlier per-episode sizes (default: when the background has already
+                                         // computed results for a selected episode, §1.22); false climbs the ladder again
 }
 ```
 
@@ -136,16 +142,19 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 {
   feasible: boolean;                     // three or more episodes at base rigor fit
   total_minutes: number | "unlimited"; elapsed_minutes: number; throughput_vps: number;
-  reserved: { overhead_minutes: number; self_review_minutes: number; interview_minutes: number };
+  reserved: { overhead_minutes: number; self_review_minutes: number; interview_minutes: number };   // the interviews overlap the engine
   survey: { visits_per_move: number; expected_minutes: number; runs_past_self_review: boolean; charged_minutes: number };
   verification: {
     wall_minutes_available: number;
     episodes: number;                    // 0–5
     per_episode: { root_visits: number; line_node_visits: number; follow_pv_plies: number; forced_line_plies: number; expectation_plies: number;
-                   stability_multipliers: number[]; local_solve_visits: number; probes: string[] };
+                   stability_multipliers: number[]; local_solve_visits: number; student_lines: number; probes: string[] };
     ld_episodes_budgeted: number;
     ladder_steps_applied: string[];      // e.g. ["root_3000", "line_600", "stability_16x"]
-    expected_minutes: number;            // engine + Claude time for the episodes
+    expected_minutes: number;            // wall-clock after the interviews: engine work they did not cover + Claude time
+    slack_minutes: number | null;
+    engine_minutes: number;              // all engine work of the episodes, interviews or not
+    overlapped_with_interviews_minutes: number;   // the part of it that runs during the interviews (background, §1.22)
   };
   minimum_minutes_for_three_episodes: number;   // on this machine, for this game
   expected_total_minutes: number;                 // what "unlimited" or the plan will actually take
@@ -160,7 +169,8 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 | `O` | fixed overhead: Claude's reasoning, composition, build, memory writes | 4 min |
 | `C_ep` | Claude's think time per verified episode | 1.0 min |
 | `S` | blind self-review minutes (input; default) | 5 min |
-| `I` | episode interview minutes (input; default) | 5 min |
+| `I` | episode interview minutes (input; default); the background verification runs during them | 5 min |
+| `L` | lines the student proposes per episode (`student_lines_per_episode`), each budgeted as an `analyze_line` of 4 moves | 1 |
 | `S_survey` | minutes the survey is sized to (`survey_minutes_target`; `S` when `self_review_minutes` is given) | 10 min |
 | `floor`, `cap` | survey visits per move | 100, 1000 |
 | `vps` | sustained visits/s of this machine | measured |
@@ -182,11 +192,18 @@ unit_visits(u) = u.root                                     # root analysis with
                                                             #   forced_line ×2 (better and played move) 2 · (2p + 13): two searches
                                                             #     per node, end features, two resistances with 3-ply refutations
 solve_visits(u) = 2 · u.solve                               # attacker-first and defender-first
-ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
+line_visits(u)  = L · (1 + 4 + u.plies) · u.line_node       # the student's own lines (a fix, a resistance line)
+answer_visits(u) = (2·u.plies + 5) · u.line_node + line_visits(u)   # the work that needs the interview answer:
+                                                            #   expectation_probe with the stated line, the student's lines
+engine(u, n, ld) = minutes(n · (unit_visits(u) + line_visits(u)) + min(ld, n) · solve_visits(u))
+overlap(u, n, ld) = min(I, max(0, engine(u, n, ld) − minutes(answer_visits(u))))
+                                                            # everything but the last episode's answer work can run
+                                                            # in the background during the interviews (§1.22)
+verif(u, n, ld) = engine(u, n, ld) − overlap(u, n, ld) + n · C_ep    # wall-clock after the interviews
 
 1. if T == "unlimited":
        v_s = cap; n = min(5, E_req); u = cap unit; all ladder steps applied
-       expected_total = O + max(S, minutes(M·v_s)) + I + n·ep_minutes(u) + min(LD, n)·minutes(solve_visits(u))
+       expected_total = O + max(S, minutes(M·v_s)) + I + verif(u, n, LD)
        return (feasible = true)
 
 2. survey:
@@ -200,14 +217,14 @@ ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
        if W ≤ 0: n = 0 (infeasible; go to 5)
 
 4. episode count at base rigor:
-       n = largest n ≤ min(5, E_req) with  n·ep_minutes(base) + min(LD, n)·minutes(solve_visits(base)) ≤ W
+       n = largest n ≤ min(5, E_req) with  verif(base, n, LD) ≤ W
 
 5. if n < 3:  feasible = false
        v_min = floor; c_min = max(0, minutes(M·v_min) − S)
-       minimum_minutes_for_three_episodes = O + S + I + c_min + 3·ep_minutes(base) + min(LD, 3)·minutes(solve_visits(base))
+       minimum_minutes_for_three_episodes = O + S + I + c_min + verif(base, 3, LD)
        still return the allocation for n (0, 1 or 2) so "accept fewer" is possible
 
-6. surplus X = W − [ n·ep_minutes(base) + min(LD, n)·minutes(solve_visits(base)) ]
+6. surplus X = W − verif(base, n, LD)
        apply the ladder in order; a step is applied only if its full cost for n episodes fits in X:
          L1  root 1000 → 3000        (also raises the 4× stability rerun to 12,000)
          L2  line_node 250 → 600
@@ -221,6 +238,9 @@ ep_minutes(u)   = minutes(unit_visits(u)) + C_ep
 7. re-plan (job_id + selected given): replace LD with the count of selected episodes needing solves,
        set W = T − O − elapsed_minutes − I (the interviews follow the re-plan), skip steps 2–3,
        recompute 4–6 for exactly len(selected) episodes.
+       keep_sizes (default: the background already computed results for a selected episode): if the earlier
+       plan's unit u_prev fits, verif(u_prev, n, LD) ≤ W, use it as is and skip the ladder, so those results
+       stay valid; the rest is slack. Otherwise climb the ladder as in 6.
 ```
 The resulting plan becomes the **active plan** for the job; `Budget.profile` values resolve against it. The plan is advisory: Claude may pass explicit budgets, and you may extend `total_minutes` mid-review (call again).
 
@@ -228,10 +248,10 @@ The resulting plan becomes the **active plan** for the job; `Budget.profile` val
 Pro at 650 vps, 187 moves, 40 minutes, S = 5, I = 5, LD = 1:
 - `v_s = clamp(650·600/187 = 2085, 100, 1000) = 1000`; `t_s = 4.8 min`; `c_s = 0`.
 - `W = 40 − 4 − 5 − 5 = 26`.
-- Base unit = 1000 + 4·1000 + 75·250 = 23,750 visits ≈ 0.61 min; `ep_minutes = 1.61`; solve ≈ 0.08 min. `n = 5` (8.1 min).
-- Ladder: L1–L5 fit; L6 does not. Result: five episodes at root 3000 / line 600 / 8 plies / 4× and 16× stability, ≈ 20 min.
+- Base unit = 1000 + 4·1000 + 75·250 = 23,750 visits ≈ 0.61 min, plus one student line 11·250 ≈ 0.07 min; solve ≈ 0.08 min. `n = 5`.
+- The interviews overlap 5 of the engine minutes, which buys one more ladder step than in v0.3: L1–L6 fit, L7 does not. Result: five episodes at root 6000 / line 600 / 8 plies / 4× and 16× stability, ≈ 24 engine minutes, of which 5 run during the interviews.
 
-Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 5.4`, `W = 0.6`; `ep_minutes(base) = 13.2 + 1.0 = 14.2` → `n = 0`; minimum for three episodes ≈ 4 + 5 + 5 + 5.4 + 3·14.2 + 1.7 ≈ 64 min (60 minutes buy two). Claude reports that and asks. Rigor per episode is fixed; slower machines verify fewer episodes.
+Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 5.4`, `W = 0.6`; one episode's engine work is 13.2 + 1.5 (student line) min → `n = 0`; minimum for three episodes ≈ 4 + 5 + 5 + 5.4 + (3·14.7 + 1.7 − 5) + 3·1.0 ≈ 63 min (60 minutes buy two). On this machine the overlap and the student-line allowance about cancel. Claude reports that and asks. Rigor per episode is fixed; slower machines verify fewer episodes.
 
 **Cost.** None. **Errors.** `job_not_found`, `budget_infeasible` is *not* an error — infeasibility is a normal result with `feasible: false`.
 
@@ -292,7 +312,7 @@ Air at 30 vps, same game, 20 minutes: `v_s = 100` (floor), `t_s = 10.4`, `c_s = 
 { job_id: string; game_id: string; positions_total: number; visits_per_move: number;
   expected_seconds: number; started_at: string; reused: boolean }
 ```
-**Behavior.** One job per machine at a time; a second call returns `engine_busy` with the running job's id. Each position is searched at `visits_per_move` with ownership; the played move's policy prior and the human-profile probabilities of the played move and the top candidates are recorded (one NN evaluation per profile). Results are written incrementally (every 20 positions, and before the job reports `done`). Interactive tools may run during a job and are sent at a *higher* KataGo priority (10) than the survey (0), so they return promptly; the survey resumes afterwards.
+**Behavior.** One job per machine at a time; a second call returns `engine_busy` with the running job's id. Each position is searched at `visits_per_move` with ownership; the played move's policy prior and the human-profile probabilities of the played move and the top candidates are recorded (one NN evaluation per profile). Results are written incrementally (every 20 positions, and before the job reports `done`). Interactive tools may run during a job and are sent at a *higher* KataGo priority (10) than the survey (0), so they return promptly; the survey resumes afterwards. When a survey started under a plan finishes (or is reused), the server precomputes the answer-free probes of its top `speculative_episodes` episodes by root loss in the background (§1.22) while the blind self-review goes on; nothing is shown, and the probes are refused only once triage selects the episode and until its interview is recorded. Batch seeding and the CLI run without a plan and never do this.
 **Cost.** `M · visits_per_move` visits. **Errors.** `invalid_sgf`, `engine_unavailable`, `engine_busy`.
 
 ---
@@ -362,7 +382,7 @@ type Episode = {
 
 ### 1.7 `get_position_ref`
 **Inputs.** `{ job_id: string; move_number: number } | { sgf: string; move_number: number }`
-**Output.** `{ position_ref: PositionRef; game_id: string; move_number: number; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; cached_analysis: null | { visits: number; score_lead: number; top_move: Point } }`
+**Output.** `{ position_ref: PositionRef; game_id: string; move_number: number; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; cached_analysis: null | { visits: number; score_lead: number; top_move: Point } }`; `cached_analysis` is null at a sealed episode's positions (§0.8).
 **Errors.** `job_not_found`, `invalid_sgf`, `unknown_ref`.
 
 ---
@@ -573,7 +593,7 @@ type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" 
 ```
 **Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups?: { label: string; liberties: number; liberty_points: Point[] }[];
   line?: { moves: Move[]; first: Color; notes: string[]; end_ref: PositionRef } }`
-**Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. With `line`, `ascii` is a numbered diagram of the sequence (§4.1) instead of the position with its last move: no engine call, so it may be shown while results are sealed. `position_ref`, `to_move`, `last_move`, `captures` and any overlay still describe `position`; `line.end_ref` is the position after the line (render or analyze it next, e.g. for a line longer than 35 moves). `notes` carries what the grid cannot: `"4 at 1"` (a move on a point already labelled), `"2 captures 1 stone (1 among them)"`, `"5: W passes"`. **Errors.** `unknown_ref`, `illegal_move`, `wrong_color` (a `line` move of the side not to move), `bad_request` (a `line` longer than 35 moves).
+**Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. With `line`, `ascii` is a numbered diagram of the sequence (§4.1) instead of the position with its last move: no engine call, so it may be shown while results are sealed. `position_ref`, `to_move`, `last_move`, `captures` and any overlay still describe `position`; `line.end_ref` is the position after the line (render or analyze it next, e.g. for a line longer than 35 moves). `notes` carries what the grid cannot: `"4 at 1"` (a move on a point already labelled), `"2 captures 1 stone (1 among them)"`, `"5: W passes"`. **Errors.** `unknown_ref`, `illegal_move`, `wrong_color` (a `line` move of the side not to move), `bad_request` (a `line` longer than 35 moves), `sealed` (an overlay at a sealed episode's position, §0.8).
 
 ---
 
@@ -759,6 +779,72 @@ Beliefs, in this order (the first is `belief`):
 
 ---
 
+### 1.22 `start_verification`
+**Purpose.** After triage and the re-plan, start the background verification of the selected episodes: the probes of the belief protocol that do not need the interview answer run while Claude interviews the student.
+
+**Inputs.**
+```ts
+{ job_id: string;
+  episodes: (string | { id: string;                       // a digest episode id ("E3"), or any id with move_number
+                        move_number?: number;               // the student's move, for a moment outside the digest
+                        teachable?: Point;                  // = teachable_move_preliminary (else the survey's best)
+                        local_solve?: true | { group_point: Point; at?: "before" | "after" = "before" } })[] }
+```
+**Output.**
+```ts
+{ job_id: string; interview_order: string[];             // episodes with a local_solve first, then as given
+  episodes: EpisodeView[]; already_computed: Record<string, string[]>;   // task names already done (speculative work, §1.4)
+  eta_seconds: number | null; sealed: true; note: string; query_id: string }
+type EpisodeView = { episode: string; move_number: number; played: Point; teachable: Point;
+  position_ref_before: PositionRef; position_ref_after: PositionRef; selected: boolean; sealed: boolean; interviewed: boolean;
+  state: "queued" | "running" | "done";
+  tasks: { task: string; needs_answer: boolean; state: "pending" | "running" | "done" | "failed" | "skipped";
+           query_id?: string; error?: Error["error"]; note?: string }[] }    // query_id, error, note withheld while sealed
+```
+**Behavior.** Queues, per episode, from `position_ref_before` with the played move G and the teachable move E: `intent_probe(G)`, `forced_line(E)`, `forced_line(G)`, `terminal_features(end of G's line, compare_to: end of E's line)`, `analyze_position` at `root` and at each of the plan's `stability` multipliers, a supporting `swing_value` when `intent_probe`'s belief is `is_sente` (the threat's follow-up and the opponent's reply) or `biggest_move` (G and E), and `local_solve` when asked: at `group_point`, or (`true`) on the first defended group for `needs_defending` (before G) or the weakest group left behind for `group_is_safe` (after G); other beliefs skip it with a note. Each runs through the same tool Claude would call, at the active plan's sizes, so it lands in the stored results (§0.8). One worker runs everything at KataGo priority `background_priority` (5): above the survey (0), below Claude's own calls (10), which run in between. Order: answer work of interviewed episodes first (§1.23), then the selected episodes' work in `interview_order`, then speculative work breadth-first. From now until `record_interview`, each listed episode is **sealed** (§0.8). A speculative episode with the same move is adopted, keeping its done work; done work at sizes the current plan no longer uses runs again; speculative episodes not listed are cancelled. Calling again adds or updates episodes.
+**Cost.** The answer-free part of the plan's per-episode unit (§1.2.2), in the background. **Errors.** `job_not_found`, `job_not_finished`, `episode_not_found` (an id not in the digest without `move_number`), `bad_request`, `illegal_move` (a `teachable` that cannot be played).
+
+---
+
+### 1.23 `record_interview`
+**Purpose.** Save the student's interview answer for an episode: unseal it and queue the probes that need the answer. Call again to add later answers (a guess at the better move, a resistance line).
+
+**Inputs.**
+```ts
+{ job_id: string; episode: string;
+  answer?: string;                         // verbatim, kept with the episode
+  expected_line?: (string | LineStep)[];   // what they expected after their move, opponent first; checked for legality now
+  fix?: Point | Point[];                   // their own better move at the episode's position (from the interview or a quiz)
+  lines?: { label?: string; moves: (string | LineStep)[]; from?: "before" | "after" = "before" }[];   // e.g. a resistance line
+  confidence?: number }                    // 1–5, how sure they were at the time
+```
+**Output.** `{ job_id; episode; sealed: false; first_answer: boolean; expected_line: string[] | null; fixes: Point[]; lines: { label; from; moves: string[] }[]; queued: string[]; eta_seconds: number | null; query_id }`
+**Behavior.** Every line and move is legality-checked with alternating colours before anything changes (an error leaves the episode sealed, so the question can be asked again). The first call queues `expectation_probe(G, expected_line)` (the peer-read line when none was given) and, after it, `analyze_position` at the first `stability` multiplier at the node where it found the misread (`skipped` when there is none). A later `expected_line` replaces it (a done peer-read version is kept as `expectation_probe_peer`). Each `fix` queues `forced_line(fix)`; each line queues `analyze_line` from the position before (or after) the played move, under the name `line:<label>`. This work runs ahead of other episodes' answer-free work.
+**Cost.** As the probes queued. **Errors.** `job_not_found`, `episode_not_selected`, `illegal_move`, `wrong_color`, `bad_request`.
+
+---
+
+### 1.24 `verification_results`
+**Purpose.** Progress of the background verification, or one episode's results.
+
+**Inputs.** `{ job_id: string; episode?: string; wait_seconds?: number = 0 /* ≤ max_wait_seconds (240) */; parts?: string[]; action?: "results" | "cancel" = "results" }`
+**Output.** Without `episode`: `{ job_id; episodes: EpisodeView[] /* the selected ones, else the speculative */; speculative: string[]; running: string | null; eta_seconds; state: "running" | "done"; query_id }`. With `episode`: its `EpisodeView` plus, once its interview is recorded,
+```ts
+{ results: Record<string, object>;        // task name -> that probe's full output, with its query_id: intent_probe, forced_line_best,
+                                          // forced_line_played, terminal_features, root, stability_x4, stability_x16, supporting_test
+                                          // ({ belief, points, swing_value }), local_solve ({ group_point, at, … }), expectation_probe,
+                                          // stability_misread, fix:<point>, line:<label>
+  stability_check: null | { root: { top_move; score_lead; visits; query_id };
+                            runs: { multiplier; visits; top_move; score_moved; stable; query_id }[]; stable: boolean | null;
+                            misread_node?: { never_considered; stability_top_move; stable; query_id } };
+  interview: { answers: { answer; confidence; at }[]; expected_line; fixes; lines };
+  eta_seconds: number | null }
+```
+A sealed episode returns its `EpisodeView` (states only) and a `note`. `stability_check` applies katago-analysis §5: stable when the top move is unchanged and the score moved less than `stability_margin` (0.5). `wait_seconds` blocks until the episode's queued work (or, without `episode`, all of it) is done. `parts` limits `results` to the named tasks or kinds. `action: "cancel"` cancels the queued work (a running probe finishes).
+**Errors.** `job_not_found`, `verification_not_started`, `episode_not_found`, `bad_request`.
+
+---
+
 ## 2. Tool × mechanic map
 
 | Mechanic (from the plan) | Tools |
@@ -779,6 +865,7 @@ Beliefs, in this order (the first is `belief`):
 | Engine-validated dashboard | `validate_variations` |
 | Result reconciliation | `job_results.game.reconciliation` |
 | Time budget | `plan_budget`, `engine_info` |
+| Verification during the interviews; sealed results | `start_verification`, `record_interview`, `verification_results` |
 
 ---
 
@@ -893,7 +980,7 @@ The exported JSON is what `validate_variations` assembles (§1.17) and what the 
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.3.1", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.4.0", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
@@ -931,6 +1018,7 @@ survey_minutes_target = 10                # the survey is sized to finish in abo
 survey_floor = 100
 survey_cap = 1000
 ld_reserve_episodes = 1
+student_lines_per_episode = 1             # §1.2.1 L
 [budget.unit_base]
 root = 1000
 line_node = 250
@@ -979,6 +1067,11 @@ sente_threat_min = 0.5                    # §1.20
 tenuki_min = 0.5                          # §1.20
 risk_stdev_ratio = 1.5                    # §1.20
 misread_margin = 3.0                      # §1.21
+
+[verification]
+speculative_episodes = 4                  # §1.4: precompute this many top episodes after a planned survey (0: off)
+background_priority = 5                   # §1.22: KataGo priority of queued probes
+max_wait_seconds = 240                    # §1.24: cap of wait_seconds
 
 [paths]
 reviews_dir = "reviews"
@@ -1043,3 +1136,11 @@ Changes from v0.3.0 to v0.3.1 (every line visible):
 
 1. `render_board.line`: a numbered diagram of a sequence from the position, with `notes` and `end_ref`, no engine call (§1.16, §4.1).
 2. `validate_variations`: episode `kind` (`"lesson"` default, `"question"` for a follow-up asked after the lessons; error `bad_kind`) and branch kind `"question"`; the dashboard lists questions apart from the lessons (§1.17).
+
+Changes from v0.3.1 to v0.4.0 (verification during the interviews):
+
+1. New `start_verification` (§1.22), `record_interview` (§1.23) and `verification_results` (§1.24): the answer-free probes of the selected episodes run in the background during the interviews; each episode is sealed until its interview is recorded, then its answer work runs ahead of the rest. Errors `sealed`, `verification_not_started`, `episode_not_found`, `episode_not_selected`.
+2. Stored results (§0.8): the probe tools keep their whole result; an identical call returns it with `precomputed`, or waits for it while it is being computed. Sealing (§0.8) is enforced by the server.
+3. A finished survey with a plan precomputes the answer-free probes of its top episodes (§1.4, `[verification].speculative_episodes`).
+4. `plan_budget` (§1.2): the interviews overlap the engine (`overlap`, `overlapped_with_interviews_minutes`, `engine_minutes`); a student-line allowance `L` (`student_lines_per_episode`, `per_episode.student_lines`); a re-plan keeps the earlier sizes when background results exist (`keep_sizes`). The M5 worked example climbs one ladder step further (root 6000).
+5. Human-policy queries carry the caller's KataGo priority (they were sent at 0, behind the survey).

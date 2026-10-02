@@ -32,6 +32,7 @@ survey_minutes_target = 10          # survey sized to finish in about this long
 survey_floor = 100
 survey_cap = 1000
 ld_reserve_episodes = 1
+student_lines_per_episode = 1       # lines the student proposes per episode, budgeted (a fix, a resistance line)
 max_episodes = 5
 min_episodes = 3
 unit_base = { root = 1000, line_node = 250, plies = 6, stability = [4], solve = 1500 }
@@ -52,6 +53,11 @@ tag_intuition_best_min = 0.20
 tag_intuition_played_max = 0.10
 tag_punish_min_loss = 5.0
 tag_direction_min_distance = 5
+
+[verification]
+speculative_episodes = 4            # when a planned survey finishes, precompute this many top episodes (0: off)
+background_priority = 5             # KataGo priority of queued probes: survey 0 < background < Claude's calls 10
+max_wait_seconds = 240              # cap of verification_results(wait_seconds)
 
 [paths]
 reviews_dir = "reviews"

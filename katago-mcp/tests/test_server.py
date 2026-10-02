@@ -21,7 +21,7 @@ class ServerRegistrationTest(unittest.TestCase):
             server = build_server(cfg, engine=MockEngine(), start_engine=False)
             try:
                 tools = asyncio.run(server.list_tools())
-                self.assertEqual(len(PUBLIC_TOOLS), 21)
+                self.assertEqual(len(PUBLIC_TOOLS), 24)
                 self.assertEqual([t.name for t in tools], list(PUBLIC_TOOLS))
                 self.assertTrue(all(t.description for t in tools))
                 pb = next(t for t in tools if t.name == "plan_budget")

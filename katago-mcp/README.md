@@ -1,17 +1,23 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.3.1** (21 tools): whole-game surveys, budgeted verification
+It implements **tool contract v0.4.0** (24 tools): whole-game surveys, budgeted verification
 (`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
-human-model move distributions, and the checksummed dashboard export.
+human-model move distributions, background verification during the student interviews
+(`start_verification`, `record_interview`, `verification_results`), and the checksummed dashboard export.
 
 Design rules baked in:
 
 - Coordinates are GTP (`A1`…`T19`, no `I`). Scores are **points**, from the stated perspective
   (default: the student's colour when the position belongs to a job). Ownership is Black-positive.
 - The server computes; Claude narrates. Every derived metric of contract §3 is computed here.
-- One server per machine, one KataGo process, one job at a time. Verification queries run at a
-  higher KataGo priority than the survey so they return promptly.
+- One server per machine, one KataGo process, one job at a time. Three KataGo priorities: the survey
+  at 0, the background verification queue at 5, Claude's own calls at 10, so whatever Claude is waiting
+  for returns first.
+- A tool call blocks Claude's turn, so slow work runs in the background while Claude talks to the
+  student: the survey during the blind self-review, the verification probes during the episode
+  interviews. Their results are stored whole, so Claude's later identical calls return at once, and are
+  sealed per episode until its interview answer is recorded.
 - Nothing is a Go-truth claim unless it came out of the engine: branches are validated for legality
   and evaluated before they reach the dashboard, and the export carries a SHA-256.
 
@@ -30,7 +36,8 @@ katago_mcp/
   store.py      position refs, analysis cache, reviews/<game_id>/ persistence, query log
   metrics.py    derived metrics (contract §3): points lost, episodes, phases, tags, style axis, …
   jobs.py       asynchronous survey jobs
-  tools.py      the 21 tools as plain Python
+  verify.py     background verification queue, stored probe results, per-episode sealing
+  tools.py      the 24 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
   seed.py       katago-mcp-seed: survey a folder of SGFs for the WS8 calibration pass
@@ -94,8 +101,9 @@ python -m pytest            # if pytest is installed
 
 The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
 variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget` against the two
-worked examples of contract §1.2.3, all 21 tools end to end on synthetic games including the
-dashboard export and its checksum, job reuse across a server restart, and a handicap game. It also
+worked examples of contract §1.2.3 and the interview overlap, all 24 tools end to end on synthetic games
+including the dashboard export and its checksum, the background verification (sealing, run order,
+KataGo priorities, stored results, line checks), job reuse across a server restart, and a handicap game. It also
 checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
 that the header of the tool contract (`skills/go-teacher-flow/references/tool-contract.md`) names the
 code's versions.
@@ -185,6 +193,14 @@ raw SGF text is accepted but pasting it through the chat mangles long records.
 
 Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that the ledger cites.
 
+**Background verification.** When a survey that was started under a plan finishes, the server
+precomputes the probes of its top episodes (`[verification].speculative_episodes`, default 4; 0 turns it
+off). After triage, `start_verification` queues the selected episodes' probes that need no interview
+answer, `record_interview` queues the ones that do, and `verification_results` hands them over (contract
+§1.22–§1.24). A precomputed result answers an identical probe call with `precomputed: {query_id}`. The
+queue and the stored results live in memory: a server restart loses them, and the probes simply run
+again when called.
+
 ## 5a. Memory over long sessions
 
 Back-to-back games used to get slower one after another, for two reasons. Both are fixed, so the server
@@ -229,6 +245,8 @@ on the Pro). These beliefs are survey grade: inferred at low visits, never state
 
 - 19×19 only (`unsupported_board_size` otherwise).
 - One job at a time; a second `start_game_analysis` while a survey runs answers `engine_busy`.
+- One background worker: queued probes run one after another. A probe already running cannot be
+  cancelled; `verification_results(action: "cancel")` stops the ones still queued.
 - `human_policy` costs one extra 1-visit query per profile and position (cached per ref).
 - The mock engine is *not* a Go engine: it only produces well-formed, self-consistent data for tests.
 - The KataGo wrapper uses the analysis-engine JSON protocol (`reportDuringSearchEvery`, `terminate`,

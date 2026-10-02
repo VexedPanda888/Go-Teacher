@@ -5,7 +5,10 @@ takes JSON-like inputs and returns a JSON-like dict, or raises ToolError.
 """
 from __future__ import annotations
 
+import copy
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -22,7 +25,7 @@ from pathlib import Path
 from . import CONTRACT_VERSION, __version__
 from .board import BLACK, WHITE, EMPTY, COLOR_CHAR, CHAR_COLOR, Board, IllegalMove, opponent
 from .budget import (EXPECTATION_REFUTATION_PLIES, FORCED_REFUTATION_PLIES, FORCED_RESISTANCE_NODES, PUNISH_PLIES, BudgetError,
-                     plan as plan_budget_fn, search_profiles, survey_visits)
+                     plan as plan_budget_fn, search_profiles, survey_visits, unit_from_per_episode)
 from .config import Config
 from .coords import CoordError, chebyshev, gtp_to_idx, idx_to_gtp, neighbors, parse_move
 from .engine import Analysis, EngineError, KataGoEngine, PositionSpec
@@ -36,6 +39,7 @@ from .regions import LABELS, RegionError, STANDARD_CODES, expand, region_indices
 from .render import LEGEND, LINE_LABELS, low_liberty_groups, render_board, render_overlay
 from .sgf import OGS_GAME_RE, SgfError, parse, rank_to_profile
 from .store import PositionRecord, Store, timestamp
+from .verify import ResultStore, StoredResult, VerificationManager
 
 log = logging.getLogger("katago_mcp")
 
@@ -55,7 +59,8 @@ class ToolError(Exception):
 PUBLIC_TOOLS = ("engine_info", "plan_budget", "sgf_summary", "start_game_analysis", "job_status", "job_results",
                 "get_position_ref", "analyze_position", "analyze_line", "pass_probe", "swing_value", "local_solve",
                 "group_status", "ownership_diff", "human_move_distribution", "render_board", "terminal_features",
-                "forced_line", "intent_probe", "expectation_probe", "validate_variations")
+                "forced_line", "intent_probe", "expectation_probe", "validate_variations",
+                "start_verification", "record_interview", "verification_results")
 
 BELIEF_CATEGORIES = {
     "needs_defending": ["14", "2"], "group_is_safe": ["3", "2"], "is_sente": ["11", "15"],
@@ -110,6 +115,35 @@ def _r(x: float | None, nd: int = 2):
     return None if x is None else round(float(x), nd)
 
 
+def _stored(tool: str, default_profile: str, move: str | None = None, plies: str | None = None, extra: tuple = ()):
+    """Keep the whole result of a probe (contract §0.8): an identical later call (same position, visits and
+    arguments) returns it at once with `precomputed`, and waits for it if it is being computed. `move` names the
+    argument holding the mover's move, `plies` the plan's per-episode plies the tool defaults to, `extra` the
+    other arguments in the key."""
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(self, *a, **kw):
+            b = sig.bind(self, *a, **kw)
+            b.apply_defaults()
+            args = {k: v for k, v in b.arguments.items() if k != "self"}
+            rec = self._resolve_position(args["position"])
+            visits, jid = self._visits_for(rec, args.get("budget"), default_profile)
+            key = {"tool": tool, "ref": rec.ref, "visits": visits, "options": args.get("options") or {}}
+            if move:
+                key["move"] = idx_to_gtp(self._own_move(args[move], rec))
+            if plies:
+                plan = self._active_plan(jid)
+                key["plies"] = plan["verification"]["per_episode"].get(plies) if plan else None
+            for name in extra:
+                v = args.get(name)
+                key[name] = self._resolve_position(v).ref if name == "compare_to" and v is not None else v
+            return self._stored_call(tool, json.dumps(key, sort_keys=True, default=str), rec, lambda: fn(self, *a, **kw))
+        return wrapper
+    return deco
+
+
 class Tools:
     def __init__(self, cfg: Config, engine=None, store: Store | None = None, start_engine: bool = False):
         self.cfg = cfg
@@ -125,6 +159,10 @@ class Tools:
         self.last_plan: dict | None = None
         self.human_cache: dict[tuple[str, str], list[float]] = {}
         self.solve_results: dict[str, dict] = {}   # query_id -> local_solve result
+        self._tls = threading.local()              # per thread: KataGo priority, episode tag of a background task
+        self.results = ResultStore()               # whole probe results (§0.8)
+        self.verify = VerificationManager(self)    # background verification (§1.22–§1.24)
+        self.jobs.on_done = self.verify.speculate
         self._load_throughput_sidecar()
         self._start_thread: threading.Thread | None = None
         if start_engine:
@@ -383,7 +421,9 @@ class Tools:
     def _analyze(self, rec: PositionRecord, visits: int, ownership: bool = True, ownership_stdev: bool = False,
                  policy: bool = True, wide_root_noise: float | None = None, allow: list[dict] | None = None,
                  avoid: list[dict] | None = None, pv_len: int | None = None, human_profiles: list[str] | None = None,
-                 stop_when_stable: bool = False, priority: int = 10, spent: _Spent | None = None) -> tuple[Analysis, bool]:
+                 stop_when_stable: bool = False, priority: int | None = None, spent: _Spent | None = None) -> tuple[Analysis, bool]:
+        if priority is None:      # Claude's calls 10; the background verification thread sets its own (lower)
+            priority = getattr(self._tls, "priority", 10)
         opts = dict(ownership=ownership, ownership_stdev=ownership_stdev, wide_root_noise=wide_root_noise or 0.0,
                     allow=allow, avoid=avoid)
         cached = self.store.get_cached(rec.ref, visits, **opts) if not allow and not avoid else None
@@ -414,7 +454,7 @@ class Tools:
             return self.human_cache[key]
         self._ensure_engine()
         with _engine_errors():
-            pol = self.engine.human_policy(rec.spec, profile)
+            pol = self.engine.human_policy(rec.spec, profile, priority=getattr(self._tls, "priority", 10))
         self.human_cache[key] = pol
         return pol
 
@@ -461,7 +501,8 @@ class Tools:
         costs a model reload (~30 s on Metal), so it only happens between jobs, never on a query count.
         """
         limit = self.cfg.katago.restart_above_mb
-        if not limit or self.jobs.active is not None or not hasattr(self.engine, "memory_mb"):
+        if not limit or self.jobs.active is not None or self.verify.running_task is not None \
+                or not hasattr(self.engine, "memory_mb"):
             return
         mb = self.engine.memory_mb()
         if mb is None or mb <= limit:
@@ -475,6 +516,64 @@ class Tools:
             with _engine_errors():
                 self.engine.restart()
         return self.engine.info()
+
+    # ---------------------------------------------------------------- stored results, sealing (§0.8, §1.22)
+    def _stored_call(self, tool: str, key: str, rec: PositionRecord, compute) -> dict:
+        tag = getattr(self._tls, "tag", None)
+        sealed = self.verify.sealed_at(rec.ref, tag)
+        if sealed:
+            raise self._sealed_error(sealed)
+        entry = self.results.acquire(key, timeout=self.cfg.katago.query_timeout)
+        if entry is not None:
+            if entry.tag != tag and self.verify.sealed(entry.tag):
+                raise self._sealed_error(entry.tag[1])
+            out = copy.deepcopy(entry.result)
+            qid = self._log(rec.game_id, tool, {"ref": rec.ref, "stored": entry.query_id}, 0, 0.0, True,
+                            {"precomputed": entry.query_id})
+            out["precomputed"] = {"query_id": entry.query_id, "seconds_saved": entry.result.get("seconds_used")}
+            out["query_id"] = qid
+            if "cached" in out:
+                out["cached"] = True
+            if tool == "local_solve":
+                self.solve_results[qid] = out
+            return out
+        try:
+            out = compute()
+        except BaseException:
+            self.results.release(key)
+            raise
+        self.results.put(key, StoredResult(out, tag, rec.game_id, out.get("query_id")))
+        return out
+
+    @staticmethod
+    def _sealed_error(episode: str) -> ToolError:
+        return ToolError("sealed", f"episode {episode} is sealed: its interview answer is not recorded yet",
+                         {"episode": episode}, suggestion="ask the interview question, then record_interview; no engine "
+                         "result about an episode is shown before its answer is saved (go-teaching §6)")
+
+    def _normalize_line(self, rec: PositionRecord, line, where: str) -> list[str]:
+        """A line of moves from rec, colours alternating from the side to move, legality-checked: ['BQ7', 'WR8', …]."""
+        steps = norm_list(line) or []
+        if not steps:
+            raise ToolError("bad_request", f"{where}: no moves")
+        size = rec.spec.size
+        board, out = rec.board, []
+        for ply, raw in enumerate(steps, 1):
+            st = norm_line_step(raw, board.to_move, size)
+            if st.get("engine"):
+                raise ToolError("bad_request", f"{where} step {ply}: give a move, not 'engine'", {"ply": ply})
+            color = CHAR_COLOR.get(st["color"])
+            if color != board.to_move:
+                raise ToolError("wrong_color", f"{where} step {ply}: {st['color']} played but {COLOR_CHAR[board.to_move]} "
+                                "is to move", {"ply": ply, "move": str(raw)},
+                                suggestion="colours alternate from the position's side to move; add a pass to skip a turn")
+            idx = _gtp(st["move"], size, f"{where} step {ply}", {"ply": ply})
+            try:
+                board = board.play(color, idx, rec.spec.rules)
+            except IllegalMove as e:
+                raise ToolError("illegal_move", f"{where} step {ply}: {e.reason}", {"ply": ply, "move": str(raw), "reason": e.reason})
+            out.append(f"{COLOR_CHAR[color]}{idx_to_gtp(idx, size)}")
+        return out
 
     # ================================================================ 1.1 engine_info
     def engine_info(self, refresh_benchmark: bool = False) -> dict:
@@ -526,8 +625,8 @@ class Tools:
     def plan_budget(self, total_minutes: float | str, move_count: int | None = None, job_id: str | None = None,
                     self_review_minutes: float | None = None, episodes_requested: int | None = None,
                     expected_ld_episodes: int | None = None, selected: list | None = None,
-                    interview_minutes: float | None = None) -> dict:
-        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes (blind self-review and episode interviews reserved). Re-plan with job_id + selected after triage."""
+                    interview_minutes: float | None = None, keep_sizes: bool | None = None) -> dict:
+        """Turn the review time budget (minutes, or 'unlimited') into survey visits, episode count and per-episode search sizes (blind self-review reserved; the episode interviews overlap the background verification). Re-plan with job_id + selected after triage; it keeps the earlier search sizes when results were already computed in the background for a selected episode (keep_sizes: true forces, false prevents)."""
         if isinstance(total_minutes, str):
             if total_minutes.strip().lower() not in ("unlimited", "unbounded", "as long as it needs"):
                 try:
@@ -545,11 +644,17 @@ class Tools:
             existing_survey = job.visits_per_move
         if not move_count:
             raise ToolError("bad_request", "move_count is required without job_id")
+        keep = None
+        if job_id and selected is not None and keep_sizes is not False and job_id in self.plans:
+            ids = [x.get("id") if isinstance(x, dict) else x for x in selected]
+            if keep_sizes or self.verify.precomputed(job_id, ids):
+                keep = unit_from_per_episode(self.plans[job_id]["verification"]["per_episode"])
         try:
             p = plan_budget_fn(self.cfg.budget, self.vps, int(move_count), total_minutes,
                                self_review_minutes=self_review_minutes, episodes_requested=episodes_requested,
                                interview_minutes=interview_minutes, expected_ld_episodes=expected_ld_episodes, selected=selected, elapsed_minutes=elapsed,
-                               survey_visits_existing=existing_survey, quick_visits=self.cfg.thresholds.quick_visits)
+                               survey_visits_existing=existing_survey, quick_visits=self.cfg.thresholds.quick_visits,
+                               keep_unit=keep)
         except BudgetError as e:
             raise ToolError("budget_infeasible", str(e), suggestion="run engine_info with refresh_benchmark=true")
         p["move_count"] = int(move_count)
@@ -663,10 +768,9 @@ class Tools:
         self._ensure_engine()
         self._restart_if_heavy()
         with _engine_errors():
-            job = self.jobs.start(sgf, visits, student_username, game_id, options)
+            job = self.jobs.start(sgf, visits, student_username, game_id, options, plan=self.last_plan)
         if self.last_plan and job.job_id not in self.plans:
             self.plans[job.job_id] = self.last_plan
-            job.plan = self.last_plan
         expected = (job.positions_total * visits / self.vps) if self.vps > 0 else None
         out = {"job_id": job.job_id, "game_id": job.game_id, "positions_total": job.positions_total,
                "visits_per_move": visits, "expected_seconds": None if expected is None else round(expected),
@@ -682,7 +786,11 @@ class Tools:
             if action == "cancel":
                 return self.jobs.cancel(job_id)
             if action == "release":
-                return self.jobs.release(job_id)
+                game_id = self.jobs.get(job_id).game_id
+                self.verify.forget(job_id)
+                out = self.jobs.release(job_id)
+                self.results.forget_game(game_id)
+                return out
             return self.jobs.get(job_id).status()
 
     def job_results(self, job_id: str, detail: str = "digest", range: list | None = None, max_episodes: int = 10,
@@ -709,7 +817,7 @@ class Tools:
         rec = self._resolve_position(spec)
         board = rec.board
         last = rec.spec.moves[-1] if rec.spec.moves else None
-        cached = self.store.get_cached(rec.ref, 1)
+        cached = None if self.verify.sealed_at(rec.ref, None) else self.store.get_cached(rec.ref, 1)
         return {"position_ref": rec.ref, "game_id": rec.game_id, "move_number": len(rec.spec.moves),
                 "to_move": COLOR_CHAR[rec.to_move],
                 "last_move": None if last is None else [COLOR_CHAR[last[0]], idx_to_gtp(last[1])],
@@ -719,6 +827,7 @@ class Tools:
                                                                 "top_move": idx_to_gtp(cached.candidates[0].move) if cached.candidates else None}}
 
     # ================================================================ 1.8 analyze_position
+    @_stored("analyze_position", "root")
     def analyze_position(self, position: dict, budget: dict | None = None, options: dict | None = None) -> dict:
         """Search one position: root score/winrate, candidates with PV and human probabilities, acceptable set, policy top, groups. position: {ref}|{job_id,move_number}|{sgf,move_number}|{moves,...} plus optional then:[...]."""
         o = options or {}
@@ -764,6 +873,7 @@ class Tools:
         return out
 
     # ================================================================ 1.9 analyze_line
+    @_stored("analyze_line", "line_node", plies="follow_pv_plies", extra=("line", "follow_pv_plies"))
     def analyze_line(self, position: dict, line: list, budget: dict | None = None, follow_pv_plies: int | None = None,
                      options: dict | None = None) -> dict:
         """Play a line (forced moves and/or engine replies) and evaluate every node; then follow the PV. Returns per-ply evals, deltas, end ownership/groups, refutation probability."""
@@ -932,6 +1042,7 @@ class Tools:
         return out
 
     # ================================================================ 1.11 swing_value
+    @_stored("swing_value", "root", extra=("points",))
     def swing_value(self, position: dict, points: list, budget: dict | None = None, options: dict | None = None) -> dict:
         """Swing (Black-first minus White-first) and sente/gote for up to six points, ranked."""
         o = options or {}
@@ -990,6 +1101,7 @@ class Tools:
         return out
 
     # ================================================================ 1.12 local_solve
+    @_stored("local_solve", "local_solve", extra=("group_point", "region"))
     def local_solve(self, position: dict, group_point: str, region: dict | None = None, budget: dict | None = None,
                     options: dict | None = None) -> dict:
         """Life-and-death of the group at group_point: attacker-first and defender-first playouts confined to a region -> alive | dead | unsettled | unclear with confidence."""
@@ -1199,6 +1311,8 @@ class Tools:
         if line_out is not None:
             out["line"] = line_out
         overlay = o.get("overlay")
+        if overlay and (sealed := self.verify.sealed_at(rec.ref, getattr(self._tls, "tag", None))):
+            raise self._sealed_error(sealed)      # an overlay is engine output; the plain board is not
         if overlay in ("ownership", "ownership_stdev"):
             if overlay == "ownership":
                 own, _, _ = self._ownership(rec)
@@ -1388,6 +1502,7 @@ class Tools:
                 "weak_groups": {"a": fa["weak_groups"], "b": fb["weak_groups"]}}
 
     # ================================================================ 1.18 terminal_features
+    @_stored("terminal_features", "line_node", extra=("compare_to",))
     def terminal_features(self, position: dict, compare_to: dict | None = None, budget: dict | None = None,
                           options: dict | None = None) -> dict:
         """What an end position looks like (group statuses, weak groups, territory by region, who holds sente, what the next move is worth) and, with compare_to, what is concretely different between two end positions."""
@@ -1412,6 +1527,7 @@ class Tools:
         return out
 
     # ================================================================ 1.19 forced_line
+    @_stored("forced_line", "line_node", move="move", plies="forced_line_plies")
     def forced_line(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
         """Play a move and extend the line while each reply is forced (the second-best loses more than forced_margin), preferring human-legible moves; adds the opponent's natural resistance with its refutation and the terminal features of the end position."""
         o = options or {}
@@ -1513,6 +1629,7 @@ class Tools:
         return out
 
     # ================================================================ 1.20 intent_probe
+    @_stored("intent_probe", "line_node", move="move")
     def intent_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
         """What a move was for: what it threatened if ignored, what it prevented, the character of the best reply, and the belief it implies (needs_defending, group_is_safe, is_sente, behind_must_invade, ahead_can_coast, attack_works, biggest_move) with its evidence."""
         o = options or {}
@@ -1658,6 +1775,7 @@ class Tools:
         return out
 
     # ================================================================ 1.21 expectation_probe
+    @_stored("expectation_probe", "line_node", move="move", plies="expectation_plies")
     def expectation_probe(self, position: dict, move: str, budget: dict | None = None, options: dict | None = None) -> dict:
         """Play the line the student expected (options.expected_line) or the one a player of their rank reads, check every move with the engine, and report the first move that loses more than misread_margin: the misread, the move never considered, and its refutation."""
         o = options or {}
@@ -1983,6 +2101,41 @@ class Tools:
             "episodes": eps_out, "ownership": v.ownership, "summary": summary or {},
         }
 
+    # ================================================================ 1.22 – 1.24 background verification
+    def start_verification(self, job_id: str, episodes: list) -> dict:
+        """After triage and the re-plan: queue the probes of each selected episode that do not need the interview answer (intent_probe, forced_line from the teachable and the played move, terminal_features of their ends, root and stability searches, a swing_value for is_sente / biggest_move, local_solve when asked) to run in the background while Claude interviews. episodes: [{id, teachable?, move_number?, local_solve?: true | {group_point, at: 'before'|'after'}}]. Results are sealed per episode until record_interview. Returns interview_order."""
+        with _engine_errors():
+            job = self.jobs.get(job_id)
+        out = self.verify.start(job, norm_list(episodes) or [])
+        out["query_id"] = self._log(job.game_id, "start_verification", {"episodes": out["interview_order"]},
+                                    result={"eta_seconds": out["eta_seconds"]})
+        return out
+
+    def record_interview(self, job_id: str, episode: str, answer: str | None = None, expected_line: list | None = None,
+                         fix: str | None = None, lines: list | None = None, confidence: int | None = None) -> dict:
+        """Save the student's interview answer for an episode: unseals its results and queues the probes that need the answer (expectation_probe with expected_line, the moves they expected after their move, then a stability search at the misread node; forced_line from fix, their own better move; analyze_line for each of lines [{label, moves, from: 'before'|'after'}]). Call again to add answers, e.g. a 'find the better move' guess as fix or a resistance line. Lines are legality-checked now."""
+        with _engine_errors():
+            job = self.jobs.get(job_id)
+        out = self.verify.interview(job, episode, answer, expected_line, fix, lines, confidence)
+        out["query_id"] = self._log(job.game_id, "record_interview", {"episode": episode, "expected_line": out["expected_line"],
+                                                                      "fixes": out["fixes"]}, result={"queued": out["queued"]})
+        return out
+
+    def verification_results(self, job_id: str, episode: str | None = None, wait_seconds: float = 0,
+                             parts: list | None = None, action: str = "results") -> dict:
+        """Background verification: without episode, every episode's task states and an ETA; with episode, its results (each probe's full output with query_id, plus stability_check) once its interview is recorded. wait_seconds (≤ 240) blocks until that work is done. parts limits the results (e.g. ['intent_probe', 'terminal_features']). action 'cancel' stops the queued work. Sealed episodes return task states only."""
+        with _engine_errors():
+            job = self.jobs.get(job_id)
+        if action == "cancel":
+            out = self.verify.cancel(job_id)
+        elif action == "results":
+            out = self.verify.results(job_id, episode, wait_seconds, norm_list(parts))
+        else:
+            raise ToolError("bad_request", "action must be 'results' or 'cancel'")
+        out["query_id"] = self._log(job.game_id, "verification_results", {"episode": episode, "action": action},
+                                    result={"sealed": out.get("sealed"), "state": out.get("state")})
+        return out
+
     def wait_for_job(self, job_id: str, poll: float = 0.5, on_progress=None, timeout: float | None = None) -> dict:
         """Block until a survey job is done, failed or cancelled (or `timeout` passes); returns its last status.
         For the CLI, seeding and tests; `on_progress(status)` sees every status polled."""
@@ -1996,6 +2149,7 @@ class Tools:
             time.sleep(poll)
 
     def close(self) -> None:
+        self.verify.stop()
         try:
             self.engine.stop()
         except Exception:

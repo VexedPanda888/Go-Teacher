@@ -363,15 +363,15 @@ class KataGoEngine:
         a.seconds = time.time() - t0
         a.stopped_early = bool(on_report) and a.visits < max_visits
         for prof in human_profiles or []:
-            a.human[prof] = self.human_policy(spec, prof)
+            a.human[prof] = self.human_policy(spec, prof, priority=priority)
         return a
 
-    def human_policy(self, spec: PositionSpec, profile: str) -> list[float]:
+    def human_policy(self, spec: PositionSpec, profile: str, priority: int = 0) -> list[float]:
         if not self.human_model:
             raise EngineError("human_model_unavailable", "no human model configured", False,
                               "set [katago].human_model in the config")
         q = self._base_query(spec)
-        q.update({"maxVisits": 1, "includePolicy": True, "includeOwnership": False,
+        q.update({"maxVisits": 1, "includePolicy": True, "includeOwnership": False, "priority": priority,
                   "overrideSettings": {self.human_profile_key: profile}})
         resp = self.query(q, timeout=60)
         hp = resp.get("humanPolicy")
@@ -578,11 +578,11 @@ class MockEngine:
             a.human[prof] = self.human_policy(spec, prof, a)
         return a
 
-    def human_policy(self, spec: PositionSpec, profile: str, analysis: Analysis | None = None) -> list[float]:
+    def human_policy(self, spec: PositionSpec, profile: str, analysis: Analysis | None = None, priority: int = 0) -> list[float]:
         if not self.human_model:
             raise EngineError("human_model_unavailable", "mock human model disabled", False)
         if analysis is None:
-            analysis = self.analyze(spec, 16, include_ownership=False)
+            analysis = self.analyze(spec, 16, include_ownership=False, priority=priority)
         n = spec.size
         # weaker ranks -> flatter distribution
         m = re.match(r"rank_(\d+)([kd])", profile)

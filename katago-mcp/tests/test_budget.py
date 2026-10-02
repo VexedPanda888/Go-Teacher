@@ -4,7 +4,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from katago_mcp.budget import plan, unit_visits, solve_visits, line_node_searches, survey_visits, BudgetError  # noqa: E402
+from katago_mcp.budget import (plan, unit_visits, solve_visits, line_node_searches, survey_visits, answer_visits,  # noqa: E402
+                               unit_from_per_episode, BudgetError)
 from katago_mcp.config import BudgetConfig  # noqa: E402
 
 
@@ -16,6 +17,9 @@ class TestUnits(unittest.TestCase):
         self.assertEqual(unit_visits(cfg.unit_base), 1000 + 4 * 1000 + 75 * 250)      # 23,750
         self.assertEqual(solve_visits(cfg.unit_base), 3000)
         self.assertEqual(unit_visits(cfg.unit_cap), 6000 + 20 * 6000 + 87 * 1000)     # 213,000
+        # answer-dependent: expectation (2p + 5) and one student line (1 + 4 + p)
+        self.assertEqual(answer_visits(cfg.unit_base), 17 * 250)
+        self.assertEqual(answer_visits(cfg.unit_base, 1.0), (17 + 11) * 250)
 
 
 class TestWorkedExamples(unittest.TestCase):
@@ -32,14 +36,17 @@ class TestWorkedExamples(unittest.TestCase):
         self.assertEqual(p["reserved"], {"overhead_minutes": 4.0, "self_review_minutes": 5.0, "interview_minutes": 5.0})
         self.assertEqual(p["verification"]["episodes"], 5)
         steps = p["verification"]["ladder_steps_applied"]
-        self.assertEqual(steps, ["root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld"])
+        # the interviews overlap the background verification, which buys root_6000 (v0.3: up to solve_4000_all_ld)
+        self.assertEqual(steps, ["root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000"])
+        self.assertEqual(p["verification"]["overlapped_with_interviews_minutes"], 5.0)
         pe = p["verification"]["per_episode"]
-        self.assertEqual(pe["root_visits"], 3000)
+        self.assertEqual(pe["root_visits"], 6000)
+        self.assertEqual(pe["student_lines"], 1.0)
         self.assertEqual(pe["line_node_visits"], 600)
         self.assertEqual(pe["forced_line_plies"], 8)
         self.assertEqual(pe["stability_multipliers"], [4, 16])
         self.assertEqual(pe["local_solve_visits"], 4000)
-        self.assertEqual(p["profiles"]["stability"], [12000, 48000])
+        self.assertEqual(p["profiles"]["stability"], [24000, 96000])
         self.assertLessEqual(p["verification"]["expected_minutes"], 26.0)
         self.assertLessEqual(p["expected_total_minutes"], 40.0)
 
@@ -51,8 +58,9 @@ class TestWorkedExamples(unittest.TestCase):
         self.assertTrue(p["survey"]["runs_past_self_review"])
         self.assertAlmostEqual(p["survey"]["charged_minutes"], 187 * 100 / 30 / 60 - 5, places=1)   # past the blind review
         self.assertLess(p["verification"]["episodes"], 3)
-        # the probes cost about twice the old three-line contrast: rigor is kept, episodes drop
-        self.assertAlmostEqual(p["minimum_minutes_for_three_episodes"], 63.6, delta=0.6)
+        # the probes cost about twice the old three-line contrast: rigor is kept, episodes drop. The interviews
+        # overlap the engine (−5) and the student-line allowance costs about as much on this machine
+        self.assertAlmostEqual(p["minimum_minutes_for_three_episodes"], 63.2, delta=0.6)
         self.assertTrue(any("three-episode" in n for n in p["notes"]))
 
     def test_short_blind_review_keeps_survey_visits(self):
@@ -85,6 +93,40 @@ class TestWorkedExamples(unittest.TestCase):
         self.assertEqual(p["verification"]["ld_episodes_budgeted"], 2)
         self.assertEqual(p["verification"]["wall_minutes_available"], 17.0)   # 40 − 4 − 14 elapsed − 5 interviews
         self.assertIn("solve_4000_all_ld", p["verification"]["ladder_steps_applied"])
+
+    def test_interviews_overlap_the_engine(self):
+        cfg = BudgetConfig()
+        cfg.student_lines_per_episode = 0
+        p = plan(cfg, vps=30, move_count=187, total_minutes=90)
+        v = p["verification"]
+        n = v["episodes"]
+        # after the interviews: the engine work they did not cover, plus Claude's minute per episode
+        self.assertAlmostEqual(v["expected_minutes"], v["engine_minutes"] - 5.0 + n * cfg.claude_minutes_per_episode, places=1)
+        no_interviews = plan(cfg, vps=30, move_count=187, total_minutes=90, interview_minutes=0)
+        self.assertEqual(no_interviews["verification"]["overlapped_with_interviews_minutes"], 0.0)
+        # a tiny engine load cannot overlap more than itself minus the last answer's work
+        fast = plan(cfg, vps=100000, move_count=187, total_minutes=40)
+        self.assertLess(fast["verification"]["overlapped_with_interviews_minutes"], 5.0)
+
+    def test_replan_keeps_sizes_of_precomputed_results(self):
+        cfg = BudgetConfig()
+        first = plan(cfg, vps=650, move_count=187, total_minutes=40)
+        keep = unit_from_per_episode(first["verification"]["per_episode"])
+        selected = [{"id": "E1", "needs_local_solve": False}, {"id": "E2", "needs_local_solve": False},
+                    {"id": "E3", "needs_local_solve": False}]
+        grown = plan(cfg, vps=650, move_count=187, total_minutes=40, selected=selected, elapsed_minutes=10.0,
+                     survey_visits_existing=1000)
+        kept = plan(cfg, vps=650, move_count=187, total_minutes=40, selected=selected, elapsed_minutes=10.0,
+                    survey_visits_existing=1000, keep_unit=keep)
+        self.assertEqual(grown["verification"]["per_episode"]["line_node_visits"], 1000)    # three episodes climb further
+        self.assertEqual(kept["verification"]["per_episode"]["root_visits"], 6000)
+        self.assertEqual(kept["verification"]["per_episode"]["line_node_visits"], 600)
+        self.assertEqual(kept["verification"]["ladder_steps_applied"], first["verification"]["ladder_steps_applied"])
+        self.assertTrue(any("kept the earlier" in n for n in kept["notes"]))
+        # sizes that no longer fit are not kept
+        tight = plan(cfg, vps=650, move_count=187, total_minutes=25, selected=selected, elapsed_minutes=10.0,
+                     survey_visits_existing=1000, keep_unit=keep)
+        self.assertFalse(any("kept the earlier" in n for n in tight["notes"]))
 
     def test_replan_too_many_selected(self):
         cfg = BudgetConfig()

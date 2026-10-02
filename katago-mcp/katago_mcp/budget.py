@@ -15,17 +15,37 @@ EXPECTATION_REFUTATION_PLIES = 4          # expectation_probe: engine moves play
 FORCED_RESISTANCE_NODES = 2               # forced_line: natural resistances tried by the opponent
 FORCED_REFUTATION_PLIES = 3               # forced_line: engine moves refuting each resistance
 PUNISH_PLIES = 3                          # analyze_line: opponent plies in the refutation probability
+STUDENT_LINE_MOVES = 4                    # a line the student proposes, as budgeted (student_lines_per_episode)
 REFUTATION_PLIES = EXPECTATION_REFUTATION_PLIES     # older name
 
 
+def expectation_searches(p: int) -> int:
+    """expectation_probe: each imagined move one search, one more when off the candidates, the refutation."""
+    return 2 * p + EXPECTATION_REFUTATION_PLIES + 1
+
+
+def forced_line_searches(p: int) -> int:
+    """forced_line: two searches per node, end features, resistances with their refutations."""
+    return 2 * p + 3 + FORCED_RESISTANCE_NODES * (2 + FORCED_REFUTATION_PLIES)
+
+
+def student_line_searches(p: int) -> int:
+    """analyze_line of a line the student proposes: the start, each of its moves, then p PV plies."""
+    return 1 + STUDENT_LINE_MOVES + p
+
+
 def line_node_searches(p: int) -> int:
-    expectation = 2 * p + EXPECTATION_REFUTATION_PLIES + 1     # each imagined move: one search, one more when off the candidates
-    forced = 2 * p + 3 + FORCED_RESISTANCE_NODES * (2 + FORCED_REFUTATION_PLIES)   # two per node, end features, resistances
-    return INTENT_SEARCHES + expectation + 2 * forced      # forced lines from the better and the played move
+    return INTENT_SEARCHES + expectation_searches(p) + 2 * forced_line_searches(p)   # forced lines from the better and the played move
 
 
 def unit_visits(u: Unit) -> int:
     return u.root + sum(u.stability) * u.root + line_node_searches(u.plies) * u.line_node
+
+
+def answer_visits(u: Unit, student_lines: float = 0.0) -> float:
+    """The part of an episode that needs the interview answer: expectation_probe with the stated line and the
+    lines the student proposes. Everything else in the unit runs in the background during the interviews."""
+    return (expectation_searches(u.plies) + student_lines * student_line_searches(u.plies)) * u.line_node
 
 
 def solve_visits(u: Unit) -> int:
@@ -78,19 +98,31 @@ def search_profiles(survey_visits: int, u: Unit, quick: int = 200) -> dict:
     }
 
 
-def _per_episode(u: Unit) -> dict:
+def _per_episode(u: Unit, student_lines: float = 0.0) -> dict:
     return {"root_visits": u.root, "line_node_visits": u.line_node, "follow_pv_plies": u.plies,
             "forced_line_plies": u.plies, "expectation_plies": u.plies,
-            "stability_multipliers": list(u.stability), "local_solve_visits": u.solve,
+            "stability_multipliers": list(u.stability), "local_solve_visits": u.solve, "student_lines": student_lines,
             "probes": ["intent_probe", "expectation_probe", "forced_line (better move)", "forced_line (played move)"]}
+
+
+def unit_from_per_episode(pe: dict) -> Unit:
+    """The search sizes of an earlier plan, as a Unit (for a re-plan that keeps them)."""
+    return Unit(int(pe["root_visits"]), int(pe["line_node_visits"]), int(pe["forced_line_plies"]),
+                list(pe["stability_multipliers"]), int(pe["local_solve_visits"]))
 
 
 def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
          self_review_minutes: float | None = None, episodes_requested: int | None = None,
          interview_minutes: float | None = None,
          expected_ld_episodes: int | None = None, selected: list[dict] | None = None,
-         elapsed_minutes: float = 0.0, survey_visits_existing: int | None = None, quick_visits: int = 200) -> dict:
-    """Return the allocation dict of tool contract §1.2.  Pure function."""
+         elapsed_minutes: float = 0.0, survey_visits_existing: int | None = None, quick_visits: int = 200,
+         keep_unit: Unit | None = None) -> dict:
+    """Return the allocation dict of tool contract §1.2.  Pure function.
+
+    The episode interviews overlap the background verification (start_verification): only the part of the
+    engine work that needs the answers, and whatever the interviews cannot cover, is charged after them.
+    A re-plan with `keep_unit` keeps those search sizes when they fit (results already computed in the
+    background stay valid) instead of climbing the ladder again."""
     if vps <= 0:
         raise BudgetError("throughput unknown: run `katago-mcp benchmark` first")
     if move_count <= 0:
@@ -110,11 +142,30 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
     notes: list[str] = []
     replan = selected is not None
 
-    def ep_minutes(u: Unit) -> float:
-        return minutes(unit_visits(u), vps) + C_ep
+    L = cfg.student_lines_per_episode
+
+    def engine_minutes(u: Unit, n: int, ld: int) -> float:
+        lines = n * L * student_line_searches(u.plies) * u.line_node
+        return minutes(n * unit_visits(u) + lines + min(ld, n) * solve_visits(u), vps)
+
+    def overlapped(u: Unit, n: int, ld: int) -> float:
+        """Engine minutes that run during the interviews: everything but the last episode's answer work."""
+        if n <= 0:
+            return 0.0
+        return min(I, max(0.0, engine_minutes(u, n, ld) - minutes(answer_visits(u, L), vps)))
 
     def verification_minutes(u: Unit, n: int, ld: int) -> float:
-        return n * ep_minutes(u) + min(ld, n) * minutes(solve_visits(u), vps)
+        """Wall-clock minutes after the interviews: the engine work they did not cover, plus Claude's time."""
+        if n <= 0:
+            return 0.0
+        return engine_minutes(u, n, ld) - overlapped(u, n, ld) + n * C_ep
+
+    def verification_out(u: Unit, n: int, ld: int, W, applied: list, slack) -> dict:
+        return {"wall_minutes_available": W, "episodes": n, "per_episode": _per_episode(u, L),
+                "ld_episodes_budgeted": min(ld, n), "ladder_steps_applied": applied,
+                "expected_minutes": round(verification_minutes(u, n, ld), 2), "slack_minutes": slack,
+                "engine_minutes": round(engine_minutes(u, n, ld), 2),
+                "overlapped_with_interviews_minutes": round(overlapped(u, n, ld), 2)}
 
     # ---------------------------------------------------------------- survey
     if replan and survey_visits_existing:
@@ -146,9 +197,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
             "reserved": {"overhead_minutes": O, "self_review_minutes": S, "interview_minutes": I},
             "survey": {"visits_per_move": v_s, "expected_minutes": round(t_s, 2), "runs_past_self_review": c_s > 0,
                        "charged_minutes": round(c_s, 2)},
-            "verification": {"wall_minutes_available": None, "episodes": n, "per_episode": _per_episode(u),
-                             "ld_episodes_budgeted": min(ld, n), "ladder_steps_applied": list(cfg.ladder),
-                             "expected_minutes": round(verification_minutes(u, n, ld), 2), "slack_minutes": None},
+            "verification": verification_out(u, n, ld, None, list(cfg.ladder), None),
             "minimum_minutes_for_three_episodes": round(minimum_three, 1),
             "expected_total_minutes": round(expected_total, 1),
             "profiles": search_profiles(v_s, u, quick_visits), "notes": notes,
@@ -190,7 +239,14 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
     applied: list[str] = []
     used = verification_minutes(u, n, ld) if n > 0 else 0.0
     surplus = W - used
-    if n > 0:
+    kept = False
+    if replan and keep_unit is not None and n > 0 and verification_minutes(keep_unit, n, ld) <= W:
+        u, kept = keep_unit.copy(), True
+        applied = [st for st in cfg.ladder if apply_step(base, st) != base and apply_step(u, st) == u]
+        surplus = W - verification_minutes(u, n, ld)
+        notes.append("kept the earlier per-episode search sizes so the results already computed in the background "
+                     f"stay valid ({surplus:.1f} min slack)")
+    if n > 0 and not kept:
         for step in cfg.ladder:
             nu = apply_step(u, step)
             cost = verification_minutes(nu, n, ld) - verification_minutes(u, n, ld)
@@ -208,9 +264,7 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
         "reserved": {"overhead_minutes": O, "self_review_minutes": S, "interview_minutes": I},
         "survey": {"visits_per_move": v_s, "expected_minutes": round(t_s, 2), "runs_past_self_review": c_s > 0,
                    "charged_minutes": round(c_s, 2)},
-        "verification": {"wall_minutes_available": round(W, 2), "episodes": n, "per_episode": _per_episode(u),
-                         "ld_episodes_budgeted": min(ld, n), "ladder_steps_applied": applied,
-                         "expected_minutes": round(expected_verif, 2), "slack_minutes": round(max(surplus, 0.0), 2)},
+        "verification": verification_out(u, n, ld, round(W, 2), applied, round(max(surplus, 0.0), 2)),
         "minimum_minutes_for_three_episodes": round(minimum_three, 1),
         "expected_total_minutes": round(expected_total, 1),
         "profiles": search_profiles(v_s, u, quick_visits), "notes": notes,

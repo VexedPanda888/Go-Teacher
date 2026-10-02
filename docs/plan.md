@@ -192,15 +192,16 @@ so you know which skills and server produced which review.
 
 ---
 
-## 3. Status, 29 Sep 2026
+## 3. Status, 1 Oct 2026
 
-katago-mcp **0.2.2**, **21 tools**, tool contract **v0.3.1** (causal evidence: belief probes, forced
-lines, end comparisons; the build plan is archived in `docs/archive/plan-causal-lessons.md`).
+katago-mcp **0.3.0**, **24 tools**, tool contract **v0.4.0** (causal evidence: belief probes, forced
+lines, end comparisons, archived in `docs/archive/plan-causal-lessons.md`; v0.4 runs the verification
+in the background during the episode interviews).
 
 | Workstream | State | Notes |
 |---|---|---|
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
-| WS2 katago-mcp server | running, 0.2.2 | 21 tools; runs against live KataGo on the Pro; offline test suite with the mock engine |
+| WS2 katago-mcp server | running, 0.3.0 | 24 tools; runs against live KataGo on the Pro; offline test suite with the mock engine; the background verification (0.3.0) is tested on the mock engine only |
 | WS3 katago-analysis skill | delivered | belief protocol and proof tree |
 | WS4 go-teaching skill | delivered | beliefs, lesson template, concept-word rule, blind review + interview |
 | WS5 review-dashboard | delivered | branches off branches, end comparison panel, `rule_check`; follow-up questions as their own episodes (0.2.2) |
@@ -228,6 +229,7 @@ lines, end comparisons; the build plan is archived in `docs/archive/plan-causal-
 | 11 | Review time budget | asked at the start of every review unless the request states it; allocation computed by `plan_budget` (Principle 9) |
 | 12 | Budget under the causal unit (29 Sep) | rigor per episode is fixed; at short review times fewer episodes are verified (2 instead of 3); visits per node are not lowered to keep the count |
 | 13 | Taxonomy (29 Sep) | the 15 categories stay as labels so memory stays continuous; `belief` is added alongside them |
+| 14 | Interviews and engine overlap (1 Oct) | a tool call blocks Claude's turn, so the answer-free probes run in a server-side background queue during the interviews (`start_verification`); the server seals each episode until `record_interview`; a planned survey precomputes its top 4 episodes; the planner counts the overlap and budgets one student line per episode |
 
 ---
 

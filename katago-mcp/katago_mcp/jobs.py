@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 import traceback
@@ -14,6 +15,8 @@ from .engine import Analysis, PositionSpec, EngineError
 from .metrics import GameAnalysis, move_rows, phases, build_episodes, digest
 from .sgf import SgfGame, parse, rank_to_profile, rank_stronger_by
 from .store import Store, timestamp
+
+log = logging.getLogger("katago_mcp")
 
 
 def resolve_profiles(cfg: Config, game: SgfGame | None, student_color: int | None) -> dict[str, str]:
@@ -102,10 +105,11 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self.active: Job | None = None
+        self.on_done = None          # called with the job when a survey is done (Tools: speculative verification)
 
     # ---------------------------------------------------------------- start
     def start(self, sgf_text: str, visits_per_move: int, student_username: str | None = None,
-              game_id: str | None = None, options: dict | None = None) -> Job:
+              game_id: str | None = None, options: dict | None = None, plan: dict | None = None) -> Job:
         options = options or {}
         game = parse(sgf_text)
         if game.size != 19:
@@ -118,7 +122,7 @@ class JobManager:
                                   True, f"call job_status with job_id {self.active.job_id}, or cancel it")
             job = Job(job_id=f"job_{uuid.uuid4().hex[:8]}", game_id=gid, game=game, sgf_text=sgf_text,
                       visits_per_move=int(visits_per_move), student_color=student,
-                      profiles=resolve_profiles(self.cfg, game, student), options=options)
+                      profiles=resolve_profiles(self.cfg, game, student), options=options, plan=plan)
             job.positions_total = len(game.moves) + 1
             self.jobs[job.job_id] = job
             self.active = job
@@ -131,6 +135,9 @@ class JobManager:
                 job.positions_done = job.positions_total
                 job.state = "done"
                 job.finished_at = time.time()
+                with self._lock:
+                    self.active = None
+                self._done(job)
                 return job
         t = threading.Thread(target=self._run, args=(job,), daemon=True)
         t.start()
@@ -169,6 +176,7 @@ class JobManager:
                 job.finished_at = time.time()
                 self._persist(job, complete=True)      # persist before announcing "done" (no partial-file race)
                 job.state = "done"
+                self._done(job)
             else:
                 job.finished_at = time.time()
                 self._persist(job, complete=False)
@@ -181,6 +189,14 @@ class JobManager:
             with self._lock:
                 if self.active is job:
                     self.active = None
+
+    def _done(self, job: Job) -> None:
+        if self.on_done is None:
+            return
+        try:
+            self.on_done(job)
+        except Exception:  # noqa: BLE001
+            log.exception("on_done hook failed for %s", job.job_id)
 
     def _after_best(self, job: Job) -> None:
         """Ownership after the best move at the top episode roots (style axis, tags 4/14)."""

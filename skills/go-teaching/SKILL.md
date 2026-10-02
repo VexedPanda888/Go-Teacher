@@ -177,18 +177,42 @@ misjudged → `seen`, blind spot → `blind_spot`. The game record keeps the thr
 ### 4.2 Episode interview (Phase 3b, one question per selected episode, ~5 minutes)
 
 After triage, before any engine result about the episode is shown, show the position before the
-student's move (`render_board`, no overlay) and ask, one episode at a time:
+student's move (`render_board`, no overlay) and ask, one episode at a time, in the `interview_order`
+that `start_verification` returned (the engine is already working on these episodes):
 
 > "Move N, you played X. What was it for, and what did you expect to happen next?"
 
 If they name a sequence, ask them to give it as moves, and show it back to them with `render_board`
-(`options.line`) so they can confirm it is the line they meant. Save the answers verbatim in `thinking.md`.
-Then:
+(`options.line`) so they can confirm it is the line they meant. Save the answers verbatim in `thinking.md`
+and pass them straight to `record_interview` (the answer, the confirmed line as `expected_line`, a
+better move they name as `fix`) before asking about the next episode. That starts the probes that need
+the answer while the interview goes on. Then:
 - A **stated belief** overrides the inferred one; the lesson's part 3 quotes it.
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
 - When the probes contradict the stated belief, that contradiction *is* the lesson.
 - "I don't remember" / "no idea" is fine: use the inferred belief and say it is inferred.
 - Sealed results apply per episode (§6).
+
+### 4.3 While the engine finishes (Phase 3b, optional)
+
+On a slow machine the verification can still need minutes after the last interview. Check with
+`verification_results(job_id)`. While `eta_seconds` is above about a minute, ask questions from
+this list, one or two at a time. Use only the SGF and the student's own words, never an engine result.
+Record each answer with `record_interview` on its episode. Stop as soon as the queue is done; never
+make the student wait for a question. At most one line per episode is budgeted
+(`per_episode.student_lines`).
+
+1. **Find the better move.** Show the position before an interviewed episode's move (`render_board`):
+   "Move N again: knowing it cost something, what would you play now?" Record their move as `fix`; it
+   is tested like their own fix. Say nothing about it until the lesson. Trying first makes the answer
+   stick, and a refuted guess goes into the self-review comparison.
+2. **Read the resistance.** Take a move from the student's own expected line: "If White doesn't answer
+   at X, how do you continue?" Show their answer with `render_board` (`options.line`). Record it in
+   `lines` (`from: "after"` when it starts after their move).
+3. **How sure were you?** "At the time, how sure were you about move N, from 1 to 5?" Record it as
+   `confidence`. A confident misread and a guess are different lessons.
+4. **The watch-list.** For a category on the memory watch-list: "Your list has *defending groups that
+   were already alive*. Was move N a defence?" Save the answer in `thinking.md` with the episode.
 
 ## 5. Memory use (recurrence only)
 
@@ -226,4 +250,5 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - Handicap games: separate the objective verdict from the practical one; reward simplification when ahead.
 - Sealed results: no engine output is shown or used in conversation before `self_review.md` exists, and
   none about an episode before its interview answer is in `thinking.md`. If the student asks early,
-  explain why and keep going.
+  explain why and keep going. From `start_verification` until `record_interview`, the server refuses
+  engine results about a selected episode (`sealed`) while its probes are computed in the background.

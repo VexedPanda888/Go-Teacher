@@ -28,6 +28,7 @@ class BudgetConfig:
     survey_floor: int = 100
     survey_cap: int = 1000
     ld_reserve_episodes: int = 1
+    student_lines_per_episode: float = 1.0       # lines the student proposes per episode (a fix, a resistance line)
     max_episodes: int = 5
     min_episodes: int = 3
     unit_base: Unit = field(default_factory=Unit)
@@ -125,6 +126,14 @@ class KatagoConfig:
 
 
 @dataclass
+class VerificationConfig:
+    """The background verification queue (contract §1.22–§1.24)."""
+    speculative_episodes: int = 4           # when a survey with a plan finishes, precompute this many top episodes (0: off)
+    background_priority: int = 5            # KataGo priority of queued probes: above the survey (0), below Claude's calls (10)
+    max_wait_seconds: float = 240.0         # verification_results(wait_seconds) is capped at this
+
+
+@dataclass
 class OgsConfig:
     enabled: bool = True
     timeout: float = 20.0
@@ -146,6 +155,7 @@ class Config:
     student: StudentConfig = field(default_factory=StudentConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
+    verification: VerificationConfig = field(default_factory=VerificationConfig)
     reviews_dir: str = "reviews"
     games_dir: str = "games"          # SGF files given by name are looked up here; OGS downloads are cached here
     ogs: OgsConfig = field(default_factory=OgsConfig)
@@ -188,6 +198,7 @@ def load_config(path: str | Path | None) -> Config:
     _fill(cfg.student, data.get("student"))
     _fill(cfg.budget, data.get("budget"))          # unit_base / unit_cap tables fill their Unit in place
     _fill(cfg.thresholds, data.get("thresholds"))
+    _fill(cfg.verification, data.get("verification"))
     cfg.reviews_dir = data.get("paths", {}).get("reviews_dir", cfg.reviews_dir)
     cfg.games_dir = data.get("paths", {}).get("games_dir", cfg.games_dir)
     _fill(cfg.ogs, data.get("ogs"))
