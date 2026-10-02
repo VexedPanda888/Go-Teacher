@@ -60,7 +60,7 @@ PUBLIC_TOOLS = ("engine_info", "plan_budget", "sgf_summary", "start_game_analysi
                 "get_position_ref", "analyze_position", "analyze_line", "pass_probe", "swing_value", "local_solve",
                 "group_status", "ownership_diff", "human_move_distribution", "render_board", "terminal_features",
                 "forced_line", "intent_probe", "expectation_probe", "validate_variations",
-                "start_verification", "record_interview", "verification_results")
+                "start_verification", "record_interview", "verification_results", "dashboard_row")
 
 BELIEF_CATEGORIES = {
     "needs_defending": ["14", "2"], "group_is_safe": ["3", "2"], "is_sente": ["11", "15"],
@@ -2101,6 +2101,83 @@ class Tools:
             "episodes": eps_out, "ownership": v.ownership, "summary": summary or {},
         }
 
+    # ================================================================ 1.25 dashboard_row
+    def dashboard_row(self, kind: str, game: str, board: dict | None = None) -> dict:
+        """A row for the live review page, to write with ArtifactData exactly as returned (collection, doc_id, row). kind 'game': the record (players, setup, moves), written once in Phase 0. kind 'board': a position of the game for the student to look at, with an optional numbered line, highlighted points, a question, and ask 'move' | 'line' when the student should answer by clicking on the page. game: a job_id, or the OGS link/id or .sgf file name. board: {id?, title, text?, at_move, line?, highlight?, ask?, episode?}. Legality-checked, no engine (allowed while results are sealed); the row carries a sha256 the page checks."""
+        g, game_id, student = self._dashboard_game(game)
+        size = g.size
+        if kind == "game":
+            data = {"kind": "game", "game_id": game_id, "you": None if student is None else COLOR_CHAR[student],
+                    "players": g.players, "handicap": int(g.handicap), "komi": f"{g.komi:g}", "rules": g.rules,
+                    "result": g.result().get("raw", "") or "", "date": g.date,
+                    "first_to_move": COLOR_CHAR[g.first_to_move],
+                    "setup": {"AB": [idx_to_gtp(i, size) for i in g.setup_black], "AW": [idx_to_gtp(i, size) for i in g.setup_white]},
+                    "moves": [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in g.moves]}
+            collection, doc_id = "review", "game"
+        elif kind == "board":
+            b = dict(board or {})
+            if not str(b.get("title") or "").strip():
+                raise ToolError("bad_request", "board.title is required (what the student is looking at)")
+            M = len(g.moves)
+            try:
+                at = int(b.get("at_move", 0))
+            except (TypeError, ValueError):
+                raise ToolError("bad_request", "board.at_move must be a move number")
+            if not 0 <= at <= M:
+                raise ToolError("bad_request", f"board.at_move must be 0..{M} (the position after that move)")
+            rec = self.store.put_position(self.jobs.spec_at(g, at), game_id, at, persist=False)
+            line = self._normalize_line(rec, b["line"], "board.line") if b.get("line") else []
+            highlight = []
+            for p in norm_list(b.get("highlight")) or []:
+                i = _gtp(p, size, "board.highlight")
+                if i is not None and idx_to_gtp(i, size) not in highlight:
+                    highlight.append(idx_to_gtp(i, size))
+            ask = b.get("ask") or None
+            if ask not in (None, "move", "line"):
+                raise ToolError("bad_request", "board.ask must be 'move', 'line' or absent")
+            to_move = rec.to_move if len(line) % 2 == 0 else opponent(rec.to_move)
+            seq = self._dashboard_seq(game_id)
+            bid = re.sub(r"[^A-Za-z0-9_-]", "", str(b.get("id") or "")) or f"b{seq:02d}"
+            data = {"kind": "board", "id": bid, "seq": seq, "game_id": game_id, "title": str(b["title"]).strip(),
+                    "text": str(b.get("text") or "").strip(), "at_move": at, "line": line, "highlight": highlight,
+                    "ask": ask, "ask_color": COLOR_CHAR[to_move] if ask else None, "episode": b.get("episode") or None}
+            collection, doc_id = "boards", bid
+        else:
+            raise ToolError("bad_request", "kind must be 'game' or 'board'")
+        row = dict(data)
+        row["sha256"] = dashboard_row_sha(data)
+        with self.store.game_dir(game_id).joinpath("dashboard_rows.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"collection": collection, "doc_id": doc_id, "row": row, "ts": timestamp()}, ensure_ascii=False) + "\n")
+        out = {"collection": collection, "doc_id": doc_id, "row": row,
+               "write": "ArtifactData set on the review page: this collection and doc_id, data = row exactly as given"}
+        out["query_id"] = self._log(game_id, "dashboard_row", {"kind": kind, "doc_id": doc_id},
+                                    result={"moves": len(data.get("moves", data.get("line", [])))})
+        return out
+
+    def _dashboard_game(self, game: str):
+        """(SgfGame, game_id, student colour) for a job id or an SGF reference."""
+        g = (game or "").strip()
+        if g.startswith("job_"):
+            with _engine_errors():
+                job = self.jobs.get(g)
+            return job.game, job.game_id, job.student_color
+        text, hint, _src = self._resolve_sgf(g)
+        try:
+            parsed = parse(text)
+        except SgfError as e:
+            raise ToolError("invalid_sgf", str(e))
+        if parsed.size != 19:
+            raise ToolError("unsupported_board_size", f"board size {parsed.size} is not supported in v1", recoverable=False)
+        return parsed, hint or game_id_of(parsed, text), student_color_of(parsed, self.cfg.student.username)
+
+    def _dashboard_seq(self, game_id: str) -> int:
+        """Next board number of a game (rows written so far + 1, kept in reviews/<game_id>/dashboard_rows.jsonl)."""
+        p = self.store.game_dir(game_id) / "dashboard_rows.jsonl"
+        if not p.exists():
+            return 1
+        with p.open(encoding="utf-8") as f:
+            return 1 + sum(1 for ln in f if '"collection": "boards"' in ln)
+
     # ================================================================ 1.22 – 1.24 background verification
     def start_verification(self, job_id: str, episodes: list) -> dict:
         """After triage and the re-plan: queue the probes of each selected episode that do not need the interview answer (intent_probe, forced_line from the teachable and the played move, terminal_features of their ends, root and stability searches, a swing_value for is_sente / biggest_move, local_solve when asked) to run in the background while Claude interviews. episodes: [{id, teachable?, move_number?, local_solve?: true | {group_point, at: 'before'|'after'}}]. Results are sealed per episode until record_interview. Returns interview_order."""
@@ -2233,6 +2310,14 @@ def norm_line_step(step, to_move: int, size: int = 19) -> dict:
 
 
 # ==================================================================== helpers
+DASHBOARD_UNSIGNED = ("title", "text", "sha256")    # free text Claude may restyle; everything else is checked
+
+
+def dashboard_row_sha(row: dict) -> str:
+    """SHA-256 of a live-page row as the page recomputes it: canonical JSON without the free-text fields."""
+    return hashlib.sha256(canonical({k: v for k, v in row.items() if k not in DASHBOARD_UNSIGNED}).encode("utf-8")).hexdigest()
+
+
 def _row_out(r: dict) -> dict:
     return {k: v for k, v in r.items() if k not in ("idx", "best_idx", "acceptable")}
 

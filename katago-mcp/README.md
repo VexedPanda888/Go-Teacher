@@ -1,10 +1,11 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.4.0** (24 tools): whole-game surveys, budgeted verification
+It implements **tool contract v0.5.0** (25 tools): whole-game surveys, budgeted verification
 (`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
 human-model move distributions, background verification during the student interviews
-(`start_verification`, `record_interview`, `verification_results`), and the checksummed dashboard export.
+(`start_verification`, `record_interview`, `verification_results`), checksummed rows for the live review
+page (`dashboard_row`), and the checksummed dashboard export.
 
 Design rules baked in:
 
@@ -37,7 +38,7 @@ katago_mcp/
   metrics.py    derived metrics (contract §3): points lost, episodes, phases, tags, style axis, …
   jobs.py       asynchronous survey jobs
   verify.py     background verification queue, stored probe results, per-episode sealing
-  tools.py      the 24 tools as plain Python
+  tools.py      the 25 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
   seed.py       katago-mcp-seed: survey a folder of SGFs for the WS8 calibration pass
@@ -101,9 +102,12 @@ python -m pytest            # if pytest is installed
 
 The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
 variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget` against the two
-worked examples of contract §1.2.3 and the interview overlap, all 24 tools end to end on synthetic games
+worked examples of contract §1.2.3 and the interview overlap, all 25 tools end to end on synthetic games
 including the dashboard export and its checksum, the background verification (sealing, run order,
-KataGo priorities, stored results, line checks), job reuse across a server restart, and a handicap game. It also
+KataGo priorities, stored results, line checks), the live review page (the page's checksum against the
+server's in node, and the page itself in headless Chrome with a stand-in database: boards arriving,
+an answer clicked and saved, the final dashboard keeping its boards; both skip when node or Chrome is
+missing), job reuse across a server restart, and a handicap game. It also
 checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
 that the header of the tool contract (`skills/go-teacher-flow/references/tool-contract.md`) names the
 code's versions.

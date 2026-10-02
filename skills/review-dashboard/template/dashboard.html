@@ -65,7 +65,7 @@ a { color: var(--accent); }
 
 /* main grid */
 .main { display: grid; grid-template-columns: minmax(0, 7fr) minmax(300px, 5fr); gap: 20px; align-items: start; }
-@media (max-width: 880px) { .main { grid-template-columns: 1fr; } }
+@media (max-width: 880px) { .main { grid-template-columns: minmax(0, 1fr); } }
 .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; }
 
 /* board column */
@@ -110,7 +110,7 @@ a { color: var(--accent); }
 .graph .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); padding: 4px 2px 0; flex-wrap: wrap; }
 .lesson { margin-top: 14px; padding: 14px 16px 16px; }
 .eplist { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
-.eplist button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 10px; cursor: pointer; text-align: left; font-size: 13px; line-height: 1.3; }
+.eplist button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 10px; cursor: pointer; text-align: left; font-size: 13px; line-height: 1.3; max-width: 100%; overflow-wrap: anywhere; }
 .eplist button .r { color: var(--muted); display: block; font-size: 12px; }
 .eplist button.active { border-color: var(--accent); background: var(--accent-soft); }
 .eplist.q button { border-style: dashed; }
@@ -148,6 +148,7 @@ a { color: var(--accent); }
 .quiz .tag { display: inline-block; font-size: 11.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-left: 4px; }
 .quiz .tag.you { color: var(--accent); border-color: var(--accent); }
 
+.sidecol, .boardcol { min-width: 0; }
 /* summary */
 .summary { margin-top: 20px; padding: 16px 18px 18px; }
 .summary .headline { font-family: var(--serif); font-size: 18px; line-height: 1.45; margin: 0 0 12px; }
@@ -156,6 +157,22 @@ a { color: var(--accent); }
 .summary ul { margin: 0; padding-left: 18px; }
 .summary li { margin-bottom: 5px; }
 .summary .fine { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
+/* live review: boards Claude sends during the review, answers clicked on the board */
+.live { margin-top: 14px; padding: 14px 16px 16px; }
+.live h2 { margin: 0 0 6px; font-size: 14px; font-weight: 500; color: var(--muted); }
+.live .status { color: var(--muted); font-size: 13.5px; margin: 0 0 10px; }
+.live .status.warn { color: var(--loss); }
+.eplist button.new { border-color: var(--accent); }
+.eplist button.bad { border-style: dashed; color: var(--loss); }
+.answer { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.answer .how { font-size: 14px; margin-bottom: 8px; }
+.answer .moves { font-family: var(--sans); font-size: 14px; margin: 6px 0 8px; min-height: 1.4em; }
+.answer .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.answer button { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.answer button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.answer button:disabled { opacity: 0.5; cursor: default; }
+.answer .msg { font-size: 13.5px; margin-top: 8px; }
+.answer .msg.warn { color: var(--loss); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .scrollx { overflow-x: auto; }
 @media (prefers-reduced-motion: no-preference) {
@@ -179,7 +196,7 @@ a { color: var(--accent); }
       </div>
       <div class="readout">
         <div class="movenum"><span id="moveNum">0</span> <small id="moveTotal">/ 0</small></div>
-        <div class="score">You: <b id="scoreNow">0.0</b> <span class="who" id="scoreWho"></span></div>
+        <div class="score" id="scoreBox">You: <b id="scoreNow">0.0</b> <span class="who" id="scoreWho"></span></div>
         <div class="who" id="lastMove"></div>
       </div>
       <div class="controls">
@@ -205,7 +222,7 @@ a { color: var(--accent); }
     </section>
 
     <aside class="sidecol">
-      <div class="panel graph">
+      <div class="panel graph" id="graphPanel">
         <h2>Score, your perspective</h2>
         <svg id="graph" viewBox="0 0 600 200" aria-label="Score graph"></svg>
         <div class="legend" id="graphLegend"></div>
@@ -216,6 +233,12 @@ a { color: var(--accent); }
         <h2 class="qhead" id="qhead" hidden>Your questions</h2>
         <ul class="eplist q" id="qlist" hidden></ul>
         <div id="epbody"></div>
+      </div>
+      <div class="panel live" id="live" hidden>
+        <h2 id="liveHead">Review in progress</h2>
+        <p class="status" id="liveStatus"></p>
+        <ul class="eplist" id="boardlist"></ul>
+        <div id="boardbody"></div>
       </div>
     </aside>
   </div>
@@ -292,17 +315,48 @@ const Core = (() => {
   function decodeOwnership(s) { const out = new Float32Array(s.length); for (let i = 0; i < s.length; i++) out[i] = (s.charCodeAt(i) - 97) / 10 - 1; return out; }
   function starPoints() { const out = []; for (const r of [3, 9, 15]) for (const c of [3, 9, 15]) out.push(r * N + c); return out; }
   function fmtScore(v) { if (v === null || v === undefined || Number.isNaN(v)) return "–"; const a = Math.abs(v).toFixed(1); return v > 0.05 ? "+" + a : v < -0.05 ? "−" + a : "0.0"; }
-  return { N, COLS, EMPTY, B, W, parseMove, pointIdx, gtp, neighbors, group, play, replay, playLine, decodeOwnership, starPoints, fmtScore };
+  // a move the student clicks: refuse an occupied point, suicide, and retaking a ko at once
+  function legalPlay(cells, color, idx, beforePrev) {
+    if (idx === null) return { ok: true, cells: new Int8Array(cells) };
+    if (cells[idx] !== EMPTY) return { ok: false, reason: "that point is occupied" };
+    const r = play(cells, color, idx);
+    if (r.cells[idx] !== color) return { ok: false, reason: "that move would be suicide" };
+    if (beforePrev && r.cells.every((v, i) => v === beforePrev[i])) return { ok: false, reason: "that retakes the ko at once" };
+    return { ok: true, cells: r.cells };
+  }
+  // canonical JSON exactly as katago-mcp's export.canonical (sorted keys, no spaces); rows carry its SHA-256
+  function canonical(v) {
+    if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
+    if (v && typeof v === "object") return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}";
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  const UNSIGNED = ["title", "text", "sha256"];   // free text; everything else in a row is checked
+  async function rowIntact(row) {
+    if (!row || typeof row.sha256 !== "string") return false;
+    const body = {}; for (const k of Object.keys(row)) if (!UNSIGNED.includes(k)) body[k] = row[k];
+    const subtle = (globalThis.crypto || {}).subtle; if (!subtle) return false;
+    const buf = await subtle.digest("SHA-256", new TextEncoder().encode(canonical(body)));
+    const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    return hex === row.sha256;
+  }
+  // the dashboard's data shape from a live-page game row (no engine data: no scores, no ownership)
+  function fromGameRow(g) {
+    const you = g.you === "W" ? "W" : "B", opp = you === "B" ? "W" : "B", pl = g.players || {};
+    return { live: true, game: { id: g.game_id, you, opponent: (pl[opp] || {}).name || "opponent", opponentRank: (pl[opp] || {}).rank || null,
+             yourRank: (pl[you] || {}).rank || null, date: g.date, handicap: g.handicap, komi: g.komi, rules: g.rules, result: g.result, players: pl },
+             setup: g.setup || { AB: [], AW: [] }, moves: g.moves || [], scoreSeries: null, episodes: [], ownership: {}, summary: null };
+  }
+  return { N, COLS, EMPTY, B, W, parseMove, pointIdx, gtp, neighbors, group, play, replay, playLine, decodeOwnership, starPoints, fmtScore,
+           legalPlay, canonical, rowIntact, fromGameRow };
 })();
 if (typeof module !== "undefined") module.exports = Core;
 </script>
 <script>
-(() => {
-  const raw = document.getElementById("data").textContent;
-  let D; try { D = JSON.parse(raw); } catch (e) { document.body.innerHTML = "<p style='padding:20px'>The review data could not be read.</p>"; return; }
-  if (D.__placeholder__) { document.getElementById("epbody").innerHTML = "<p class='commentary'><span class='empty'>This template has no review data yet. Build it with build_dashboard.py.</span></p>"; return; }
-
+// ---- the page: App(D) draws a review; D is the embedded blob (final review) or, on the live page,
+// the game row from the db (Core.fromGameRow). Boards and answers come from the db in both cases.
+function App(D) {
   const { N, B, W, EMPTY } = Core;
+  const LIVE = !!D.live;
   const you = D.game.you === "W" ? W : B, youName = you === B ? "Black" : "White";
   const M = D.moves.length;
   const game = Core.replay(D.setup, D.moves);
@@ -310,19 +364,10 @@ if (typeof module !== "undefined") module.exports = Core;
   const isQuestion = (e) => e.kind === "question";   // follow-up questions: same shape as a lesson, shown apart
   const lessonEps = episodes.filter((e) => !isQuestion(e));
   const $ = (id) => document.getElementById(id);
-  const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false };
-
-  // ---------- theme ----------
-  const themeBtn = $("themeBtn");
-  const themes = ["auto", "light", "dark"];
-  let theme = "auto"; try { theme = localStorage.getItem("goreview-theme") || "auto"; } catch (e) {}
-  function applyTheme() {
-    if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
-    themeBtn.textContent = "Theme: " + theme;
-    try { localStorage.setItem("goreview-theme", theme); } catch (e) {}
-  }
-  themeBtn.addEventListener("click", () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; applyTheme(); });
-  applyTheme();
+  const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false,
+                  bd: null, bpos: null, bply: 0 };
+  // live boards (db): rows by id, answers by board id, the student's unsent clicks by board id
+  const live = { db: null, canAnswer: false, boards: new Map(), bad: new Set(), answers: new Map(), drafts: new Map(), seen: 0, sending: null, msg: {} };
 
   // ---------- header ----------
   const opp = D.game.opponent || "opponent";
@@ -335,6 +380,7 @@ if (typeof module !== "undefined") module.exports = Core;
   facts.push("komi " + D.game.komi);
   if (D.game.result) facts.push("result " + D.game.result);
   if (D.meta && D.meta.visits_per_move) facts.push(D.meta.visits_per_move + " visits per move");
+  if (LIVE) facts.push("review in progress");
   $("facts").innerHTML = facts.map((f) => "<span>" + esc(f) + "</span>").join("");
   function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -363,10 +409,12 @@ if (typeof module !== "undefined") module.exports = Core;
   function clear(g) { while (g.firstChild) g.removeChild(g.firstChild); }
   function currentCells() {
     if (state.mode === "variation") return state.vpos.positions[state.vply];
+    if (state.mode === "board") return state.bpos.positions[state.bply];
     return game.positions[state.move];
   }
   function currentLastIdx() {
     if (state.mode === "variation") return state.vply > 0 ? state.vpos.parsed[state.vply - 1].idx : null;
+    if (state.mode === "board") return state.bply > 0 ? state.bpos.parsed[state.bply - 1].idx : null;
     if (state.mode === "quiz") return null;
     return state.move > 0 ? game.parsed[state.move - 1].idx : null;
   }
@@ -380,7 +428,7 @@ if (typeof module !== "undefined") module.exports = Core;
       else el("circle", { cx: x, cy: y, r: R - 0.6, fill: "var(--stone-w)", stroke: "#8B8578", "stroke-width": 1 }, gStones);
     }
     const last = currentLastIdx();
-    const labelled = state.mode === "variation" || (state.mode === "game" && state.showNums && state.ep && state.move >= state.ep.moves[0] && state.move <= state.ep.moves[1]);
+    const labelled = state.mode === "variation" || state.mode === "board" || (state.mode === "game" && state.showNums && state.ep && state.move >= state.ep.moves[0] && state.move <= state.ep.moves[1]);
     if (last !== null && last !== undefined && !labelled) {
       const [x, y] = xy(last);
       el("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: cells[last] === B ? "#E9E6DE" : "#1A1A1A", "stroke-width": 2.2, class: "last" }, gMarks);
@@ -398,6 +446,9 @@ if (typeof module !== "undefined") module.exports = Core;
     // labels: numbers for the episode or the variation
     if (state.mode === "variation") {
       for (let k = 0; k < state.vply; k++) { const mv = state.vpos.parsed[k]; if (mv.idx !== null && cells[mv.idx] === mv.color) label(mv.idx, String(k + 1), mv.color); }
+    } else if (state.mode === "board") {
+      for (let k = 0; k < state.bply; k++) { const mv = state.bpos.parsed[k]; if (mv.idx !== null && cells[mv.idx] === mv.color) label(mv.idx, String(k + 1), mv.color); }
+      for (const p of state.bd.highlight || []) { const [x, y] = xy(Core.pointIdx(p)); el("rect", { x: x - 15, y: y - 15, width: 30, height: 30, rx: 3, fill: "none", stroke: "var(--accent)", "stroke-width": 3 }, gMarks); }
     } else if (state.mode === "game" && state.showNums && state.ep) {
       const [a, b] = state.ep.moves;
       for (let n = a; n <= Math.min(b, state.move); n++) { const mv = game.parsed[n - 1]; if (mv.idx !== null && cells[mv.idx] === mv.color) label(mv.idx, String(n), mv.color); }
@@ -410,6 +461,7 @@ if (typeof module !== "undefined") module.exports = Core;
     t.textContent = text;
   }
   function ownershipKey() {
+    if (LIVE || state.mode === "board") return null;
     if (state.mode === "variation") return state.vply === state.vpos.positions.length - 1 && state.br.ownershipAtEnd && D.ownership[state.br.ownershipAtEnd] ? state.br.ownershipAtEnd : null;
     const k = "m" + state.move; return D.ownership && D.ownership[k] ? k : null;
   }
@@ -418,9 +470,23 @@ if (typeof module !== "undefined") module.exports = Core;
   const slider = $("slider"); slider.max = M; $("moveTotal").textContent = "/ " + M;
   $("scoreWho").textContent = "(points, " + youName + ")";
   function renderReadout() {
-    const s = state.mode === "variation" ? (state.vply > 0 ? state.br.evals[state.vply - 1] : D.scoreSeries[state.br.fromMove]) : D.scoreSeries[state.move];
-    $("scoreNow").textContent = Core.fmtScore(s);
-    $("scoreNow").style.color = s > 0.05 ? "var(--gain)" : s < -0.05 ? "var(--loss)" : "inherit";
+    $("scoreBox").hidden = LIVE || state.mode === "board";
+    if (!LIVE) {
+      const s = state.mode === "variation" ? (state.vply > 0 ? state.br.evals[state.vply - 1] : D.scoreSeries[state.br.fromMove]) : D.scoreSeries[state.move];
+      $("scoreNow").textContent = Core.fmtScore(s);
+      $("scoreNow").style.color = s > 0.05 ? "var(--gain)" : s < -0.05 ? "var(--loss)" : "inherit";
+    }
+    if (state.mode === "board") {
+      const bd = state.bd, mv = state.bply > 0 ? state.bpos.parsed[state.bply - 1] : null, n = state.bpos.positions.length - 1;
+      $("moveNum").textContent = bd.at_move;
+      $("lastMove").textContent = mv ? "Move " + state.bply + " of " + n + " on this board: " + (mv.color === B ? "Black" : "White") + " " + Core.gtp(mv.idx) : "The position after move " + bd.at_move;
+      slider.value = bd.at_move;
+      $("btnPrev").disabled = state.bply === 0; $("btnNext").disabled = state.bply >= n;
+      $("tglOwn").disabled = true; $("tglOwn").setAttribute("aria-pressed", "false"); $("tglNums").disabled = true;
+      $("tglOwn").hidden = LIVE; $("tglNums").hidden = LIVE;
+      const vb = $("varbar"); vb.classList.add("on"); $("varLabel").textContent = bd.title; $("varPly").textContent = n ? "move " + state.bply + " of " + n : ""; $("varEval").textContent = "";
+      return;
+    }
     if (state.mode === "variation") {
       $("moveNum").textContent = state.br.fromMove;
       const mv = state.vply > 0 ? state.vpos.parsed[state.vply - 1] : null;
@@ -433,8 +499,10 @@ if (typeof module !== "undefined") module.exports = Core;
     slider.value = state.mode === "variation" ? state.br.fromMove : state.move;
     $("btnPrev").disabled = state.mode === "variation" ? state.vply === 0 : state.move === 0;
     $("btnNext").disabled = state.mode === "variation" ? state.vply >= state.vpos.positions.length - 1 : state.move >= M;
+    $("tglOwn").hidden = LIVE;
     $("tglOwn").disabled = !ownershipKey(); $("tglOwn").title = ownershipKey() ? "Engine territory estimate at this position" : "No estimate stored for this position";
     $("tglOwn").setAttribute("aria-pressed", String(state.showOwn && !!ownershipKey()));
+    $("tglNums").hidden = LIVE;
     $("tglNums").disabled = state.mode !== "game" || !state.ep;
     $("tglNums").setAttribute("aria-pressed", String(state.showNums));
     const vb = $("varbar");
@@ -447,6 +515,7 @@ if (typeof module !== "undefined") module.exports = Core;
   function setMove(n) {
     n = Math.max(0, Math.min(M, n));
     if (state.mode === "variation") exitVariation(false);
+    if (state.mode === "board") exitBoard(false);
     if (state.mode === "quiz") { state.mode = "game"; state.quiz = null; }
     state.move = n;
     const covers = (e) => n >= e.moves[0] - 1 && n <= e.moves[1];
@@ -456,6 +525,7 @@ if (typeof module !== "undefined") module.exports = Core;
   }
   function step(d) {
     if (state.mode === "variation") { state.vply = Math.max(0, Math.min(state.vpos.positions.length - 1, state.vply + d)); renderAll(); return; }
+    if (state.mode === "board") { state.bply = Math.max(0, Math.min(state.bpos.positions.length - 1, state.bply + d)); renderAll(); return; }
     setMove((state.mode === "quiz" ? state.quiz.at - 1 : state.move) + d);
   }
   $("btnFirst").addEventListener("click", () => setMove(0)); $("btnLast").addEventListener("click", () => setMove(M));
@@ -463,17 +533,18 @@ if (typeof module !== "undefined") module.exports = Core;
   slider.addEventListener("input", () => setMove(parseInt(slider.value, 10)));
   $("tglOwn").addEventListener("click", () => { state.showOwn = !state.showOwn; renderAll(); });
   $("tglNums").addEventListener("click", () => { state.showNums = !state.showNums; renderAll(); });
-  $("varExit").addEventListener("click", () => exitVariation(true));
+  $("varExit").addEventListener("click", () => { if (state.mode === "board") exitBoard(true); else exitVariation(true); });
   document.addEventListener("keydown", (ev) => {
     if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName) && ev.target !== slider) return;
     if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); } else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
     else if (ev.key === "Home") { setMove(0); ev.preventDefault(); } else if (ev.key === "End") { setMove(M); ev.preventDefault(); }
     else if (ev.key === "Escape" && state.mode === "variation") exitVariation(true);
+    else if (ev.key === "Escape" && state.mode === "board") exitBoard(true);
   });
 
   // ---------- strip ----------
   function renderStrip() {
-    const st = $("strip"); st.innerHTML = ""; st.classList.toggle("has-q", episodes.some(isQuestion));
+    const st = $("strip"); st.innerHTML = ""; st.hidden = !episodes.length; st.classList.toggle("has-q", episodes.some(isQuestion));
     for (const e of episodes) {
       const a = (e.moves[0] - 1) / M * 100, b = Math.max((e.moves[1] - e.moves[0] + 2) / M * 100, 1.2);
       const d = document.createElement("button"); d.type = "button"; d.className = "ep" + (isQuestion(e) ? " q" : "") + (state.ep === e ? " active" : ""); d.style.left = a + "%"; d.style.width = b + "%";
@@ -486,9 +557,11 @@ if (typeof module !== "undefined") module.exports = Core;
 
   // ---------- graph ----------
   const G = $("graph"), GW = 600, GH = 200, GL = 34, GR = 8, GT = 10, GB = 30;
-  const maxAbs = Math.max(10, ...D.scoreSeries.map((v) => Math.abs(v || 0)));
+  const maxAbs = Math.max(10, ...(D.scoreSeries || []).map((v) => Math.abs(v || 0)));
   const gx = (n) => GL + n / Math.max(1, M) * (GW - GL - GR), gy = (v) => GT + (maxAbs - v) / (2 * maxAbs) * (GH - GT - GB);
   function drawGraph() {
+    $("graphPanel").hidden = LIVE;
+    if (LIVE) return;
     while (G.firstChild) G.removeChild(G.firstChild);
     const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || G).appendChild(e); return e; };
     for (const e of lessonEps) mk("rect", { x: gx(e.moves[0] - 1), y: GT, width: Math.max(2, gx(e.moves[1]) - gx(e.moves[0] - 1)), height: GH - GT - GB, fill: "var(--accent-soft)" });
@@ -511,6 +584,7 @@ if (typeof module !== "undefined") module.exports = Core;
     $("graphLegend").innerHTML = leg.join("");
   }
   G.addEventListener("click", (ev) => {
+    if (LIVE) return;
     const pt = G.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; const p = pt.matrixTransform(G.getScreenCTM().inverse());
     const n = Math.round((p.x - GL) / (GW - GL - GR) * M); setMove(n);
   });
@@ -616,7 +690,7 @@ if (typeof module !== "undefined") module.exports = Core;
   }
   function startQuiz(e) { const q = e.quiz; state.ep = e; state.mode = "quiz"; state.br = null; state.quiz = { ep: e, at: q.atMove, picked: null }; state.move = q.atMove - 1; renderAll(); showBoardOnPhones(); }
   function answerQuiz(pick) { if (!state.quiz) return; state.quiz.picked = pick; renderAll(); }
-  function onBoardClick(idx) { if (state.mode === "quiz" && state.quiz && !state.quiz.picked && state.quiz.ep.quiz.type !== "status" && currentCells()[idx] === EMPTY) answerQuiz(Core.gtp(idx)); }
+  function onBoardClick(idx) { if (state.mode === "board") { addAnswerMove(idx); return; } if (state.mode === "quiz" && state.quiz && !state.quiz.picked && state.quiz.ep.quiz.type !== "status" && currentCells()[idx] === EMPTY) answerQuiz(Core.gtp(idx)); }
   function drawQuizMarks(cells) {
     const q = state.quiz.ep.quiz;
     if (q.type === "status" && q.status && q.status.groupPoint) { const i = Core.pointIdx(q.status.groupPoint); const [x, y] = xy(i); el("rect", { x: x - 12, y: y - 12, width: 24, height: 24, fill: "none", stroke: "var(--accent)", "stroke-width": 3 }, gMarks); return; }
@@ -628,6 +702,8 @@ if (typeof module !== "undefined") module.exports = Core;
 
   // ---------- summary ----------
   function renderSummary() {
+    $("summary").hidden = LIVE; $("lesson").hidden = LIVE;
+    if (LIVE) return;
     const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
     if (S.headline) html += "<p class='headline'>" + esc(S.headline) + "</p>";
     html += "<div class='cols'>";
@@ -644,11 +720,173 @@ if (typeof module !== "undefined") module.exports = Core;
     box.innerHTML = html;
   }
 
-  function renderAll() { drawStones(); renderReadout(); renderStrip(); drawGraph(); renderEpList(); renderEpBody(); }
+  // ---------- live boards (db) ----------
+  // A board is a position of the game with an optional numbered line and highlighted points that Claude
+  // sends during the review, instead of an ASCII diagram in chat. With `ask`, the student answers by
+  // clicking: one move ("move") or a sequence ("line"), starting with `ask_color`, then Send.
+  function boardsInOrder() { return Array.from(live.boards.values()).sort((a, b) => a.seq - b.seq); }
+  function boardMoves(bd) { const ans = live.answers.get(bd.id); const draft = live.drafts.get(bd.id); return bd.line.concat(draft || (ans ? ans.moves : [])); }
+  function enterBoard(bd, atEnd) {
+    if (state.mode === "variation") exitVariation(false);
+    state.mode = "board"; state.bd = bd; state.quiz = null;
+    state.bpos = Core.playLine(game.positions[bd.at_move], boardMoves(bd));
+    state.bply = atEnd ? state.bpos.positions.length - 1 : Math.min(bd.line.length, state.bpos.positions.length - 1);
+    renderAll();
+  }
+  function exitBoard(render) { const at = state.bd ? state.bd.at_move : state.move; state.mode = "game"; state.bd = null; state.bpos = null; state.bply = 0; state.move = at; if (render) renderAll(); }
+  function refreshBoard(atEnd) {
+    if (state.mode !== "board" || !state.bd) return;
+    const k = state.bply; enterBoard(live.boards.get(state.bd.id) || state.bd, atEnd);
+    if (!atEnd && k !== state.bply) { state.bply = Math.min(k, state.bpos.positions.length - 1); renderAll(); }
+  }
+  function answerable(bd) { return !!bd.ask && live.canAnswer && !!live.db; }
+  function addAnswerMove(idx) {
+    const bd = state.bd; if (!bd || !answerable(bd) || live.sending === bd.id) return;
+    const base = live.drafts.get(bd.id) || (live.answers.get(bd.id) ? live.answers.get(bd.id).moves.slice() : []);
+    const moves = bd.ask === "move" ? [] : base.slice();
+    // replay the line and the answer so far, then check the clicked move
+    const pos = Core.playLine(game.positions[bd.at_move], bd.line.concat(moves)).positions;
+    const firstColor = bd.ask_color === "W" ? W : B;
+    const color = moves.length % 2 === 0 ? firstColor : (firstColor === B ? W : B);
+    const before = pos[pos.length - 1], beforePrev = pos.length >= 2 ? pos[pos.length - 2] : null;
+    const r = Core.legalPlay(before, color, idx, beforePrev);
+    if (!r.ok) { live.msg[bd.id] = { warn: true, text: "Not playable: " + r.reason + "." }; renderBoards(); return; }
+    moves.push((color === B ? "B" : "W") + Core.gtp(idx));
+    live.drafts.set(bd.id, moves); live.msg[bd.id] = null;
+    enterBoard(bd, true);
+  }
+  function undoAnswer(bd) { const d = (live.drafts.get(bd.id) || (live.answers.get(bd.id) || { moves: [] }).moves).slice(); d.pop(); live.drafts.set(bd.id, d); enterBoard(bd, true); }
+  function clearAnswer(bd) { live.drafts.set(bd.id, []); enterBoard(bd, true); }
+  async function sendAnswer(bd) {
+    const moves = live.drafts.get(bd.id); if (!moves || !moves.length || !live.db) return;
+    live.sending = bd.id; live.msg[bd.id] = { text: "Sending…" }; renderBoards();
+    try {
+      await live.db.doc("answers/" + bd.id).set({ board: bd.id, moves: moves.slice(), sent_at: new Date().toISOString() });
+      live.answers.set(bd.id, { moves: moves.slice() }); live.drafts.delete(bd.id);
+      live.msg[bd.id] = { text: "Sent. Tell Claude “done” in the chat." };
+    } catch (e) {
+      live.msg[bd.id] = { warn: true, text: "Could not save the answer (" + ((e && e.code) || "error") + "). Type it in the chat instead: " + fmtMoves(moves, bd.line.length) + "." };
+      if (e && e.code === "invalid_argument") live.canAnswer = false;
+    }
+    live.sending = null; renderBoards();
+  }
+  // numbered as on the board: after the board's own line
+  function fmtMoves(moves, from) { return moves.map((m, k) => (k + 1 + (from || 0)) + ". " + (m[0] === "B" ? "Black" : "White") + " " + m.slice(1)).join(" · "); }
+  function renderBoards() {
+    const panel = $("live"); const list = boardsInOrder();
+    panel.hidden = !LIVE && !list.length;
+    if (panel.hidden) return;
+    $("liveHead").textContent = LIVE ? "Review in progress" : "During the review";
+    const st = $("liveStatus");
+    st.classList.toggle("warn", !live.db);
+    st.textContent = !live.db ? (LIVE ? "Live updates are not available in this view. Open the page on claude.ai, signed in; until then Claude shows the boards in the chat." : "")
+      : list.length ? (LIVE ? "Boards appear here as the review goes on. Questions are asked in the chat." : "The boards from the conversation.")
+      : "Waiting for the first board. Questions are asked in the chat.";
+    const ul = $("boardlist"); ul.innerHTML = "";
+    for (const bd of list) {
+      const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button";
+      const ans = live.answers.get(bd.id);
+      b.className = (state.mode === "board" && state.bd && state.bd.id === bd.id ? "active" : "") + (bd.seq > live.seen ? " new" : "");
+      b.innerHTML = esc(bd.title) + "<span class='r'>after move " + bd.at_move + (bd.ask ? (ans ? " · answered" : " · your answer") : "") + "</span>";
+      b.addEventListener("click", () => { live.seen = Math.max(live.seen, bd.seq); enterBoard(bd, !!(bd.ask && (live.drafts.get(bd.id) || ans))); showBoardOnPhones(); });
+      li.appendChild(b); ul.appendChild(li);
+    }
+    for (const id of live.bad) { const li = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = "bad"; b.disabled = true; b.textContent = id + ": did not arrive intact; ask Claude to send it again"; li.appendChild(b); ul.appendChild(li); }
+    const body = $("boardbody"); const bd = state.mode === "board" ? state.bd : null;
+    if (!bd) { body.innerHTML = list.length ? "<p class='commentary'><span class='empty'>Pick a board to show it.</span></p>" : ""; return; }
+    let html = "<h3>" + esc(bd.title) + "</h3><div class='meta'>the position after move " + bd.at_move + (bd.line.length ? ", then " + bd.line.length + (bd.line.length === 1 ? " move" : " moves") + " numbered on the board" : "") + "</div>";
+    if (bd.text) html += "<div class='commentary'><p>" + esc(bd.text) + "</p></div>";
+    if (bd.ask) {
+      const ans = live.answers.get(bd.id), draft = live.drafts.get(bd.id), moves = draft || (ans ? ans.moves : []);
+      const who = bd.ask_color === "W" ? "White" : "Black";
+      html += "<div class='answer'>";
+      if (!answerable(bd)) html += "<div class='how'>" + (ans ? "Your answer: " + esc(fmtMoves(ans.moves, bd.line.length)) : "Answer in the chat.") + "</div>";
+      else {
+        html += "<div class='how'>" + (bd.ask === "move" ? "Click your move on the board (" + who + " to play)." : "Click your moves on the board, starting with " + who + "; colours alternate.") + "</div>";
+        html += "<div class='moves'>" + (moves.length ? esc(fmtMoves(moves, bd.line.length)) : "<span class='empty'>No moves yet.</span>") + (ans && !draft ? " <span class='at'>(sent)</span>" : "") + "</div>";
+        html += "<div class='row'>" + (bd.ask === "line" ? "<button type='button' data-a='undo'" + (moves.length ? "" : " disabled") + ">Undo</button>" : "") +
+          "<button type='button' data-a='clear'" + (moves.length ? "" : " disabled") + ">Clear</button>" +
+          "<button type='button' class='primary' data-a='send'" + (draft && draft.length && live.sending !== bd.id ? "" : " disabled") + ">" + (ans ? "Send again" : "Send") + "</button></div>";
+      }
+      const m = live.msg[bd.id]; if (m) html += "<div class='msg" + (m.warn ? " warn" : "") + "'>" + esc(m.text) + "</div>";
+      html += "</div>";
+    }
+    body.innerHTML = html;
+    body.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => { const a = b.dataset.a; if (a === "undo") undoAnswer(bd); else if (a === "clear") clearAnswer(bd); else sendAnswer(bd); }));
+  }
+  async function onBoardRows(snap) {
+    const rows = [];
+    for (const d of snap.docs) { const r = d.data(); if (r && r.kind === "board") rows.push(r); }
+    const ok = await Promise.all(rows.map((r) => Core.rowIntact(r)));
+    const fresh = new Map(), bad = new Set();
+    rows.forEach((r, k) => {
+      if (!ok[k] || r.game_id !== D.game.id || !(r.at_move >= 0 && r.at_move <= M)) { bad.add(r.id || "?"); return; }
+      try { Core.playLine(game.positions[r.at_move], r.line || []); fresh.set(r.id, Object.assign({ line: [], highlight: [] }, r)); } catch (e) { bad.add(r.id || "?"); }
+    });
+    const newest = Array.from(fresh.values()).filter((r) => r.seq > live.seen).sort((a, b) => b.seq - a.seq)[0];
+    live.boards = fresh; live.bad = bad;
+    // follow the review: show a new board at once, unless the student is in the middle of an answer
+    const busy = state.mode === "board" && state.bd && (live.drafts.get(state.bd.id) || []).length;
+    if (newest && !busy && LIVE) { live.seen = newest.seq; enterBoard(newest, false); showBoardOnPhones(); }
+    else { if (state.mode === "board" && state.bd && !fresh.has(state.bd.id)) exitBoard(false); refreshBoard(false); renderAll(); }
+  }
+  function onAnswerRows(snap) {
+    const m = new Map(); for (const d of snap.docs) { const a = d.data(); if (a && Array.isArray(a.moves)) m.set(d.id, { moves: a.moves.slice() }); }
+    live.answers = m; refreshBoard(state.mode === "board"); renderAll();
+  }
+  async function attach(db, user) {
+    live.db = db;
+    if (!db) { renderAll(); return; }
+    let owner = null; try { owner = user ? await user.isOwner() : null; } catch (e) { owner = null; }
+    live.canAnswer = owner !== false;     // unknown: keep the controls; a refused write decides
+    db.collection("boards").onSnapshot((s) => { onBoardRows(s); }, () => { live.db = null; renderAll(); });
+    db.collection("answers").onSnapshot(onAnswerRows, () => {});
+    renderAll();
+  }
+
+  function renderAll() { drawStones(); renderReadout(); renderStrip(); drawGraph(); renderEpList(); renderEpBody(); renderBoards(); }
   renderSummary();
   const startEp = lessonEps[0] || episodes[0];
   if (startEp) { state.ep = startEp; state.move = startEp.moves[0] - 1; }
   renderAll();
+  return { attach };
+}
+
+// ---- boot: the theme, then the embedded review, or the live page's game row from the db ----------
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const themeBtn = $("themeBtn"), themes = ["auto", "light", "dark"];
+  let theme = "auto"; try { theme = localStorage.getItem("goreview-theme") || "auto"; } catch (e) {}
+  function applyTheme() {
+    if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
+    themeBtn.textContent = "Theme: " + theme;
+    try { localStorage.setItem("goreview-theme", theme); } catch (e) {}
+  }
+  themeBtn.addEventListener("click", () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; applyTheme(); });
+  applyTheme();
+
+  let D; try { D = JSON.parse($("data").textContent); } catch (e) { document.body.innerHTML = "<p style='padding:20px'>The review data could not be read.</p>"; return; }
+  if (D.__placeholder__) { $("epbody").innerHTML = "<p class='commentary'><span class='empty'>This template has no review data yet. Build it with build_dashboard.py.</span></p>"; return; }
+  const caps = (window.claude && typeof window.claude.use === "function")
+    ? Promise.all([window.claude.use("db").catch(() => null), window.claude.use("user").catch(() => null)]) : Promise.resolve([null, null]);
+  if (!D.__live__) { const app = App(D); caps.then(([db, user]) => app.attach(db, user)); return; }
+
+  // live page: nothing of the engine until the lessons; the game record arrives as a checksummed db row
+  $("graphPanel").hidden = true; $("lesson").hidden = true; $("summary").hidden = true; $("live").hidden = false;
+  $("liveStatus").textContent = "Connecting…";
+  caps.then(([db, user]) => {
+    if (!db) { $("liveStatus").textContent = "Live updates are not available in this view. Open the page on claude.ai, signed in; until then Claude shows the boards in the chat."; $("liveStatus").classList.add("warn"); return; }
+    $("liveStatus").textContent = "Waiting for the game record…";
+    let app = null, shown = null;
+    db.doc("review/game").onSnapshot(async (snap) => {
+      const row = snap.exists ? snap.data() : null;
+      if (!row) return;
+      if (!(await Core.rowIntact(row))) { $("liveStatus").textContent = "The game record did not arrive intact; ask Claude to send it again."; $("liveStatus").classList.add("warn"); return; }
+      if (app) { if (row.sha256 !== shown) { $("liveStatus").textContent = "The game record changed: reload the page."; } return; }
+      $("liveStatus").classList.remove("warn");
+      shown = row.sha256; app = App(Core.fromGameRow(row)); app.attach(db, user);
+    }, () => { $("liveStatus").textContent = "Lost the connection to the live data; reload the page."; });
+  });
 })();
 </script>
 </body>

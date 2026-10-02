@@ -1,11 +1,12 @@
-# katago-mcp — Tool Contract (v0.4.0, as implemented in katago-mcp 0.3.0)
+# katago-mcp — Tool Contract (v0.5.0, as implemented in katago-mcp 0.4.0)
 
-**Status:** current; describes the implemented server, 24 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
+**Status:** current; describes the implemented server, 25 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
-Two design points worth knowing up front:
+Design points worth knowing up front:
 1. The self-review minutes are part of the total time you give, so the budget formula reserves them (§1.2).
 2. Numeric dashboard data cannot pass through Claude by retyping without error, so `validate_variations` also assembles the complete dashboard data blob and returns it with a checksum (§1.17, §5).
 3. A tool call blocks Claude's turn, so Claude cannot talk to the student while a probe runs. The verification probes therefore run in the background (`start_verification`, §1.22) while Claude interviews the student, and the server keeps their results sealed per episode until the interview answer is recorded (§1.23).
+4. The student follows the review on one page, published live in Phase 0. Positions and lines reach it as rows Claude writes to the page's database, made by `dashboard_row` (§1.25) with a checksum the page verifies, not as ASCII diagrams in chat.
 
 ---
 
@@ -593,7 +594,7 @@ type RenderOptions = { mark_last?: boolean = true; overlay?: null | "ownership" 
 ```
 **Output.** `{ position_ref: PositionRef; to_move: Color; last_move: Move | null; captures: { B: number; W: number }; ascii: string; overlay_ascii?: string; legend: string; low_liberty_groups?: { label: string; liberties: number; liberty_points: Point[] }[];
   line?: { moves: Move[]; first: Color; notes: string[]; end_ref: PositionRef } }`
-**Behavior.** Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. With `line`, `ascii` is a numbered diagram of the sequence (§4.1) instead of the position with its last move: no engine call, so it may be shown while results are sealed. `position_ref`, `to_move`, `last_move`, `captures` and any overlay still describe `position`; `line.end_ref` is the position after the line (render or analyze it next, e.g. for a line longer than 35 moves). `notes` carries what the grid cannot: `"4 at 1"` (a move on a point already labelled), `"2 captures 1 stone (1 among them)"`, `"5: W passes"`. **Errors.** `unknown_ref`, `illegal_move`, `wrong_color` (a `line` move of the side not to move), `bad_request` (a `line` longer than 35 moves), `sealed` (an overlay at a sealed episode's position, §0.8).
+**Behavior.** Since v0.5 the review shows positions and lines on the live page (`dashboard_row`, §1.25); `render_board` is the chat fallback when the page cannot be used, and remains the tool for overlays. Format in §4. Overlays need ownership/policy: cached if present, else a `quick` search. With `line`, `ascii` is a numbered diagram of the sequence (§4.1) instead of the position with its last move: no engine call, so it may be shown while results are sealed. `position_ref`, `to_move`, `last_move`, `captures` and any overlay still describe `position`; `line.end_ref` is the position after the line (render or analyze it next, e.g. for a line longer than 35 moves). `notes` carries what the grid cannot: `"4 at 1"` (a move on a point already labelled), `"2 captures 1 stone (1 among them)"`, `"5: W passes"`. **Errors.** `unknown_ref`, `illegal_move`, `wrong_color` (a `line` move of the side not to move), `bad_request` (a `line` longer than 35 moves), `sealed` (an overlay at a sealed episode's position, §0.8).
 
 ---
 
@@ -845,6 +846,42 @@ A sealed episode returns its `EpisodeView` (states only) and a `note`. `stabilit
 
 ---
 
+### 1.25 `dashboard_row`
+**Purpose.** Make a row for the live review page: the game record, or a board (a position of the game with an optional line, marked points, a question, and an answer the student gives by clicking). Claude writes the row unchanged to the page's `db` with ArtifactData; the page checks its SHA-256 and shows it. No engine, so it is allowed while results are sealed.
+
+**Inputs.**
+```ts
+{ kind: "game" | "board";
+  game: string;                          // a job_id, or the OGS link/id or .sgf name (before the survey exists)
+  board?: { id?: string;                 // [A-Za-z0-9_-]; default "b01", "b02", … in the order made
+            title: string;               // the list label
+            text?: string;               // the question or note, one or two sentences
+            at_move: number;             // the position after this move (0 = setup only)
+            line?: (string | LineStep)[];// moves from there, numbered on the board; colours alternate from the side to move
+            highlight?: Point[];         // marked with a square
+            ask?: "move" | "line";       // the student answers by clicking one move, or a sequence, starting with ask_color
+            episode?: string } }
+```
+**Output.**
+```ts
+{ collection: "review" | "boards"; doc_id: "game" | string;
+  row: GameRow | BoardRow;              // write as the document's data exactly as returned
+  write: string; query_id: string }
+type GameRow = { kind: "game"; game_id: string; you: Color | null; players: { B: { name; rank }; W: { name; rank } };
+                 handicap: number; komi: string /* "6.5": no float formatting to disagree on */; rules: Rules; result: string;
+                 date: string | null; first_to_move: Color; setup: { AB: Point[]; AW: Point[] }; moves: string[] /* "BQ16" */;
+                 sha256: string };
+type BoardRow = { kind: "board"; id: string; seq: number; game_id: string; title: string; text: string; at_move: number;
+                  line: string[]; highlight: Point[]; ask: "move" | "line" | null; ask_color: Color | null; episode: string | null;
+                  sha256: string };
+```
+**Behavior.** `line` is legality-checked from the position after `at_move` (errors as `record_interview`); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`).
+
+**The page side** (review-dashboard skill). The live page (`build_dashboard.py --live`) is published with `capabilities: { db: { rules: [{ path: "", read: "view", write: "owner" }] }, user: {} }` and reads `review/game`, `boards/*` and `answers/*`. It shows no engine data: no score, graph or ownership. A row whose checksum fails is listed as "did not arrive intact". The student's answer to a board with `ask` is written by the page to `answers/<board id>` as `{ board, moves: string[] /* "WQ7" */, sent_at }` (one move for `ask: "move"`); the page refuses an occupied point, suicide and an immediate ko retake, and `record_interview` checks the moves again. The Phase 6 dashboard is republished to the same URL; the `db` survives the republish, and the page lists its boards under "During the review".
+**Cost.** None. **Errors.** `bad_request` (unknown `kind`, no `title`, `at_move` out of range, a bad `ask` or `highlight` point), `illegal_move`, `wrong_color`, `invalid_sgf`, `job_not_found`.
+
+---
+
 ## 2. Tool × mechanic map
 
 | Mechanic (from the plan) | Tools |
@@ -866,6 +903,7 @@ A sealed episode returns its `EpisodeView` (states only) and a `note`. `stabilit
 | Result reconciliation | `job_results.game.reconciliation` |
 | Time budget | `plan_budget`, `engine_info` |
 | Verification during the interviews; sealed results | `start_verification`, `record_interview`, `verification_results` |
+| The live review page: boards instead of chat diagrams, answers clicked on the board | `dashboard_row` |
 
 ---
 
@@ -980,7 +1018,7 @@ The exported JSON is what `validate_variations` assembles (§1.17) and what the 
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.4.0", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.5.0", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
@@ -1093,6 +1131,7 @@ reviews/
     queries.jsonl         # one line per tool call: query_id, timestamp, tool, arguments, KataGo query ids, visits, seconds, cached, result summary
     plan.json             # the active plan and its re-plans
     export-<n>.json       # each dashboard_data blob returned by validate_variations, with its sha256
+    dashboard_rows.jsonl  # every row made by dashboard_row (the game record, the boards), in order
   _adhoc/
     queries.jsonl
 ```
@@ -1144,3 +1183,8 @@ Changes from v0.3.1 to v0.4.0 (verification during the interviews):
 3. A finished survey with a plan precomputes the answer-free probes of its top episodes (§1.4, `[verification].speculative_episodes`).
 4. `plan_budget` (§1.2): the interviews overlap the engine (`overlap`, `overlapped_with_interviews_minutes`, `engine_minutes`); a student-line allowance `L` (`student_lines_per_episode`, `per_episode.student_lines`); a re-plan keeps the earlier sizes when background results exist (`keep_sizes`). The M5 worked example climbs one ladder step further (root 6000).
 5. Human-policy queries carry the caller's KataGo priority (they were sent at 0, behind the survey).
+
+Changes from v0.4.0 to v0.5.0 (the review page grows with the review):
+
+1. New `dashboard_row` (§1.25): checksummed rows for the live review page (the game record; boards with a line, marked points, a question and an answer clicked on the board). The page is published in Phase 0 with the `db` capability and rebuilt in place in Phase 6; it shows no engine data before the lessons.
+2. `render_board` is the chat fallback for positions and lines when the page cannot be used (§1.16).

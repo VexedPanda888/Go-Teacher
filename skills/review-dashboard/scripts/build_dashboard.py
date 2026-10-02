@@ -2,12 +2,14 @@
 """Build a review dashboard from the checksummed data blob produced by katago-mcp's validate_variations.
 
 Usage
+  build_dashboard.py --live --out review.html            # Phase 0: the live page (boards arrive through its db)
   build_dashboard.py --export reviews/<game_id>/export-1.json --out review.html
   build_dashboard.py --blob blob.json --sha <sha256 from validate_variations> --out review.html
   (add --template path/to/dashboard.html to use another template; default: ../template/dashboard.html)
 
 The script refuses to build if the SHA-256 of the canonical JSON does not match: the dashboard only ever
-shows data that came out of the engine unchanged.
+shows data that came out of the engine unchanged. The live page embeds no data at all: it reads the game
+record and the boards from its db, as rows made by katago-mcp's dashboard_row, and checks their SHA-256 itself.
 """
 from __future__ import annotations
 
@@ -68,8 +70,25 @@ def check_shape(data: dict) -> list[str]:
     return problems
 
 
+MARKER = '<script id="data" type="application/json">{"__placeholder__": true}</script>'
+
+
+def build_live(template: str, out: Path, title: str | None) -> None:
+    html = template.replace(MARKER, '<script id="data" type="application/json">{"__live__":true}</script>')
+    html = html.replace("<title>Go review</title>", f"<title>{_esc(title or 'Go review')}</title>", 1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size:,} bytes), live page: publish it with the db capability, then write the rows")
+
+
+def _esc(t: str) -> str:
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--live", action="store_true", help="the live page for Phase 0 (no blob)")
+    ap.add_argument("--title", help="page title (with --live), e.g. 'Go review: vs rival'")
     ap.add_argument("--export")
     ap.add_argument("--blob")
     ap.add_argument("--sha")
@@ -77,6 +96,12 @@ def main() -> int:
     ap.add_argument("--template", default=str(HERE.parent / "template" / "dashboard.html"))
     ap.add_argument("--allow-mismatch", action="store_true", help="build anyway (for template work only)")
     args = ap.parse_args()
+    template = Path(args.template).read_text(encoding="utf-8")
+    if MARKER not in template:
+        sys.exit("template has no data placeholder")
+    if args.live:
+        build_live(template, Path(args.out), args.title)
+        return 0
     data, expected = load(args)
     got = hashlib.sha256(canonical(data).encode("utf-8")).hexdigest()
     if got != expected:
@@ -87,12 +112,8 @@ def main() -> int:
     problems = check_shape(data)
     if problems:
         sys.exit("data shape problems:\n  " + "\n  ".join(problems))
-    template = Path(args.template).read_text(encoding="utf-8")
-    marker = '<script id="data" type="application/json">{"__placeholder__": true}</script>'
-    if marker not in template:
-        sys.exit("template has no data placeholder")
     payload = canonical(data).replace("</", "<\\/").replace("<!--", "<\\!--")
-    html = template.replace(marker, f'<script id="data" type="application/json">{payload}</script>')
+    html = template.replace(MARKER, f'<script id="data" type="application/json">{payload}</script>')
     opp = data["game"].get("opponent") or "opponent"
     html = html.replace("<title>Go review</title>", f"<title>Go review: vs {opp}</title>", 1)
     out = Path(args.out)

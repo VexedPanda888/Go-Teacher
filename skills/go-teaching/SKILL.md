@@ -163,6 +163,10 @@ Ask before showing any engine result, one or two at a time. Always these four:
    had to? (c) Where do you think your opponent made their biggest mistake, and did you take advantage?
 4. Is there a habit from earlier reviews you think showed up again? Where?
 
+When an answer is a move or a position, put that position on the page as a board (review-dashboard,
+"The page lives the whole review"). For question 2 a board with `ask: "move"` lets the student click
+the move where the game turned instead of typing it.
+
 Only while the survey is still running, add from: rate your position at move ~50 / ~100 / the end
 (ahead, close, behind — by how much?); which move are you proudest of?; (handicap) at which move did the
 handicap stop mattering?; (resigned games) was resigning right?
@@ -176,16 +180,19 @@ misjudged → `seen`, blind spot → `blind_spot`. The game record keeps the thr
 
 ### 4.2 Episode interview (Phase 3b, one question per selected episode, ~5 minutes)
 
-After triage, before any engine result about the episode is shown, show the position before the
-student's move (`render_board`, no overlay) and ask, one episode at a time, in the `interview_order`
-that `start_verification` returned (the engine is already working on these episodes):
+After triage, before any engine result about the episode is shown, send the position before the
+student's move as a board: `at_move: N − 1`, their move X as the `line` and in `highlight`, `ask:
+"line"`. Ask, one episode at a time, in the `interview_order` that `start_verification` returned (the
+engine is already working on these episodes):
 
-> "Move N, you played X. What was it for, and what did you expect to happen next?"
+> "Move N, you played X (on the page). What was it for? And what did you expect to happen next? Click
+> it on the board, starting with your opponent's reply, then press Send."
 
-If they name a sequence, ask them to give it as moves, and show it back to them with `render_board`
-(`options.line`) so they can confirm it is the line they meant. Save the answers verbatim in `thinking.md`
-and pass them straight to `record_interview` (the answer, the confirmed line as `expected_line`, a
-better move they name as `fix`) before asking about the next episode. That starts the probes that need
+They answer the *what for* in chat and click the *what next* on the board. Read their moves from
+`answers/<board id>`; that line is already the one they meant, so there is nothing to type back. If
+they answer the line in words instead, put it on a board (`line`) for them to confirm. Save the answers
+verbatim in `thinking.md` and pass them straight to `record_interview` (the answer, the clicked line as
+`expected_line`, a better move they name as `fix`) before asking about the next episode. That starts the probes that need
 the answer while the interview goes on. Then:
 - A **stated belief** overrides the inferred one; the lesson's part 3 quotes it.
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
@@ -202,13 +209,13 @@ Record each answer with `record_interview` on its episode. Stop as soon as the q
 make the student wait for a question. At most one line per episode is budgeted
 (`per_episode.student_lines`).
 
-1. **Find the better move.** Show the position before an interviewed episode's move (`render_board`):
-   "Move N again: knowing it cost something, what would you play now?" Record their move as `fix`; it
-   is tested like their own fix. Say nothing about it until the lesson. Trying first makes the answer
+1. **Find the better move.** Send the position before an interviewed episode's move as a board with
+   `ask: "move"`: "Move N again: knowing it cost something, what would you play now? Click it." Record
+   their move as `fix`; it is tested like their own fix. Say nothing about it until the lesson. Trying first makes the answer
    stick, and a refuted guess goes into the self-review comparison.
 2. **Read the resistance.** Take a move from the student's own expected line: "If White doesn't answer
-   at X, how do you continue?" Show their answer with `render_board` (`options.line`). Record it in
-   `lines` (`from: "after"` when it starts after their move).
+   at X, how do you continue?" Send a board of their line up to that point with `ask: "line"`, and
+   record what they click in `lines` (`from: "after"` when it starts after their move).
 3. **How sure were you?** "At the time, how sure were you about move N, from 1 to 5?" Record it as
    `confidence`. A confident misread and a guess are different lessons.
 4. **The watch-list.** For a category on the memory watch-list: "Your list has *defending groups that
@@ -236,11 +243,13 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - Difficult correct moves are lessons too: one strength per review, with its move number.
 - GTP coordinates only. Never invent one: copy points from tool results; when unsure, ask the tool again.
 - Every line visible. Whenever you name two or more moves in a row in chat (the student's expected line,
-  a refutation, a better line, an answer to a follow-up), show it the same turn with `render_board`
-  and `options.line`, and copy `line.notes` under the diagram. It uses no engine, so it is allowed while
-  results are sealed; what is sealed is any evaluation of the line, not the diagram. After the dashboard
-  is published, every line you test for the student also goes on the page (review-dashboard,
-  "Follow-up questions").
+  a refutation, a better line, an answer to a follow-up), put it on the page the same turn as a board
+  (`dashboard_row` with `line`) and say so ("on the page: Your line at move 41"). A board uses no
+  engine, so it is allowed while results are sealed; what is sealed is any evaluation of the line, and
+  any engine line about an episode before its interview is recorded. After the dashboard is published,
+  every line you test for the student also goes on the page as a validated branch (review-dashboard,
+  "Follow-up questions"). Only when the page cannot be used: `render_board` with `options.line` in chat,
+  with `line.notes` copied under the diagram.
 - Do not compute Go on your own (liberties, ladders, life and death) for the student; use the tool and
   report what it says, in your words.
 - Concept words, liberty counts and the *why* (the end comparison, never the score delta): §3.

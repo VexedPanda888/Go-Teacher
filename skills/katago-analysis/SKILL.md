@@ -157,9 +157,9 @@ A human proof is a narrow tree of must-moves ending in a position the student ca
   the same tree; record them all in the ledger.
 
 `analyze_line` stays available for arbitrary sequences (a ko fight, a line the student proposes in
-conversation) and for `refutation_probability`. Show any line you discuss with `render_board`
-(`options.line`, go-teaching §6); after the dashboard is published, add it to the page (review-dashboard,
-"Follow-up questions").
+conversation) and for `refutation_probability`. Show any line you discuss on the review page as a board
+(`dashboard_row`, go-teaching §6); after the dashboard is published, add it to the page as a validated
+branch (review-dashboard, "Follow-up questions").
 
 ## 5. Stability protocol
 
