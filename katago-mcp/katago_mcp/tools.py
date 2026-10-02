@@ -314,13 +314,13 @@ class Tools:
                 base = self.jobs.spec_at(job.game, mn)
                 game_id = job.game_id
             elif "sgf" in spec:
-                text, _hint, _src = self._resolve_sgf(spec["sgf"])
+                text, hint, _src = self._resolve_sgf(spec["sgf"])
                 game = parse(text)
                 mn = int(spec.get("move_number", len(game.moves)))
                 if not 0 <= mn <= len(game.moves):
                     raise ToolError("bad_request", f"move_number must be 0..{len(game.moves)}")
                 base = self.jobs.spec_at(game, mn)
-                game_id, mn = None, mn
+                game_id = hint or game_id_of(game, text)
             elif "moves" in spec or "setup" in spec:
                 setup = spec.get("setup") or {}
                 sb = [gtp_to_idx(p) for p in setup.get("B", [])]

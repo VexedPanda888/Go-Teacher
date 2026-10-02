@@ -160,6 +160,32 @@ class TestSgf(unittest.TestCase):
         self.assertTrue(any("komi" in w.lower() for w in g.warnings))
 
 
+    def test_setup_before_the_first_move_joins_the_setup(self):
+        g = sgf.parse("(;GM[1]SZ[19]HA[2]KM[0.5];AB[dp][pd];W[dd])")
+        self.assertEqual(sorted(g.setup_black), sorted([gtp_to_idx("D4"), gtp_to_idx("Q16")]))
+        self.assertEqual(g.first_to_move, WHITE)
+        self.assertFalse(any("handicap stones missing" in w for w in g.warnings))
+
+    def test_setup_after_a_move_is_refused(self):
+        with self.assertRaises(sgf.SgfError):
+            sgf.parse("(;GM[1]SZ[19];B[pd];AB[dd];W[dp])")
+
+    def test_compressed_point_lists(self):
+        g = sgf.parse("(;GM[1]SZ[19]AB[aa:bc]AW[dd]AE[dd];W[pd])")
+        self.assertEqual(sorted(g.setup_black), [gtp_to_idx(p) for p in ("A19", "B19", "A18", "B18", "A17", "B17")])
+        self.assertEqual(g.setup_white, [])
+
+    def test_bad_points_are_sgf_errors(self):
+        with self.assertRaises(sgf.SgfError):
+            sgf.parse("(;GM[1]SZ[19];B[zz])")
+
+    def test_results_in_any_case(self):
+        for raw, want in (("b+r", ("B", None, "resign")), ("W+Time", ("W", None, "time")),
+                          ("w+3.5", ("W", 3.5, "score")), ("draw", (None, 0.0, "score"))):
+            r = sgf.SgfGame(result_raw=raw).result()
+            self.assertEqual((r["winner"], r["margin"], r["method"]), want, raw)
+
+
 class TestRegions(unittest.TestCase):
     def test_partition_sizes(self):
         parts = standard_partition(19)

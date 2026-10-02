@@ -492,6 +492,30 @@ class HandicapDigestTest(unittest.TestCase):
             t.close()
 
 
+class SharedOpeningTest(unittest.TestCase):
+    def test_each_game_keeps_its_own_positions(self):
+        """Two games with the same moves, the student Black in one and White in the other: a position
+        of the second game is the second game's, even where the first game reached it first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = make_tools(tmp, student__username="cwhay888")
+            g1 = synthetic_game(30, seed=7)
+            g2 = (g1.replace("PB[cwhay888]", "PB[tmp]").replace("PW[rival]", "PW[cwhay888]").replace("PB[tmp]", "PB[rival]")
+                  .replace("game/1007", "game/2007"))
+            jobs = []
+            for sgf in (g1, g2):
+                r = t.start_game_analysis(sgf, {"visits_per_move": 60})
+                t.wait_for_job(r["job_id"], 0.05, timeout=20)
+                jobs.append(r)
+            self.assertNotEqual(jobs[0]["game_id"], jobs[1]["game_id"])
+            for r, colour in zip(jobs, ("B", "W")):
+                ref = t.get_position_ref(r["job_id"], move_number=3)
+                self.assertEqual(ref["game_id"], r["game_id"])
+                a = t.analyze_position({"job_id": r["job_id"], "move_number": 3}, {"visits": 20})
+                self.assertEqual(a["perspective"], colour)
+                self.assertEqual(t.analyze_position({"ref": ref["position_ref"]}, {"visits": 20})["perspective"], colour)
+            t.close()
+
+
 class RestartGuardTest(unittest.TestCase):
     """A survey restarts KataGo only when its memory is above [katago].restart_above_mb."""
 

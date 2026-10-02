@@ -52,11 +52,15 @@ class PositionRecord:
         return PositionRecord(spec, d["ref"], d.get("game_id"), d.get("move_number"))
 
 
-def make_ref(spec: PositionSpec, board: Board | None = None) -> str:
+def make_ref(spec: PositionSpec, board: Board | None = None, game_id: str | None = None) -> str:
+    """A position's ref.  It names the game too: the same opening in two games gets two refs, so each
+    resolves to its own game's student colour, plan and log."""
     board = board or spec.board()
     h = hashlib.sha1()
     h.update(f"{spec.rules}|{spec.komi}|{spec.size}|{board.board_hash}|{board.to_move}|{board.ko_point}|"
              f"{board.history_hash}".encode())
+    if game_id is not None:
+        h.update(f"|{game_id}".encode())
     return "pos_" + h.hexdigest()[:16]
 
 
@@ -77,14 +81,14 @@ class Store:
     def put_position(self, spec: PositionSpec, game_id: str | None = None, move_number: int | None = None,
                      persist: bool = True) -> PositionRecord:
         board = spec.board()
-        ref = make_ref(spec, board)
+        ref = make_ref(spec, board, game_id)
         with self._lock:
             rec = self.positions.get(ref)
             if rec is None:
                 rec = PositionRecord(spec, ref, game_id, move_number, board)
                 self.positions[ref] = rec
-            elif rec.game_id is None and game_id is not None:
-                rec.game_id, rec.move_number = game_id, move_number
+            elif rec.move_number is None and move_number is not None:
+                rec.move_number = move_number
         if persist:
             d = self.game_dir(rec.game_id) / "positions"
             d.mkdir(parents=True, exist_ok=True)

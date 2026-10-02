@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import subprocess
@@ -23,6 +24,8 @@ from .board import BLACK, WHITE, COLOR_CHAR, Board, IllegalMove, opponent
 from pathlib import Path
 
 from .coords import gtp_to_idx, idx_to_gtp, star_points
+
+log = logging.getLogger("katago_mcp")
 
 
 class EngineError(Exception):
@@ -279,6 +282,12 @@ class KataGoEngine:
                     continue
                 if "error" in msg:
                     raise EngineError("internal", f"katago error: {msg['error']}", True)
+                if "warning" in msg and "rootInfo" not in msg:
+                    # a warning about one field of the query; the real response still follows
+                    log.warning("katago warning for %s (%s): %s", qid, msg.get("field"), msg["warning"])
+                    continue
+                if msg.get("noResults"):
+                    raise EngineError("internal", f"katago query {qid} was terminated before it was searched", True)
                 if msg.get("isDuringSearch"):
                     if on_report and on_report(msg):
                         self.terminate(qid)

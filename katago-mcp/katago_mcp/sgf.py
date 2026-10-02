@@ -1,7 +1,7 @@
 """Minimal SGF parser for OGS game records (main line only).
 
 Handles: FF[4] collections, escaped values, multi-valued properties (AB/AW),
-setup stones, handicap, komi, rules, result, players and ranks, dates, the
+compressed point lists (aa:cc), setup stones (also in nodes before the first move), handicap, komi, rules, result, players and ranks, dates, the
 OGS game id, time settings, and whether per-move clock properties exist.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 
 from .board import BLACK, WHITE
-from .coords import sgf_to_idx
+from .coords import CoordError, sgf_to_idx
 
 # An online-go.com game link (game/N, game/view/N, api/v1/games/N): the game id in group 1.
 OGS_GAME_RE = re.compile(r"online-go\.com/(?:api/v1/games/|game/)?(?:view/)?(\d+)")
@@ -152,20 +152,20 @@ class SgfGame:
         out = {"raw": raw, "winner": None, "margin": None, "method": "unknown"}
         if not raw or raw in ("?", "Void"):
             return out
-        if raw in ("0", "Draw", "Jigo"):
+        if raw.lower() in ("0", "draw", "jigo"):
             out["method"] = "score"
             out["margin"] = 0.0
             return out
-        m = re.match(r"^([BW])\+(.*)$", raw)
+        m = re.match(r"^([BW])\+(.*)$", raw, re.IGNORECASE)
         if not m:
             return out
-        out["winner"] = m.group(1)
-        rest = m.group(2).strip()
-        if rest in ("R", "Resign"):
+        out["winner"] = m.group(1).upper()
+        rest = m.group(2).strip().lower()
+        if rest in ("r", "resign"):
             out["method"] = "resign"
-        elif rest in ("T", "Time"):
+        elif rest in ("t", "time"):
             out["method"] = "time"
-        elif rest in ("F", "Forfeit"):
+        elif rest in ("f", "forfeit"):
             out["method"] = "forfeit"
         else:
             try:
@@ -213,7 +213,43 @@ def rank_stronger_by(rank: str, stones: int) -> str:
     return f"{min(level + 1, 9)}d"
 
 
+def _points(values: list[str], size: int) -> list[int]:
+    """Point values of a setup property; 'aa:cc' is the rectangle from aa to cc (FF[4] compressed lists)."""
+    out = []
+    for v in values:
+        if ":" in v:
+            a, b = (sgf_to_idx(p, size) for p in v.split(":", 1))
+            if a is None or b is None:
+                raise SgfError(f"bad point rectangle {v!r}")
+            (r1, c1), (r2, c2) = divmod(a, size), divmod(b, size)
+            out += [r * size + c for r in range(min(r1, r2), max(r1, r2) + 1)
+                    for c in range(min(c1, c2), max(c1, c2) + 1)]
+        else:
+            idx = sgf_to_idx(v, size)
+            if idx is not None:
+                out.append(idx)
+    return out
+
+
+def _apply_setup(g: SgfGame, node: dict) -> None:
+    """AB / AW / AE of one node onto the setup stones; a point placed again changes colour, AE clears it."""
+    for prop, mine in (("AB", g.setup_black), ("AW", g.setup_white), ("AE", None)):
+        for idx in _points(node.get(prop, []), g.size):
+            for lst in (g.setup_black, g.setup_white):
+                if idx in lst:
+                    lst.remove(idx)
+            if mine is not None:
+                mine.append(idx)
+
+
 def parse(text: str) -> SgfGame:
+    try:
+        return _parse(text)
+    except CoordError as e:
+        raise SgfError(str(e)) from None
+
+
+def _parse(text: str) -> SgfGame:
     nodes = _parse_collection(text)
     root = nodes[0]
     g = SgfGame(root=root)
@@ -222,21 +258,12 @@ def parse(text: str) -> SgfGame:
         g.size = int(size_v.split(":")[0])
     except ValueError:
         raise SgfError(f"bad SZ {size_v!r}") from None
-    for v in root.get("AB", []):
-        idx = sgf_to_idx(v, g.size)
-        if idx is not None:
-            g.setup_black.append(idx)
-    for v in root.get("AW", []):
-        idx = sgf_to_idx(v, g.size)
-        if idx is not None:
-            g.setup_white.append(idx)
+    _apply_setup(g, root)
     if "HA" in root:
         try:
             g.handicap = int(root["HA"][0])
         except ValueError:
             g.warnings.append(f"unreadable HA {root['HA'][0]!r}")
-    if g.handicap and not g.setup_black:
-        g.warnings.append("HA present but no AB stones; handicap stones missing from the record")
     if "KM" in root:
         try:
             g.komi = float(root["KM"][0])
@@ -267,14 +294,23 @@ def parse(text: str) -> SgfGame:
         except ValueError:
             pass
     g.overtime = root.get("OT", [None])[0]
-    # moves along the main line; setup stones may also appear in later nodes (rare)
-    for node in nodes[1:] if ("B" not in root and "W" not in root) else nodes:
+    # moves along the main line; setup stones in nodes before the first move join the setup (some
+    # editors put the handicap stones there); stones added or removed after a move cannot be
+    # represented as setup + moves, so such a record is refused rather than analysed wrongly
+    for n, node in enumerate(nodes):
+        if n > 0 and any(p in node for p in ("AB", "AW", "AE")):
+            if g.moves:
+                raise SgfError(f"stones are added or removed after move {len(g.moves)} (AB/AW/AE in a later node); "
+                               "only setup before the first move is supported")
+            _apply_setup(g, node)
         if "B" in node:
             g.moves.append((BLACK, sgf_to_idx(node["B"][0], g.size)))
         elif "W" in node:
             g.moves.append((WHITE, sgf_to_idx(node["W"][0], g.size)))
         if "BL" in node or "WL" in node:
             g.per_move_times = True
+    if g.handicap and not g.setup_black:
+        g.warnings.append("HA present but no AB stones; handicap stones missing from the record")
     if g.komi is None:
         g.komi = 0.5 if g.handicap >= 2 else 6.5
     return g

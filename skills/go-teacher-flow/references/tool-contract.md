@@ -1,4 +1,4 @@
-# katago-mcp — Tool Contract (v0.5.0, as implemented in katago-mcp 0.4.0)
+# katago-mcp — Tool Contract (v0.5.1, as implemented in katago-mcp 0.4.1)
 
 **Status:** current; describes the implemented server, 25 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Values marked *config* live in the per-machine config file (§6) and are tuned in WS8. Numbers in examples are illustrative — real values come from the WS1 benchmarks.
 
@@ -29,7 +29,7 @@ type Position =
 type PositionRef = string   // "pos_" + 16 hex chars
 type Rules = "japanese" | "chinese" | "korean" | "aga" | "tromp-taylor"   // v1 default: "japanese"
 ```
-- A `PositionRef` hashes rules, komi, board, side to move, ko state and the position history (for superko). Refs are persisted under `reviews/<game_id>/positions/` and survive server restarts.
+- A `PositionRef` hashes rules, komi, board, side to move, ko state, the position history (for superko) and the game it belongs to: a position of a job or an SGF belongs to that game, one given as `moves` to none. The same opening in two games has two refs, each with its own game's student colour, plan and log. Refs are persisted under `reviews/<game_id>/positions/` and survive server restarts.
 - Every response that involves a position includes its `position_ref`, so Claude chains calls without resending moves.
 - `then` moves are legality-checked (occupied point, suicide, ko, superko per the rules). An illegal move returns `illegal_move` with the ply and reason.
 
@@ -1188,3 +1188,9 @@ Changes from v0.4.0 to v0.5.0 (the review page grows with the review):
 
 1. New `dashboard_row` (§1.25): checksummed rows for the live review page (the game record; boards with a line, marked points, a question and an answer clicked on the board). The page is published in Phase 0 with the `db` capability and rebuilt in place in Phase 6; it shows no engine data before the lessons.
 2. `render_board` is the chat fallback for positions and lines when the page cannot be used (§1.16).
+
+Changes from v0.5.0 to v0.5.1 (fixes):
+
+1. A `PositionRef` names its game (§0): the same position in two games has two refs, so each resolves to its own game's student colour, plan and log. A position given as `{sgf, move_number}` now belongs to that SGF's game.
+2. SGF input: setup stones in nodes before the first move join the setup; stones added or removed after a move are refused (`invalid_sgf`), not dropped; compressed point lists (`aa:cc`) and results in any case (`b+r`) are read.
+3. A KataGo warning about a query field is logged and the query waits for the real result (it was taken as the result: 0 visits, no candidates); a query terminated before it was searched is an error.
