@@ -88,8 +88,8 @@ Go-Teacher/
   skills/
     katago-analysis/   SKILL.md
     go-teaching/       SKILL.md
-    review-dashboard/  SKILL.md, template/dashboard.html, scripts/build_dashboard.py
-    go-teacher-flow/   SKILL.md, references/{memory.md, tool-contract.md}
+    review-dashboard/  SKILL.md, references/dashboard-input.md, template/dashboard.html, scripts/build_dashboard.py
+    go-teacher-flow/   SKILL.md, references/{memory.md, calibration.md, tool-contract.md}
   docs/                plan.md, archive/ (finished plans)
   seed/                local only (not in git): seed SGFs, seed_summary.{json,md}, calibration.md
 ```
@@ -173,8 +173,8 @@ the local server).
 ### WS8 — Seeding and calibration (C9) — Size M
 Survey 20 recent OGS games (10 even, 10 handicap, both colors, giving and receiving stones) with
 `katago-mcp-seed` (`katago-mcp/README.md` §5b), draft tags, beliefs and a profile, take your correction
-pass, calibrate the `[thresholds]`, seed memory. The procedure is in `skills/go-teacher-flow`
-("Calibration / seeding pass").
+pass, calibrate the `[thresholds]`, seed memory. The procedure is in
+`skills/go-teacher-flow/references/calibration.md`.
 
 **Acceptance**
 - A profile you agree with; tag accuracy you rate ≥ 80 % on a 20-episode sample.

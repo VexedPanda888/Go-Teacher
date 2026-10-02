@@ -1,6 +1,6 @@
 ---
 name: katago-analysis
-description: How to use the katago-mcp tools during a game review — set the time budget, run and read the survey, recover the belief behind each episode (intent_probe, expectation_probe), prove the better move with forced lines and compare their end positions (forced_line, terminal_features), add supporting tests (local solve, swing values, pass probe, human-model probabilities), and keep the prediction ledger that decides what may be taught. Use whenever a review touches the engine.
+description: How to use the katago-mcp tools in a game review — the time budget, the survey digest, the belief protocol (intent and expectation probes), forced lines and end comparisons, supporting tests, stability, and the prediction ledger that decides what may be taught. Use whenever a review touches the engine.
 ---
 
 # KataGo analysis for teaching
@@ -9,7 +9,7 @@ You are an interpreter of engine output, never a source of Go truth. Everything 
 about a position must trace to a tool result recorded in the ledger. If a hypothesis is not CONFIRMED by
 the protocol below, it is not taught; it may be mentioned as "not verified" at most.
 
-## 0. Conventions (from tool contract v0.4.0)
+## 0. Conventions
 
 - Coordinates are GTP: columns A–T without I, rows 1–19. Never SGF letters. Copy points from tool output.
 - Scores are **points** from the stated `perspective` (default: the student's colour). Winrate is never
@@ -57,12 +57,10 @@ probes go through `start_verification`. Calling them one by one after the interv
 idle while the student answers and the student idle while the engine searches. The plan already
 assumes this overlap (`overlapped_with_interviews_minutes`).
 
-Costs to keep in mind: one root search = 1 unit; the probes run at `line_node` visits — `intent_probe`
-≈ 8 searches, `expectation_probe` ≈ 1–2 per imagined move plus a 4-move refutation, `forced_line` ≈ 2 per
-node plus resistances and 2 for its end; `terminal_features` reuses the searches `forced_line` already
-cached. `local_solve` = 2 playouts × up to 20 restricted searches; `pass_probe` with `rank_regions` = 9
-extra restricted searches. `human_move_distribution` is nearly free. The budget also allows one line
-per episode that the student proposes (`per_episode.student_lines`): their fix or a resistance line.
+Costs, for tests you add yourself: the probes run at `line_node` visits (`intent_probe` ≈ 8 searches,
+`forced_line` ≈ 2 per node); `local_solve` and `pass_probe` with `rank_regions` are the expensive ones;
+`human_move_distribution` is nearly free. The budget allows one student-proposed line per episode
+(`per_episode.student_lines`).
 
 ## 2. Reading the survey digest
 
@@ -74,8 +72,8 @@ per episode that the student proposes (`per_episode.student_lines`): their fix o
    stability protocol before any claim.
 3. `game_type` and `decisive` / `last_chance` — the shape of the story (single blunder vs accumulation;
    where the game was decided; the last recoverable moment, which is the best teaching moment in a loss).
-4. `episodes[]` sorted by points lost. `points_lost_total` sums every seed in the chain and can be
-   several times the real damage when both sides keep swinging the same group; judge cost by
+4. `episodes[]`, ranked by `root.points_lost`. `points_lost_total` sums every seed in the chain and can
+   be several times the real damage when both sides keep swinging the same group; judge cost by
    `root.points_lost` and the net score change over the chain. For each: `root` (played/best/points lost), `region`, `phase`,
    `game_state_before`, `acceptable_set` (was the played move within 1 point of best?), `signature`
    (prior_played vs prior_best, local_loss_share, score_stdev played vs best, ko_present),
@@ -157,9 +155,7 @@ A human proof is a narrow tree of must-moves ending in a position the student ca
   the same tree; record them all in the ledger.
 
 `analyze_line` stays available for arbitrary sequences (a ko fight, a line the student proposes in
-conversation) and for `refutation_probability`. Show any line you discuss on the review page as a board
-(`dashboard_row`, go-teaching §6); after the dashboard is published, add it to the page as a validated
-branch (review-dashboard, "Follow-up questions").
+conversation) and for `refutation_probability`. Every line you discuss goes on the page (go-teaching §6).
 
 ## 5. Stability protocol
 
@@ -199,7 +195,4 @@ may be the right practical choice; say both. `decisive` in the digest already us
 - `budget_infeasible`: throughput unknown → `engine_info(refresh_benchmark=true)`.
 - `illegal_move` / `wrong_color`: fix the move list; never guess a coordinate.
 - Resigned games end at the resignation; do not analyse "what would have happened after".
-- Sealed results (go-teaching §6): no verification queries while the student is still writing the
-  blind self-review; nothing about an episode is shown before its interview answer is saved. From
-  `start_verification` on, the server enforces the second rule: probes at a selected episode's
-  positions return `sealed` until `record_interview`.
+- `sealed`: the episode's interview is not recorded yet (go-teaching §6).

@@ -11,6 +11,7 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 | [skills/go-teaching/](skills/go-teaching/SKILL.md) | What to teach: beliefs and taxonomy, triage, lesson format, self-review and interview questions, rules of conduct. |
 | [skills/review-dashboard/](skills/review-dashboard/SKILL.md) | The dashboard template and the build script that only accepts engine-validated data. |
 | [docs/plan.md](docs/plan.md) | The build plan, decisions and current status. |
+| [docs/contract-changes.md](docs/contract-changes.md) | The tool contract's decisions and version history. |
 | [skills/go-teacher-flow/references/tool-contract.md](skills/go-teacher-flow/references/tool-contract.md) | The tool contract (the only copy; skills must be self-contained). |
 
 `seed/` holds the local seed games and calibration notes and is not in git.

@@ -1,6 +1,6 @@
 ---
 name: go-teaching
-description: The teaching method for the Go-teacher project — diagnosis by belief (a mistake is a move that only makes sense if some belief about the position is true), the six beliefs with their proofs and board checks, the 15-category taxonomy kept as labels, triage (costly × learnable × recurring, blind spots first), the fixed lesson template and the concept-word rule, the short blind self-review and the per-episode interview, memory use (recurrence, not progress), and rules of conduct for teaching a kyu player with engine evidence. Use in every review from Phase 0 onward, alongside katago-analysis.
+description: The Go-teacher teaching method — diagnosis by belief (a mistake only makes sense if some belief about the position is true), the 15-category taxonomy, triage, the lesson template and the concept-word rule, the blind self-review and episode interview, and rules of conduct for teaching with engine evidence. Use in every review, alongside katago-analysis.
 ---
 
 # Teaching Go with an engine behind you
@@ -198,7 +198,6 @@ the answer while the interview goes on. Then:
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
 - When the probes contradict the stated belief, that contradiction *is* the lesson.
 - "I don't remember" / "no idea" is fine: use the inferred belief and say it is inferred.
-- Sealed results apply per episode (§6).
 
 ### 4.3 While the engine finishes (Phase 3b, optional)
 
@@ -242,14 +241,11 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - The last recoverable moment of a lost game is more valuable than the biggest blunder after it.
 - Difficult correct moves are lessons too: one strength per review, with its move number.
 - GTP coordinates only. Never invent one: copy points from tool results; when unsure, ask the tool again.
-- Every line visible. Whenever you name two or more moves in a row in chat (the student's expected line,
-  a refutation, a better line, an answer to a follow-up), put it on the page the same turn as a board
-  (`dashboard_row` with `line`) and say so ("on the page: Your line at move 41"). A board uses no
-  engine, so it is allowed while results are sealed; what is sealed is any evaluation of the line, and
-  any engine line about an episode before its interview is recorded. After the dashboard is published,
-  every line you test for the student also goes on the page as a validated branch (review-dashboard,
-  "Follow-up questions"). Only when the page cannot be used: `render_board` with `options.line` in chat,
-  with `line.notes` copied under the diagram.
+- **Every line visible.** Whenever you name two or more moves in a row (the student's expected line, a
+  refutation, a better line, a follow-up answer), put it on the page the same turn as a board and say
+  so ("on the page: Your line at move 41"). After the dashboard is published, a tested line goes on as
+  a validated branch (review-dashboard, "Follow-up questions"). Without the page: `render_board` with
+  `options.line` in chat, `line.notes` under it.
 - Do not compute Go on your own (liberties, ladders, life and death) for the student; use the tool and
   report what it says, in your words.
 - Concept words, liberty counts and the *why* (the end comparison, never the score delta): §3.
@@ -257,7 +253,7 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - Follow the budget (katago-analysis §1): fewer episodes rather than shallower verification; say what
   was left unverified because of time, and deliver fewer lessons rather than unverified ones.
 - Handicap games: separate the objective verdict from the practical one; reward simplification when ahead.
-- Sealed results: no engine output is shown or used in conversation before `self_review.md` exists, and
-  none about an episode before its interview answer is in `thinking.md`. If the student asks early,
-  explain why and keep going. From `start_verification` until `record_interview`, the server refuses
-  engine results about a selected episode (`sealed`) while its probes are computed in the background.
+- **Sealed results.** No engine output is shown or used in conversation before `self_review.md` exists,
+  and none about an episode before its interview answer is recorded. If the student asks early, explain
+  why and keep going. The server enforces the episode rule (`sealed` until `record_interview`). A board
+  uses no engine, so boards are allowed while sealed; an engine line or evaluation is not.
