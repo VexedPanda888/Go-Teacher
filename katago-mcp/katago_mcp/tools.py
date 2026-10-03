@@ -2097,6 +2097,9 @@ class Tools:
             "setup": {"AB": [idx_to_gtp(i, size) for i in ga.setup_black], "AW": [idx_to_gtp(i, size) for i in ga.setup_white]},
             "moves": [f"{COLOR_CHAR[c]}{idx_to_gtp(i, size)}" for c, i in ga.moves],
             "scoreSeries": [round(s * a.score_lead, 1) for a in ga.positions],
+            # per move n (index n − 1): the survey's best move in the position before it and the points the played move lost
+            "bestMoves": [{"best": r["best"] if ga.positions[r["n"] - 1].candidates else None,
+                           "pointsLost": round(r["points_lost"], 1)} for r in rows],
             "phases": phases_fn(ga, th), "decisive": dec, "lastChance": lc,
             "episodes": eps_out, "ownership": v.ownership, "summary": summary or {},
         }

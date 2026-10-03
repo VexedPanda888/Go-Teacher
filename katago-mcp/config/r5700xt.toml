@@ -34,7 +34,7 @@ survey_cap = 1000
 ld_reserve_episodes = 1
 student_lines_per_episode = 1       # lines the student proposes per episode, budgeted (a fix, a resistance line)
 max_episodes = 5
-min_episodes = 3
+min_episodes = 1                    # one lesson per review: one episode is selected, interviewed and verified
 unit_base = { root = 1000, line_node = 250, plies = 6, stability = [4], solve = 1500 }
 unit_cap  = { root = 6000, line_node = 1000, plies = 8, stability = [4, 16], solve = 4000 }
 ladder = ["root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000", "line_1000"]

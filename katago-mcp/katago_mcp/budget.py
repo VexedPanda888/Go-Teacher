@@ -229,8 +229,8 @@ def plan(cfg: BudgetConfig, vps: float, move_count: int, total_minutes,
     else:
         feasible = n >= cfg.min_episodes
         if not feasible:
-            notes.append(f"fewer than {cfg.min_episodes} episodes fit; a three-episode review needs about "
-                         f"{minimum_three:.0f} min on this machine")
+            notes.append(f"fewer than {cfg.min_episodes} episode(s) fit; a review of {cfg.min_episodes} episode(s) "
+                         f"needs about {minimum_three:.0f} min on this machine")
     if W <= 0:
         notes.append("no time left for verification after overhead, self-review and interviews")
 

@@ -141,7 +141,7 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 **Output.**
 ```ts
 {
-  feasible: boolean;                     // three or more episodes at base rigor fit
+  feasible: boolean;                     // `min_episodes` or more episodes at base rigor fit (1 in the machine configs: one lesson per review)
   total_minutes: number | "unlimited"; elapsed_minutes: number; throughput_vps: number;
   reserved: { overhead_minutes: number; self_review_minutes: number; interview_minutes: number };   // the interviews overlap the engine
   survey: { visits_per_move: number; expected_minutes: number; runs_past_self_review: boolean; charged_minutes: number };
@@ -157,7 +157,7 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
     engine_minutes: number;              // all engine work of the episodes, interviews or not
     overlapped_with_interviews_minutes: number;   // the part of it that runs during the interviews (background, §1.22)
   };
-  minimum_minutes_for_three_episodes: number;   // on this machine, for this game
+  minimum_minutes_for_three_episodes: number;   // on this machine, for this game, for `min_episodes` episodes (the name predates the one-lesson review)
   expected_total_minutes: number;                 // what "unlimited" or the plan will actually take
   profiles: { survey: number; root: number; line_node: number; stability: number[]; local_solve: number; quick: 200 };
   notes: string[];                       // plain-language remarks, e.g. why the survey runs past the self-review
@@ -220,9 +220,9 @@ verif(u, n, ld) = engine(u, n, ld) − overlap(u, n, ld) + n · C_ep    # wall-c
 4. episode count at base rigor:
        n = largest n ≤ min(5, E_req) with  verif(base, n, LD) ≤ W
 
-5. if n < 3:  feasible = false
+5. if n < min_episodes:  feasible = false
        v_min = floor; c_min = max(0, minutes(M·v_min) − S)
-       minimum_minutes_for_three_episodes = O + S + I + c_min + verif(base, 3, LD)
+       minimum_minutes_for_three_episodes = O + S + I + c_min + verif(base, min_episodes, LD)
        still return the allocation for n (0, 1 or 2) so "accept fewer" is possible
 
 6. surplus X = W − verif(base, n, LD)
@@ -1021,6 +1021,7 @@ All 361-element arrays are row-major from `A19` to `T19`, then `A18` … down to
 The exported JSON is what `validate_variations` assembles (§1.17) and what the `review-dashboard` template reads, with these encodings, chosen so Claude can copy the blob verbatim:
 - `moves`: array of `Move` values as `"BQ7"` strings (color letter + point, `"Bpass"` for a pass).
 - `scoreSeries`: numbers rounded to one decimal, student perspective, index = move number (index 0 = after setup).
+- `bestMoves`: one entry per move, index = move number − 1: `{ "best": "Q7" | "pass" | null, "pointsLost": 2.3 }`, from the survey: the best move in the position before that move (null when the survey has no candidate there) and the points the played move lost, from the mover's perspective (the same definition as the digest's `root.points_lost`). Both players' moves are included.
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"E1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.

@@ -12,7 +12,7 @@ keeps the goal, the workstreams' acceptance bars, status, decisions and risks.
 ## 0. Goal, scope, principles
 
 ### Goal
-A Claude project that reviews your OGS games the way a strong, patient teacher would: KataGo is the source of truth, every claim is verified before it is taught, each game yields two or three prioritized lessons delivered through an interactive dashboard, and a memory of recurring weaknesses makes the lessons increasingly personal.
+A Claude project that reviews your OGS games the way a strong, patient teacher would: KataGo is the source of truth, every claim is verified before it is taught, each game yields one prioritized lesson, delivered on an interactive dashboard that also shows the engine's best move at every move, and a memory of recurring weaknesses makes the lessons increasingly personal.
 
 ### In scope (v1)
 - 19×19 games from OGS, Japanese rules, even and handicap, either color. You are `cwhay888`, currently 6–7k.
@@ -30,7 +30,7 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 1. **Engine as the only source of truth.** Claude interprets, prioritizes and teaches; it never asserts a Go fact it has not verified with a tool call.
 2. **Rigor is fixed; breadth flexes.** On a slower machine, verify fewer moments, never less carefully.
 3. **Blind self-review.** Questions are generated from the SGF alone; engine results stay sealed until your answers are written down.
-4. **Two or three lessons per game.** When memory has an active theme, one lesson continues it.
+4. **One lesson per game** (decision 17). When memory has an active theme, triage favours it.
 5. **Engine-validated dashboard.** No sequence appears in the dashboard unless the server has legality-checked and evaluated it.
 6. **Points, not percentages.** Score lead is the unit for everything; winrate only answers "how decided is the game."
 7. **Simplest sufficient move.** Recommend the move with the highest target-rank (3k) human probability among moves within about a point of the engine's best.
@@ -221,7 +221,7 @@ with the review).
 | 2 | Topology | one server per machine; no remote mode in v1 |
 | 3 | Networks | b18 + human model, identical on all machines |
 | 4 | Memory | artifact `db` |
-| 5 | Counts | 3–5 episodes verified, 2–3 lessons per review |
+| 5 | Counts | 3–5 episodes verified, 2–3 lessons per review (superseded by 17) |
 | 6 | Self-review (29 Sep, replaces "5–8 questions, ~10 minutes") | four mandatory blind questions (~5 min, go-teaching §4.1); the freed time goes to one interview question per selected episode after triage (~5 min, §4.2) |
 | 7 | Dashboard | v1 template; live evaluation, ask-the-teacher and SGF export deferred to v1.1 |
 | 8 | `local_solve` | v1 |
@@ -233,6 +233,8 @@ with the review).
 | 14 | Interviews and engine overlap (1 Oct) | a tool call blocks Claude's turn, so the answer-free probes run in a server-side background queue during the interviews (`start_verification`); the server seals each episode until `record_interview`; a planned survey precomputes its top 4 episodes; the planner counts the overlap and budgets one student line per episode |
 | 15 | Review page from the start (1 Oct) | the dashboard is published live in Phase 0 with the `db` capability and grows with the review: boards (positions, lines, questions) replace ASCII diagrams in chat, and the student answers moves by clicking on the board; rows come from `dashboard_row` with a SHA-256 the page checks; no engine data on the page before the lessons; Phase 6 rebuilds it in place; `render_board` in chat is the fallback |
 | 16 | Recall quizzes (2 Oct) | old lessons are quizzed only to fill verification waits (Phases 3b and 4), after the §4.3 questions about the current episodes and never in place of a ready result; at most three per review, chosen missed-first from the open lessons; graded against the lesson's move with a quick search for any other move; results are kept per lesson (`recall`), never reported as a trend |
+| 17 | One lesson and every best move (3 Oct) | triage picks one episode to interview and verify (two reserves if it is not CONFIRMED); `min_episodes = 1` in the machine configs; the dashboard shows, at every move, the survey's best move in blue and the points the move lost (`bestMoves` in the export), so the student asks about the other moves as follow-up questions |
+| 18 | Explaining a best move (3 Oct) | a "why is this best" question follows review-dashboard `references/explaining-a-move.md`: confirm the move with a deeper search, then forced lines, end comparison and `intent_probe` on both moves, plus the test the position calls for (`local_solve`, `pass_probe` regions, `swing_value`, `expectation_probe`, `ownership_diff`); a five-part answer checked before sending; quick and full tiers with a time estimate; skill-only for now, a server-side `explain_move` bundle if answers stay thin |
 
 ---
 

@@ -132,7 +132,7 @@ read earlier; new documents need no version):
    defences of groups that were already alive"); otherwise set it to `null`. Write `summary` (3–4
    sentences) and `watch` (1 sentence). Retire lessons whose
    category is absent from the last five games. `write_db` `set` `profile/main` with `if_version` from Phase 0.
-4. Say in chat, in one line, what was recorded ("memory: game, 2 episodes, 2 lessons; urgent-vs-big is
+4. Say in chat, in one line, what was recorded ("memory: game, 1 episode, 1 lesson; urgent-vs-big is
    now recurring, 3 of the last 5 games"), and the `belief_insight` when it is new or changed.
 
 If a pinned write fails with a version conflict, re-read that document and redo only that write.

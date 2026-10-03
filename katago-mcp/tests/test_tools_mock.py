@@ -389,6 +389,10 @@ class MockToolsTest(unittest.TestCase):
         self.assertEqual(data["game"]["you"], "B")
         self.assertEqual(len(data["moves"]), 70)
         self.assertEqual(len(data["scoreSeries"]), 71)
+        # every move carries the survey's best move and the played move's loss; the episode root matches the digest
+        self.assertEqual(len(data["bestMoves"]), 70)
+        self.assertEqual(data["bestMoves"][n - 1]["best"], ep["root"]["best"])
+        self.assertAlmostEqual(data["bestMoves"][n - 1]["pointsLost"], ep["root"]["points_lost"], delta=0.06)
         e1 = data["episodes"][0]
         self.assertEqual(len(e1["branches"]), 2)
         self.assertEqual(e1["branches"][0]["moves"], branch_moves)

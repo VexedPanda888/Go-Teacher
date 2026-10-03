@@ -5,7 +5,7 @@ Read before writing the lesson commentary and the `validate_variations` input.
 ## Writing for the page
 
 - Commentary entries appear when the student steps onto that move; write each as a self-contained
-  paragraph of 1–3 sentences in plain language for a player of the student's rank. Name points as on the board (Q7).
+  paragraph of 1–3 sentences (up to four in a "why is this best" answer: `explaining-a-move.md`) in plain language for a player of the student's rank. Name points as on the board (Q7).
 - Commentary follows the lesson template (go-teaching §3): at the root, what the student was trying to
   do; at the divergence, the move they did not consider; at the end of the chain, what is different
   from the better line's end. Concept words and "the engine ranks/prefers": go-teaching §3.
@@ -79,7 +79,7 @@ Read before writing the lesson commentary and the `validate_variations` input.
   "strengths": ["a correct move that was hard for your level, with its move number"],
   "selfReview": {"agreements": ["…"], "blindSpots": ["…"]},
   "nextGame": "one concrete thing to try once per game",
-  "reliability": "how deep the verification went, e.g. 'E1 and E2 checked at 6,000 visits with 8-ply lines; E3 at 1,000.'"
+  "reliability": "how deep the verification went, e.g. 'E1 checked at 6,000 visits with 8-ply lines.'"
 }
 ```
 

@@ -42,14 +42,13 @@ facts, budget plan, memory watch-list, page URL.
 5 minutes). Save answers verbatim.
 
 **Phase 3 — Triage → `survey.md`, `ledger.md`.** `job_results(job_id)`; check reconciliation first
-(katago-analysis §2). Compare with self_review.md (go-teaching §4.1) and pick 3–5 episodes by the
-selection score (go-teaching §2), including the last chance of a lost game. Write one or two hypotheses
-with a number per episode into ledger.md (katago-analysis §6). Re-plan and start the background
+(katago-analysis §2). Compare with self_review.md (go-teaching §4.1) and pick **one** episode by the
+selection score (go-teaching §2): a review teaches a single lesson. Write one or two hypotheses with a
+number for it into ledger.md (katago-analysis §6); note the next two by score in survey.md as reserves. Re-plan and start the background
 verification **before the first interview question** (katago-analysis §1 steps 5–6).
 
-**Phase 3b — Episode interviews → `thinking.md`.** go-teaching §4.2, in the `interview_order`
-returned; `record_interview` after each answer, then go straight to the next episode. Update the
-ledger with each stated belief. If `verification_results(job_id)` still shows minutes of work
+**Phase 3b — Episode interview → `thinking.md`.** go-teaching §4.2 for the selected episode;
+`record_interview` after the answer. Update the ledger with the stated belief. If `verification_results(job_id)` still shows minutes of work
 afterwards, ask go-teaching §4.3, then recall quizzes (§4.4).
 
 **Phase 4 — Verify → ledger verdicts, `verified.md`.** Read the episodes as they finish:
@@ -62,14 +61,16 @@ Stop when the verification minutes are used; what is left stays UNTESTED. verifi
 verdict, belief and source (stated / inferred), the misread (ply, move never considered, refutation),
 the proof lines (forced vs chosen moves, resistance), the end comparison, the teachable move, refs.
 
-**Phase 5 — Lessons → `lesson.md`.** 2–3 lessons from CONFIRMED episodes by lesson priority, plus one
-strength (go-teaching §2). Write each in the lesson template, then reread every sentence against
+**Phase 5 — Lesson → `lesson.md`.** One lesson, from the selected episode once it is CONFIRMED, plus one
+strength (go-teaching §2). Write it in the lesson template, then reread every sentence against
 "Words that must be cashed out" (go-teaching §3). Write the commentary and the summary block as review-dashboard
 `references/dashboard-input.md` describes.
 
 **Phase 6 — Deliver and remember.** Build and republish the dashboard to the live page's URL
-(review-dashboard, "Phase 6"). Tell the student the page now holds the lessons and give a 6–10 line
-summary in chat. Update memory (`references/memory.md`, "Phase 6: write"). Ask whether anything is
+(review-dashboard, "Phase 6"). Tell the student the page now holds the lesson and, at every move of the
+game, the engine's best move in blue next to the move played, so they can ask about any of them. Give
+a 6–10 line summary in chat: the lesson first, then the moves the survey ranks as the biggest losses
+after it (move number, played, best, points lost, from the digest), as starting points for questions. Update memory (`references/memory.md`, "Phase 6: write"). Ask whether anything is
 unclear; follow-ups go on the same page (review-dashboard, "Follow-up questions").
 
 A seeding / calibration pass (the student brings `seed/seed_summary.*`) follows
@@ -86,7 +87,10 @@ A seeding / calibration pass (the student brings `seed/seed_summary.*`) follows
   unfinished play: proceed. Otherwise note the gap and distrust only endgame figures.
 - The student disagrees with a verdict: test their line with `analyze_line`, add it to the ledger, report
   the numbers; both lines go on the page (review-dashboard, "Follow-up questions").
-- Time is up before verification finished: fewer lessons, never unverified ones;
-  `verification_results(job_id, action: "cancel")` stops the queued work.
+- Time is up before verification finished: no lesson rather than an unverified one; the best moves on
+  the page still stand. `verification_results(job_id, action: "cancel")` stops the queued work.
+- The episode ends REFUTED or WEAK: say so and what the verification showed. If time remains, offer the
+  first reserve from survey.md (`start_verification`, its interview, the same protocol); otherwise
+  deliver the page without a lesson.
 - `sealed`: ask the episode's interview question, `record_interview`, then call again.
 - The student cannot see the page's boards: review-dashboard, "Fallback".

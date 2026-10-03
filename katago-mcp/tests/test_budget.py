@@ -61,7 +61,17 @@ class TestWorkedExamples(unittest.TestCase):
         # the probes cost about twice the old three-line contrast: rigor is kept, episodes drop. The interviews
         # overlap the engine (−5) and the student-line allowance costs about as much on this machine
         self.assertAlmostEqual(p["minimum_minutes_for_three_episodes"], 63.2, delta=0.6)
-        self.assertTrue(any("three-episode" in n for n in p["notes"]))
+        self.assertTrue(any("a review of 3 episode(s) needs about" in n for n in p["notes"]))
+
+    def test_one_episode_review(self):
+        # the machine configs ask for one episode: feasibility and the minimum are computed for that count
+        cfg = BudgetConfig()
+        cfg.min_episodes = 1
+        p = plan(cfg, vps=650, move_count=187, total_minutes=20)
+        self.assertTrue(p["feasible"])
+        self.assertGreaterEqual(p["verification"]["episodes"], 1)
+        self.assertLess(p["minimum_minutes_for_three_episodes"], plan(BudgetConfig(), vps=650, move_count=187,
+                                                                      total_minutes=20)["minimum_minutes_for_three_episodes"])
 
     def test_short_blind_review_keeps_survey_visits(self):
         cfg = BudgetConfig()

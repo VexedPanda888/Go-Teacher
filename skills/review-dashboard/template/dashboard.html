@@ -27,6 +27,7 @@
   --stone-b: #1A1A1A;
   --stone-w: #F4F2EC;
   --focus: #2A6F77;
+  --best: #1F5FD1;
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --serif: "Literata", Georgia, "Iowan Old Style", "Times New Roman", serif;
 }
@@ -34,13 +35,13 @@
   :root:not([data-theme="light"]) {
     --paper: #14171C; --panel: #1C2027; --panel-2: #22272F; --ink: #E6E8EB; --muted: #9AA3AF; --rule: #2F353E;
     --wood: #C9A45C; --wood-edge: #9E7C3A; --grid: #4E3A15; --accent: #5FB0B7; --accent-soft: rgba(95,176,183,0.18);
-    --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7;
+    --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7; --best: #5B9BFF;
   }
 }
 :root[data-theme="dark"] {
   --paper: #14171C; --panel: #1C2027; --panel-2: #22272F; --ink: #E6E8EB; --muted: #9AA3AF; --rule: #2F353E;
   --wood: #C9A45C; --wood-edge: #9E7C3A; --grid: #4E3A15; --accent: #5FB0B7; --accent-soft: rgba(95,176,183,0.18);
-  --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7;
+  --loss: #E06B5C; --gain: #6FBF7A; --stone-w: #E9E6DE; --focus: #5FB0B7; --best: #5B9BFF;
 }
 html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; }
 *, *::before, *::after { box-sizing: inherit; }
@@ -78,6 +79,8 @@ a { color: var(--accent); }
 .readout .score { font-size: 15px; }
 .readout .score b { font-weight: 600; }
 .readout .who { color: var(--muted); }
+.readout .best { flex-basis: 100%; font-size: 14px; }
+.readout .best b { color: var(--best); font-weight: 600; }
 .controls { display: flex; align-items: center; gap: 8px; padding: 4px 0 2px; flex-wrap: wrap; }
 .controls .nav { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--panel); }
 .controls .nav button { border: 0; background: transparent; padding: 7px 12px; cursor: pointer; min-width: 40px; }
@@ -198,6 +201,7 @@ a { color: var(--accent); }
         <div class="movenum"><span id="moveNum">0</span> <small id="moveTotal">/ 0</small></div>
         <div class="score" id="scoreBox">You: <b id="scoreNow">0.0</b> <span class="who" id="scoreWho"></span></div>
         <div class="who" id="lastMove"></div>
+        <div class="best" id="bestInfo" hidden></div>
       </div>
       <div class="controls">
         <div class="nav" role="group" aria-label="Replay">
@@ -207,6 +211,7 @@ a { color: var(--accent); }
           <button type="button" id="btnLast" title="Last move (End)">&#8250;|</button>
         </div>
         <div class="toggles">
+          <button type="button" class="chip" id="tglBest" aria-pressed="true" title="The engine's best move for the move just played, in blue">Best move</button>
           <button type="button" class="chip" id="tglOwn" aria-pressed="false">Territory estimate</button>
           <button type="button" class="chip" id="tglNums" aria-pressed="false">Number this episode</button>
         </div>
@@ -364,7 +369,7 @@ function App(D) {
   const isQuestion = (e) => e.kind === "question";   // follow-up questions: same shape as a lesson, shown apart
   const lessonEps = episodes.filter((e) => !isQuestion(e));
   const $ = (id) => document.getElementById(id);
-  const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false,
+  const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false, showBest: true,
                   bd: null, bpos: null, bply: 0 };
   // live boards (db): rows by id, answers by board id, the student's unsent clicks by board id
   const live = { db: null, canAnswer: false, boards: new Map(), bad: new Set(), answers: new Map(), drafts: new Map(), seen: 0, sending: null, msg: {} };
@@ -433,6 +438,13 @@ function App(D) {
       const [x, y] = xy(last);
       el("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: cells[last] === B ? "#E9E6DE" : "#1A1A1A", "stroke-width": 2.2, class: "last" }, gMarks);
     }
+    // the best move for the move just played: a blue ring on the stone when it was played, else a blue disc on its point
+    const bm = bestForMove();
+    if (bm && bm.idx !== null) {
+      const [x, y] = xy(bm.idx);
+      if (bm.matched) el("circle", { cx: x, cy: y, r: R + 1, fill: "none", stroke: "var(--best)", "stroke-width": 3 }, gMarks);
+      else el("circle", { cx: x, cy: y, r: 13, fill: "var(--best)", stroke: "#fff", "stroke-width": 1.5, opacity: 0.9 }, gMarks);
+    }
     // ownership overlay
     const key = ownershipKey();
     if (state.showOwn && key) {
@@ -460,6 +472,14 @@ function App(D) {
     const t = el("text", { x, y: y + 4.6, "text-anchor": "middle", "font-size": text.length > 2 ? 11.5 : 13.5, "font-weight": 500, fill: color === B ? "#F4F2EC" : "#1A1A1A", "font-family": "var(--sans)" }, gLabels);
     t.textContent = text;
   }
+  // the survey's best move for move n (the position after move n is on the board), only while replaying the game
+  function bestForMove() {
+    if (LIVE || !D.bestMoves || !state.showBest || state.mode !== "game" || state.move < 1) return null;
+    const e = D.bestMoves[state.move - 1]; if (!e || !e.best) return null;
+    const played = game.parsed[state.move - 1];
+    const idx = e.best === "pass" ? null : Core.pointIdx(e.best);
+    return { best: e.best, idx, matched: idx === played.idx, pointsLost: e.pointsLost, played };
+  }
   function ownershipKey() {
     if (LIVE || state.mode === "board") return null;
     if (state.mode === "variation") return state.vply === state.vpos.positions.length - 1 && state.br.ownershipAtEnd && D.ownership[state.br.ownershipAtEnd] ? state.br.ownershipAtEnd : null;
@@ -470,6 +490,7 @@ function App(D) {
   const slider = $("slider"); slider.max = M; $("moveTotal").textContent = "/ " + M;
   $("scoreWho").textContent = "(points, " + youName + ")";
   function renderReadout() {
+    renderBestInfo();
     $("scoreBox").hidden = LIVE || state.mode === "board";
     if (!LIVE) {
       const s = state.mode === "variation" ? (state.vply > 0 ? state.br.evals[state.vply - 1] : D.scoreSeries[state.br.fromMove]) : D.scoreSeries[state.move];
@@ -512,6 +533,15 @@ function App(D) {
       $("varEval").textContent = state.vply > 0 ? "change since move " + state.br.fromMove + ": " + Core.fmtScore(d) : "";
     } else vb.classList.remove("on");
   }
+  function renderBestInfo() {
+    const box = $("bestInfo"), tg = $("tglBest");
+    tg.hidden = LIVE || !D.bestMoves; tg.disabled = state.mode !== "game"; tg.setAttribute("aria-pressed", String(state.showBest));
+    const bm = bestForMove(); box.hidden = !bm; if (!bm) return;
+    const who = bm.played.color === you ? "your move" : "your opponent's move";
+    const lost = +bm.pointsLost;
+    box.innerHTML = bm.matched ? "Best move: <b>" + esc(bm.best) + "</b>, " + who + (bm.idx !== null ? " (blue ring)." : ".")
+      : "Best move: <b>" + esc(bm.best) + "</b>" + (bm.idx !== null ? " (blue)" : "") + ". " + who.replace(/^./, (c) => c.toUpperCase()) + " " + Core.gtp(bm.played.idx) + (lost >= 0.05 ? " lost " + lost.toFixed(1) + " points." : " was as good.");
+  }
   function setMove(n) {
     n = Math.max(0, Math.min(M, n));
     if (state.mode === "variation") exitVariation(false);
@@ -532,6 +562,7 @@ function App(D) {
   $("btnPrev").addEventListener("click", () => step(-1)); $("btnNext").addEventListener("click", () => step(1));
   slider.addEventListener("input", () => setMove(parseInt(slider.value, 10)));
   $("tglOwn").addEventListener("click", () => { state.showOwn = !state.showOwn; renderAll(); });
+  $("tglBest").addEventListener("click", () => { state.showBest = !state.showBest; renderAll(); });
   $("tglNums").addEventListener("click", () => { state.showNums = !state.showNums; renderAll(); });
   $("varExit").addEventListener("click", () => { if (state.mode === "board") exitBoard(true); else exitVariation(true); });
   document.addEventListener("keydown", (ev) => {

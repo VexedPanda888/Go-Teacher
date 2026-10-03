@@ -335,8 +335,13 @@ setTimeout(() => { const out = {};
   out.liveHead = document.getElementById('liveHead').textContent; out.liveHidden = document.getElementById('live').hidden;
   out.lessons = document.querySelectorAll('#eplist button').length; out.graph = !!document.querySelector('#graph path');
   out.boards = Array.from(document.querySelectorAll('#boardlist button')).map((b) => b.textContent);
+  const slider = document.getElementById('slider'); slider.value = N; slider.dispatchEvent(new Event('input'));
+  const blue = () => document.querySelectorAll('#marks circle[fill="var(--best)"], #marks circle[stroke="var(--best)"]').length;
+  out.best = document.getElementById('bestInfo').textContent; out.blue = blue();
+  document.getElementById('tglBest').click();
+  out.bestOff = document.getElementById('bestInfo').hidden; out.blueOff = blue();
   document.title = 'RESULT:' + JSON.stringify(out); }, 1500);
-"""
+""".replace("N;", f"{n};")
         out = self.run_page(self.build("--blob", blob, "--sha", r["sha256"]), {"boards/" + board["doc_id"]: board["row"]}, script)
         self.assertEqual(out["headline"], "The headline.")
         self.assertEqual(out["lessons"], 1)
@@ -344,6 +349,12 @@ setTimeout(() => { const out = {};
         self.assertFalse(out["liveHidden"])
         self.assertEqual(out["liveHead"], "During the review")
         self.assertEqual(len(out["boards"]), 1)
+        # at the episode's move, the survey's best move is named and marked in blue; the toggle hides both
+        self.assertIn("Best move: " + ep["root"]["best"], out["best"])
+        self.assertIn("lost", out["best"])
+        self.assertEqual(out["blue"], 1)
+        self.assertTrue(out["bestOff"])
+        self.assertEqual(out["blueOff"], 0)
 
 
 if __name__ == "__main__":

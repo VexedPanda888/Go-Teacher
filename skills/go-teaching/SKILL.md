@@ -6,9 +6,10 @@ description: The Go-teacher teaching method — diagnosis by belief (a mistake o
 # Teaching Go with an engine behind you
 
 The student, their rank and their rules come from `engine_info` → `student` and the memory profile;
-"peer" below is their rank and "target" the rank a few stones above. They want two or three lessons
-per game that they can actually apply, backed by evidence they can inspect on the dashboard, and they
-want recurring weaknesses named across games. They track their own progress elsewhere; memory is for
+"peer" below is their rank and "target" the rank a few stones above. They want one lesson
+per game that they can actually apply, backed by evidence they can inspect on the dashboard, the
+engine's best move at every move of the game on the same page (to ask about the ones they do not
+understand), and recurring weaknesses named across games. They track their own progress elsewhere; memory is for
 recurrence only.
 
 **The frame.** A mistake is a move that only makes sense if some belief about the position is true.
@@ -58,17 +59,15 @@ Orthogonal fields on every episode: **style axis** (overplay / slack / neutral f
 (ahead / close / behind when the mistake happened), **belief source** (stated by the student in the
 interview, or inferred from the probes).
 
-## 2. Triage: which 2–3 episodes become lessons
+## 2. Triage: which episode becomes the lesson
 
-Two stages. **Selection** (Phase 3, before verification) ranks the digest's candidate episodes and
-picks 3–5 to verify:
+**Selection** (Phase 3, before verification) ranks the digest's candidate episodes and picks the top
+one to interview and verify; the next two are reserves (go-teacher-flow, "When things go wrong"):
 
-    selection = cost × learnability × recurrence × awareness
+    selection = cost × learnability × recurrence × awareness × last_chance
 
-**Lesson choice** (Phase 5, after verification) ranks the CONFIRMED episodes, then applies the hard
-rules below:
-
-    priority = selection × belief_confidence
+The lesson is that episode once it is CONFIRMED. `belief_confidence` (below) does not change the choice;
+it says how much of the lesson can rest on the student's own words.
 
 - **cost**: points lost at the episode root (or the net change over the chain — not
   `points_lost_total`, which double-counts swings), capped at 15 so one blunder does not crowd out
@@ -82,13 +81,14 @@ rules below:
 - **awareness**: `blind_spot` ×1.5 (the student marked the phase or move as fine), `seen` ×1.0 (they
   flagged it but misjudged the fix), `diagnosed` ×0.7 (they flagged it and diagnosed it correctly: they
   already know).
-- **belief_confidence**: ×1.3 when the student *stated* the belief in the interview and the probes
-  confirm it is wrong; ×1.0 when the belief is inferred and confirmed; ×0.7 when no belief was found
+- **last_chance**: ×1.5 for the `last_chance` moment of a lost game (§6: the last recoverable moment is
+  worth more than the biggest blunder after it); ×1.0 otherwise.
+- **belief_confidence**: high when the student *stated* the belief in the interview and the probes
+  confirm it is wrong; medium when the belief is inferred and confirmed; low when no belief was found
   (the lesson can only show the better line, not the misread).
 
-Then apply the hard rules: only CONFIRMED hypotheses; at most one lesson per category per game; the
-`last_chance` moment of a lost game is a lesson unless it is the same category as another chosen one;
-never two lessons about the same group.
+Only CONFIRMED hypotheses are taught. The other episodes are not lessons: the student sees their best
+moves on the page and may ask about them (review-dashboard, "Follow-up questions").
 
 ## 3. Lesson template (write into `lesson.md`, then the dashboard)
 
@@ -178,12 +178,11 @@ misjudged → `seen`, blind spot → `blind_spot`. The game record keeps the thr
 (`self_review.misjudged` is a count of the comparison, not an awareness value). Blind spots get the
 ×1.5 in triage and are the first thing the summary mentions.
 
-### 4.2 Episode interview (Phase 3b, one question per selected episode, ~5 minutes)
+### 4.2 Episode interview (Phase 3b, one question about the selected episode, ~5 minutes)
 
 After triage, before any engine result about the episode is shown, send the position before the
 student's move as a board: `at_move: N − 1`, their move X as the `line` and in `highlight`, `ask:
-"line"`. Ask, one episode at a time, in the `interview_order` that `start_verification` returned (the
-engine is already working on these episodes):
+"line"`. Ask (the engine is already working on the episode):
 
 > "Move N, you played X (on the page). What was it for? And what did you expect to happen next? Click
 > it on the board, starting with your opponent's reply, then press Send."
@@ -192,8 +191,7 @@ They answer the *what for* in chat and click the *what next* on the board. Read 
 `answers/<board id>`; that line is already the one they meant, so there is nothing to type back. If
 they answer the line in words instead, put it on a board (`line`) for them to confirm. Save the answers
 verbatim in `thinking.md` and pass them straight to `record_interview` (the answer, the clicked line as
-`expected_line`, a better move they name as `fix`) before asking about the next episode. That starts the probes that need
-the answer while the interview goes on. Then:
+`expected_line`, a better move they name as `fix`). That starts the probes that need the answer. Then:
 - A **stated belief** overrides the inferred one; the lesson's part 3 quotes it.
 - A **stated line** is the expected line of part 4: test it (katago-analysis §3) and find where it breaks.
 - When the probes contradict the stated belief, that contradiction *is* the lesson.
@@ -274,9 +272,10 @@ go-teacher-flow `references/memory.md`; follow it. In what you say:
 - Do not compute Go on your own (liberties, ladders, life and death) for the student; use the tool and
   report what it says, in your words.
 - Concept words, liberty counts and the *why* (the end comparison, never the score delta): §3.
-- Two or three lessons per game. If the game offers more, choose by triage and say what you left out.
-- Follow the budget (katago-analysis §1): fewer episodes rather than shallower verification; say what
-  was left unverified because of time, and deliver fewer lessons rather than unverified ones.
+- One lesson per game. Name the episodes triage ranked next in the summary, as moves to ask about; the
+  page shows their best moves.
+- Follow the budget (katago-analysis §1): never shallower verification; say what was left unverified
+  because of time, and deliver no lesson rather than an unverified one.
 - Handicap games: separate the objective verdict from the practical one; reward simplification when ahead.
 - **Sealed results.** No engine output is shown or used in conversation before `self_review.md` exists,
   and none about an episode before its interview answer is recorded. If the student asks early, explain

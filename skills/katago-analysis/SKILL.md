@@ -34,14 +34,15 @@ Then:
    records get mangled. Use the same `sgf` value for `start_game_analysis`.
 3. `plan_budget(total_minutes, move_count)` — returns survey visits, how many episodes fit, and the
    per-episode search sizes; it reserves the blind self-review and the episode interviews. If
-   `feasible` is false, tell the student the minimum (`minimum_minutes_for_three_episodes`) and let them
-   choose: extend, or accept fewer episodes. Rigor per episode is fixed; never lower visits to keep the
+   `feasible` is false, not even the one episode fits: tell the student the minimum
+   (`minimum_minutes_for_three_episodes`, which the machine configs compute for one episode) and let them
+   choose: extend, or a review without a lesson (the page with the best moves only). Rigor per episode is fixed; never lower visits to keep the
    count.
 4. Start the survey with `budget: {"profile": "survey"}`; from then on use `{"profile": "root"}`,
    `"line_node"`, `"stability"`, `"local_solve"`, `"quick"` — never invent visit counts unless the plan is
    unlimited and you have a reason.
 5. After triage (Phase 3) call `plan_budget(total_minutes, job_id, selected=[{id, needs_local_solve}])`
-   to re-plan the remaining time for the chosen episodes. Follow its `per_episode` sizes. When the
+   to re-plan the remaining time for the chosen episode. Follow its `per_episode` sizes. When the
    server already precomputed some selected episodes after the survey, the re-plan keeps the earlier
    sizes so that work stays valid (a note says so); pass `keep_sizes: false` only to deepen instead.
 6. Straight after the re-plan, before the first interview question:

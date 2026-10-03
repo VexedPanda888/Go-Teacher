@@ -71,6 +71,9 @@ they show once the page works.
    `db` and its boards stay). The open page reloads as the dashboard. Its boards stay under "During the
    review", next to the lessons. That link is the deliverable; the student can also open it on a phone.
    Without a live page (the fallback from Phase 0 on), publish a new artifact as before (icon `go`).
+   The page shows, at every move of the game, the survey's best move for that move in blue (a blue
+   ring when the move played was the best) and the points the move lost. `validate_variations` exports
+   it (`bestMoves`); there is nothing to write for it.
 6. If the text needs a change after publishing, change the episode input, re-run `validate_variations`,
    rebuild, and republish the same artifact URL. Never patch the HTML or the blob by hand.
 7. Keep the `validate_variations` input you sent (`dashboard_input.json` next to the handoff files):
@@ -91,6 +94,11 @@ through it at the board instead of reading coordinates in chat.
      Q1, Q2, … in the order asked. `comparison` works in a question episode too.
 3. Re-run `validate_variations` with the whole input, rebuild, and republish the same artifact URL
    (step 6). Batch the questions of one exchange into one republish; tell the student the page is updated.
+
+**"Why is the blue move best at move N?"** (or "why not my move?", "what about X here?") — the
+question the best moves invite. Read `references/explaining-a-move.md` and follow it: it confirms the
+move with a deeper search, gathers what each move does and what differs at the ends, adds the test the
+position calls for, and answers in a fixed five-part form that is checked before it is sent.
 
 A line the engine did not play or evaluate never goes on the page; one that fails validation is fixed
 from the error or left in chat with the reason.
