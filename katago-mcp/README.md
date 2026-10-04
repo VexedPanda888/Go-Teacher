@@ -18,7 +18,7 @@ Design rules baked in:
 - One server per machine, one KataGo process, one job at a time. Three KataGo priorities: the survey
   at 0, background work at 5, Claude's own calls at 10, so whatever Claude is waiting for returns first.
 - A tool call blocks Claude's turn, so slow work runs in the background while Claude talks to the
-  student: the survey during the upfront questions, `explain_moment` for the top key moments while
+  student: the survey during the student's guided self-review, `explain_moment` for the top key moments while
   Claude tells the story. Results are stored whole, so Claude's later identical calls return at once.
 - Nothing is a Go-truth claim unless it came out of the engine: branches are validated for legality
   and evaluated before they reach the dashboard, and the export carries a SHA-256.

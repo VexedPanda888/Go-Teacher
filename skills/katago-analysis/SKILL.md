@@ -34,10 +34,12 @@ about a position comes from a tool result whose `query_id` you note in `moments.
    `start_game_analysis`.
 3. `start_game_analysis(sgf)` — the survey, sized to take about 10 minutes on this machine. When it
    finishes, the server prepares `explain_moment` for the story's top three key moments in the
-   background (nothing is shown; you ask first).
+   background (nothing is shown; you ask first). Queue the moves the student named in the self-review
+   the same way (`background: true`) once the survey is done.
 
 A tool call blocks your turn: you cannot talk to the student while a search runs. That is why the slow
-work runs in the background while you ask the upfront questions and talk about the story. Poll with
+work runs in the background: the survey while the student does the guided self-review, the key
+moments while you talk about the story. Poll with
 `job_status`; between the student's answers is a good time.
 
 ## 2. Reading the story (`job_results`)

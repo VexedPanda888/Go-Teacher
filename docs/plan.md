@@ -18,7 +18,7 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 ### In scope (v1)
 - 19×19 games from OGS, Japanese rules, even and handicap, either color. You are `cwhay888`, currently 6–7k.
 - Three machines: Windows + AMD 5700XT, M2 MacBook Air, M5 MacBook Pro.
-- Asynchronous first pass running during a few upfront questions; key moments prepared in the background while the story is told.
+- Asynchronous first pass running during the student's guided self-review; key moments prepared in the background while the story is told.
 - One published dashboard per review; a cloud database of past takeaways shared across machines.
 
 ### Out of scope (v1)
@@ -30,9 +30,9 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 ### Principles every workstream serves
 1. **The engine is the authority on the board.** Claude brings the story, the questions, the ideas that make a position understandable and the patience to go back and forth; every concrete claim (a sequence, a status, a count) comes from a tool result.
 2. **Review like a teacher.** A quick pass for the story of the game, then the key moments; Claude decides which and how many as the review goes (decision 21).
-3. **Ask before you tell.** At each key moment the student says what they were thinking and what they expected before any engine result about it is shown.
+3. **Self-review first, then check the reasoning.** The student reviews the game themselves first — surprises, shifts, successes and their own reasoning — before any engine result; the engine then checks their reasoning, not just their moves, and at each key moment they say what they were thinking before anything is shown (decision 23).
 4. **Explanation by lines, not labels.** The student's thinking first, then what actually happens, shown as engine-checked lines on the page; the *why* is what differs at the ends of the lines. A score difference is the size of a mistake, never its reason. No taxonomy (decision 20).
-5. **Every moment ends in a takeaway** the student says in their own words, concrete enough to check at the board.
+5. **One to three takeaways per game, ideally one**, each a change in how the student thinks, said and written in their own words, concrete enough to check at the board.
 6. **Engine-validated dashboard.** No sequence appears in the dashboard unless the server has legality-checked and evaluated it.
 7. **Points, not percentages.** Score lead is the unit for everything; winrate only answers "how decided is the game."
 8. **Simplest sufficient move.** When the engine's best move is hard to find at the student's rank, recommend the move within about a point of it that a player three stones stronger plays most often.
@@ -135,7 +135,7 @@ keeps explanations honest. See `skills/katago-analysis/SKILL.md`. (Rewritten in 
 **Dependencies:** WS2 tool contract.
 
 ### WS4 — Skill `go-teaching` (C4) — Size M
-The pedagogy: how a teacher reviews, the upfront questions, telling the story and choosing key moments,
+The pedagogy: the guided self-review, checking the student's reasoning with the story, choosing key moments,
 asking first, the explanation standard, the back and forth, the takeaway, recall quizzes, conduct. See
 `skills/go-teaching/SKILL.md`. (Rewritten in WS10.)
 
@@ -251,6 +251,7 @@ the review page that grows with the review (v0.5).
 | 20 | No taxonomy (4 Oct; replaces 13) | the 15 categories, candidate tags, belief labels, style axis and pattern hashes did not help in real reviews and are removed; rigour and richness come from the explanation standard (go-teaching §5): the student's thinking first, every claim an engine-checked line on the page, the why from the end comparison, ideas tied to the line; memory recurrence is by the theme of the student's takeaways |
 | 21 | The teacher's pattern (4 Oct; replaces 5, 6, 14, 15's sealing, 17) | a quick pass for the story (`job_results`: lead, group fates, swings, key moments), then key moments chosen by Claude as the review goes (usually two to four in 30 minutes); at each: ask what they were thinking (a few upfront questions while the survey runs replace the blind self-review), `explain_moment` (prepared in the background for the top three), explain, back and forth until they can explain it back, a takeaway in their words; no server-side sealing (ask before you tell is a rule of conduct); the best move at every move stays on the final page |
 | 22 | Takeaways carry over (4 Oct) | new takeaways are written to the memory's `lessons` collection in a compatible shape, so the 37 earlier lessons stay where they are, count as takeaways for recall quizzes and recurrence, and the memory page keeps showing them; `episodes` and `patterns` are no longer written |
+| 23 | Guided self-review (4 Oct; replaces the upfront questions of 21) | the survey time becomes a guided self-review following a strong player's method for teaching yourself Go: the student steps through the game for surprises, shifts and successes and reasons about each, with no engine result until done (the engine seen early replaces self-doubt and reasoning); the story then checks their reasoning (what they saw, where their judgment was off, what they did not see — pointed to, and looked at again before it is explained); key moments start from their own ideas; one to three takeaways per game, ideally one, each a change in thought process, written down; the self-review is shown on the page and kept in memory |
 
 ---
 

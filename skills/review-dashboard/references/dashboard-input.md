@@ -77,13 +77,20 @@ Read before writing the page text and the `validate_variations` input.
 {
   "story": "two to four sentences: how the game went and where it turned",
   "takeaways": [{"momentId": "M1", "title": "…", "takeaway": "the student's sentence"}],
+  "selfReview": {
+    "surprises": ["Move 41, White's cut worked: you didn't see your three stones were a liberty short. The engine agrees: −8 here."],
+    "shifts": ["You felt behind after move 60; the lead stayed with you until move 87."],
+    "successes": ["The capture race at 150: you read it right, and it decided the game."]
+  },
   "strengths": ["a correct move that was hard for your level, with its move number"],
   "nextGame": "one concrete thing to try once per game, from the takeaways",
   "reliability": "how deep the checks went, e.g. 'Each key moment checked at 12,000 visits with 8-move lines.'"
 }
 ```
 
-`takeaways` may be left out: the page then lists the moments' own `takeaway` fields.
+`takeaways` may be left out: the page then lists the moments' own `takeaway` fields. `selfReview` is the
+student's own self-review (go-teaching §2), one line per moment they named, each with what the engine
+check found, in a sentence; the page lists it under "Your self-review, checked".
 
 ## Errors from validate_variations and the builder
 

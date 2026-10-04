@@ -46,9 +46,16 @@ change `status`.
 {"game_id": "ogs_12345678", "date": "2026-10-04", "color": "B", "handicap": 3, "komi": 0.5,
  "opponent": "name", "opponent_rank": "4k", "result": "W+12.5", "reviewed_at": "2026-10-04",
  "story": "One or two sentences: how the game went and where it turned.",
+ "self_review": {"surprises": [41], "shifts": [60], "successes": [150], "missed": [87],
+                 "judgment": "Felt behind after 60; the lead stayed with the student until 87."},
  "moments": [{"id": "M1", "move": 87, "played": "Q7", "better": "R8", "points_lost": 14.2}],
  "lesson_ids": ["ogs_12345678-L1"], "dashboard_url": "https://claude.ai/artifact/…"}
 ```
+
+`self_review` keeps the moves the student named in the guided self-review (go-teaching §2), `missed` the
+big moments the engine found that they did not name, and `judgment` one sentence on how their feeling
+for the game compared with the engine's. Across games it shows whether their self-review finds the
+moments that matter.
 
 `profile/main` — one document, the only thing read in full at the start (keep it under ~1,500 tokens):
 

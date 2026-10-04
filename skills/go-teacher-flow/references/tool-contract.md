@@ -195,7 +195,7 @@ Each tool is specified as **Purpose · Inputs · Output · Behavior · Cost · E
 ---
 
 ### 1.5 `job_results`
-**Purpose.** The survey read as a teacher's first pass over the game: the story. Claude tells it to the student after the upfront questions (go-teaching §2–§3).
+**Purpose.** The survey read as a teacher's first pass over the game: the story. Claude tells it to the student after their guided self-review, as the check of their reasoning (go-teaching §2–§3).
 
 **Inputs.** `{ job_id: string; detail?: "story" | "moves" | "full" = "story"; range?: [number, number]; max_moments?: number = 6 }`
 
@@ -621,6 +621,7 @@ type DashboardEpisodeSpec = {
 type DashboardSummary = {                              // the shape the review-dashboard skill writes and the template reads
   story?: string;
   takeaways?: { momentId: string; title?: string; takeaway: string }[];   // default: the moments' own takeaway fields
+  selfReview?: { surprises?: string[]; shifts?: string[]; successes?: string[] };   // the student's self-review, each line with what the check found
   strengths?: string[];
   nextGame?: string;
   reliability?: string;

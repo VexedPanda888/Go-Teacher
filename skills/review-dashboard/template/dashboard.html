@@ -740,6 +740,10 @@ function App(D) {
     html += "<div class='cols'>";
     const takeaways = S.takeaways && S.takeaways.length ? S.takeaways : lessonEps.filter((e) => e.takeaway).map((e) => ({ momentId: e.id, title: e.title, takeaway: e.takeaway }));
     if (takeaways.length) html += "<div><h4>What you will do differently</h4><ul>" + takeaways.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.takeaway || "") + "</li>").join("") + "</ul></div>";
+    const SR = S.selfReview || {};
+    const srList = (k, label) => (SR[k] && SR[k].length ? "<p style='margin:6px 0 2px'><b>" + label + "</b></p><ul>" + SR[k].map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul>" : "");
+    const sr = srList("surprises", "What surprised you") + srList("shifts", "Where it shifted") + srList("successes", "Your successes");
+    if (sr) html += "<div><h4>Your self-review, checked</h4>" + sr + "</div>";
     if (S.strengths && S.strengths.length) html += "<div><h4>What went well</h4><ul>" + S.strengths.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
     if (S.nextGame) html += "<div><h4>For the next game</h4><p style='margin:0'>" + esc(S.nextGame) + "</p></div>";
     html += "</div>";

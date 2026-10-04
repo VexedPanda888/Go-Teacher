@@ -1,6 +1,6 @@
 ---
 name: go-teacher-flow
-description: The Go-teacher review procedure for a plain Claude Desktop chat, the only kind that reaches the local katago MCP server — a quick pass for the story of the game, then the key moments one at a time (ask what the student was thinking, explain with engine-checked lines, go back and forth until they can say what they will do differently), then the page and memory. Use when the student asks for a game review or "the Go teacher". Works with go-teaching, katago-analysis and review-dashboard.
+description: The Go-teacher review procedure for a plain Claude Desktop chat, the only kind that reaches the local katago MCP server — a guided self-review first (surprises, shifts, successes, the student's own reasoning, no engine), then the engine checks their reasoning (the story, the key moments one at a time, explained with engine-checked lines, back and forth), one to three takeaways in the student's words, then the page and memory. Use when the student asks for a game review or "the Go teacher". Works with go-teaching, katago-analysis and review-dashboard.
 ---
 
 # Go teacher — the review flow
@@ -20,8 +20,8 @@ in the memory profile's `student`. The tools describe themselves; the full contr
 Memory is the "Go teacher memory" artifact, read and written with `ArtifactData` as `references/memory.md`
 describes.
 
-**The goal of a review:** the student understands the mistakes that mattered and leaves each one able
-to say, in their own words, what they will do differently next time. There is no time budget: aim for
+**The goal of a review:** the student understands the mistakes that mattered and leaves with one to
+three takeaways (ideally one) in their own words: what they will think about differently next time. There is no time budget: aim for
 about 30 minutes, say so at the start, and let the review take longer when the student wants to keep
 going. Never cut a key moment short of its takeaway to save time.
 
@@ -32,29 +32,35 @@ visible").
 ## A review, step by step
 
 Keep two notes files in the sandbox so later steps (and a compacted conversation) can rely on them:
-`notes.md` (game facts, page URL, recall list, the upfront answers, the story, the moments chosen) and
+`notes.md` (game facts, page URL, recall list, the self-review verbatim, the story, the moments chosen) and
 `moments.md` (per key moment: the student's thinking verbatim, the evidence with query ids, the
 explanation's main line, the takeaway). Update them as you go.
 
 **1 — Intake.** Ask for the OGS game link (or an `.sgf` name in the server's `games/` folder). Run
 `sgf_summary`; resolve every warning with the student. Read memory (`references/memory.md`, "At the
 start"). Open the live page (review-dashboard, "Open the page") and give the student the link. Tell them
-the plan in two sentences: a quick pass over the whole game, then a few key moments together, about 30
-minutes in all.
+the plan in two sentences: first they review the game themselves while the engine works, then you check
+their reasoning with the engine and go through a few key moments together, about 30 minutes in all.
 
-**2 — Survey and upfront questions.** `start_game_analysis(sgf)` (sized to this machine, about 10
-minutes). While it runs, ask go-teaching §2 (the upfront questions); save the answers verbatim in
-`notes.md`. If the survey still runs after them, a recall quiz on an old takeaway (go-teaching §6).
+**2 — Survey and guided self-review.** `start_game_analysis(sgf)` (sized to this machine, about 10
+minutes). While it runs, guide the self-review (go-teaching §2): the student steps through the game on
+the page and names their surprises, shifts and successes, then reasons about each; no engine result of
+any kind until it is done. Save it verbatim in `notes.md`. When the survey is done, queue
+`explain_moment(..., background: true)` for the student's moves they named. If the survey still runs
+after the self-review, a recall quiz on an old takeaway (go-teaching §6).
 
-**3 — The story.** `job_results(job_id)`; check `game.reconciliation` first (katago-analysis §2).
-Tell the student the story of the game in a few sentences and set it against their own answers
-(go-teaching §3). Choose the key moments as you go (go-teaching §3, "Choosing key moments"): name the
-first one or two and why; queue any that is not `prepared` with `explain_moment(..., background: true)`.
+**3 — Check their reasoning: the story.** `job_results(job_id)`; check `game.reconciliation` first
+(katago-analysis §2). Tell the story of the game in a few sentences and set it against their
+self-review: what they saw, where their judgment was off, what they did not see (point to it and let
+them look again before explaining) (go-teaching §3). Choose the key moments as you go (go-teaching §3,
+"Choosing key moments"): their own ideas and doubts first; name the first one or two and why; queue any
+that is not `prepared`.
 
 **4 — Each key moment, one at a time** (go-teaching §4):
-1. *Ask first.* The position before the move as a board, the move marked; "what was it for, and what did
-   you expect next?" — they type the purpose and click the line. Optionally "knowing it cost something,
-   what would you play now?" Nothing from the engine about this moment before their answer.
+1. *Ask first.* For a moment from their self-review, read their thinking back and ask only what is
+   missing (usually the line they expected, clicked on a board). Otherwise the position before the move
+   as a board, the move marked; "what was it for, and what did you expect next?" (go-teaching §4.1).
+   Nothing from the engine about this moment before their answer.
 2. *Evidence.* `explain_moment({job_id, move_number: N − 1}, options: {expected_line: their clicked line})`
    (it returns at once when prepared; the expected line adds only the reading check). Note query ids in
    `moments.md`.
@@ -63,15 +69,17 @@ first one or two and why; queue any that is not `prepared` with `explain_moment(
 4. *Back and forth* until they can explain it back: their questions ("what about X?" →
    `explain_moment(pos, X)`), your checks (go-teaching §4.4). Use the waits for the next moment's
    question or a recall quiz.
-5. *Takeaway.* They say what they will do differently; sharpen it with questions until it is concrete
-   and checkable at the board (go-teaching §4.5). Record it in `moments.md`.
+5. *Takeaway.* They say what they will think about or do differently; sharpen it with questions until
+   it is concrete and checkable at the board, and have them write it down in their own words
+   (go-teaching §4.5). Merge it with an earlier one when it is the same lesson. Record it in `moments.md`.
 
-Then decide whether there is another moment worth the student's time. Around 30 minutes, say where you
+Then decide whether there is another moment worth the student's time; stop adding moments when the
+takeaways would go past three. Around 30 minutes, say where you
 are and ask whether to look at one more or finish.
 
 **5 — Deliver.** Build the dashboard from the moments (review-dashboard, "The dashboard") and republish
 it to the live page's URL. In chat, 5–8 lines: the story in one sentence, each takeaway in the student's
-words, and two or three other moves from `swings` they might ask about (the page shows the best move
+words (and a suggestion to focus on the first one in their next few games), and two or three other moves from `swings` they might ask about (the page shows the best move
 at every move in blue). Follow-ups go on the same page (review-dashboard, "Follow-up questions").
 
 **6 — Remember.** Write memory (`references/memory.md`, "At the end") and say in one line what was
