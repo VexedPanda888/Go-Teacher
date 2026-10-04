@@ -7,41 +7,25 @@ from pathlib import Path
 
 
 @dataclass
-class Unit:
-    root: int = 1000
-    line_node: int = 250
-    plies: int = 6
-    stability: list[int] = field(default_factory=lambda: [4])
-    solve: int = 1500
-
-    def copy(self) -> "Unit":
-        return Unit(self.root, self.line_node, self.plies, list(self.stability), self.solve)
-
-
-@dataclass
-class BudgetConfig:
-    overhead_minutes: float = 4.0
-    claude_minutes_per_episode: float = 1.0
-    self_review_minutes_default: float = 5.0     # the blind self-review (four questions)
-    interview_minutes_default: float = 5.0       # the per-episode interviews after triage
-    survey_minutes_target: float = 10.0          # the survey is sized to finish in about this long
-    survey_floor: int = 100
-    survey_cap: int = 1000
-    ld_reserve_episodes: int = 1
-    student_lines_per_episode: float = 1.0       # lines the student proposes per episode (a fix, a resistance line)
-    max_episodes: int = 5
-    min_episodes: int = 3
-    unit_base: Unit = field(default_factory=Unit)
-    unit_cap: Unit = field(default_factory=lambda: Unit(6000, 1000, 8, [4, 16], 4000))
-    ladder: list[str] = field(default_factory=lambda: [
-        "root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000", "line_1000"])
+class SearchConfig:
+    """Fixed search sizes, per machine (no time budget: a review takes as long as it needs). Each profile
+    name is what a tool's `budget: {"profile": ...}` resolves to."""
+    survey_minutes_target: float = 10.0     # the survey is sized from the measured visits/s to finish in about this long
+    survey_floor: int = 100                 # survey visits per move, at least
+    survey_cap: int = 1000                  # ... and at most
+    root: int = 3000                        # a position's own search (the best move, the candidates)
+    line_node: int = 600                    # each search inside a line or a probe
+    plies: int = 8                          # forced lines, imagined lines, PV continuations
+    stability: int = 4                      # the stability search runs at root x this
+    local_solve: int = 4000                 # each playout move of a life-and-death solve
+    quick: int = 200                        # quick checks (a recall-quiz answer, an overlay)
 
 
 @dataclass
 class Thresholds:
     acceptable_margin: float = 1.0
     acceptable_min_visit_share: float = 0.05
-    episode_min_loss: float = 2.0
+    episode_min_loss: float = 2.0            # a move losing at least this is a swing worth naming in the story
     cluster_plies: int = 12
     cluster_distance: int = 4
     cluster_max_span: int = 24
@@ -57,31 +41,16 @@ class Thresholds:
     recovery_winrate: float = 0.35
     decided_score_handicap: float = -15.0
     recovery_score_handicap: float = -8.0
-    got_away_ratio: float = 0.6
-    local_share_local: float = 0.7
-    local_share_global: float = 0.4
     stability_visit_share: float = 0.35
     stability_margin: float = 0.5
     stability_unstable_margin: float = 0.3
     game_state_close: float = 5.0
-    single_blunder_share: float = 0.40
-    accumulation_share: float = 0.20
     reconciliation_tolerance: float = 2.5
-    tag_min_loss: float = 3.0                # got-away-with-it
-    # candidate-tag rules (calibrated in WS8 on 20 seed games)
-    tag_plausible_min_loss: float = 2.0      # 3/4/5: root loss
-    tag_plausible_min_peer: float = 0.20     # 3/4/5: peer-rank probability of the played move
-    tag_plausible_ratio: float = 1.5         # 3/4/5: played >= ratio x best (peer probabilities)
-    tag_intuition_best_min: float = 0.20     # 6/15/1: target-rank probability of the best move
-    tag_intuition_played_max: float = 0.10   # 6/15/1: peer-rank probability of the played move
-    tag_punish_min_loss: float = 5.0         # 13: the opponent's previous move lost at least this
-    tag_direction_min_distance: int = 5      # 1 by ownership attribution: best this far from played
-    tag_passive_own_up: float = 0.5          # 14: the played move raises the student's groups' ownership this much
-    tag_passive_opp_down: float = 0.5        # 14: ... while the best move lowers the opponent's this much
     positive_min_choice: float = 0.5         # positives: the second candidate is this many points worse than the best
-    quick_visits: int = 200
+    group_event_min_size: int = 4            # story: groups of at least this many stones have their fate told
+    group_event_hold: int = 6                # story: a group's new status must still hold this many moves later
     stable_stop_delta: float = 0.5
-    # causal evidence (contract v0.3): races, reply character
+    # causal evidence: races, reply character, lines, end comparisons
     race_max_liberties: int = 4              # capture race: adjacent unsettled groups, each at most this many liberties
     local_radius: int = 4                    # a reply within this Chebyshev distance of the move is "local"
     sharp_margin: float = 3.0                # local reply beats the best tenuki by this much -> "local_sharp"
@@ -89,14 +58,8 @@ class Thresholds:
     human_margin: float = 1.0                # forced_line: a human-profile move within this of the best replaces it
     territory_diff_min: float = 2.0          # terminal comparison: report regions that differ by at least this
     group_change_min: float = 0.2            # terminal comparison: a status change needs this much ownership movement
-    # belief probes (intent_probe / expectation_probe); calibrate on the seed games
-    defend_radius: int = 2                   # a group "defended" by a move has a stone this close to it
-    neighborhood_radius: int = 3             # local answers / local attacks are confined to this Chebyshev radius
-    needs_defending_alive: float = 0.7       # needs_defending: the group is still owned above this after the attack
-    safe_group_dead: float = 0.3             # group_is_safe: the group left behind falls below this after the reply
-    sente_threat_min: float = 0.5            # is_sente: the move threatened at least this much
-    tenuki_min: float = 0.5                  # is_sente: the opponent gains at least this much by not answering
-    risk_stdev_ratio: float = 1.5            # behind_must_invade / ahead_can_coast: score-stdev ratio played vs best
+    defend_radius: int = 2                   # intent_probe: a group "defended" by a move has a stone this close to it
+    neighborhood_radius: int = 3             # intent_probe: local answers / local attacks are confined to this radius
     misread_margin: float = 3.0              # expectation_probe: the first imagined move losing more than this is the misread
 
 
@@ -129,11 +92,10 @@ class KatagoConfig:
 
 
 @dataclass
-class VerificationConfig:
-    """The background verification queue (contract §1.22–§1.24)."""
-    speculative_episodes: int = 4           # when a survey with a plan finishes, precompute this many top episodes (0: off)
-    background_priority: int = 5            # KataGo priority of queued probes: above the survey (0), below Claude's calls (10)
-    max_wait_seconds: float = 240.0         # verification_results(wait_seconds) is capped at this
+class PrefetchConfig:
+    """Background explain_moment work (contract §1.20): Claude's identical later call returns at once."""
+    moments: int = 3                        # when a survey finishes, prepare this many of its key moments (0: off)
+    priority: int = 5                       # KataGo priority of background work: above the survey (0), below Claude's calls (10)
 
 
 @dataclass
@@ -156,9 +118,9 @@ class Config:
     katago: KatagoConfig = field(default_factory=KatagoConfig)
     throughput: Throughput = field(default_factory=Throughput)
     student: StudentConfig = field(default_factory=StudentConfig)
-    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
-    verification: VerificationConfig = field(default_factory=VerificationConfig)
+    prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
     reviews_dir: str = "reviews"
     games_dir: str = "games"          # SGF files given by name are looked up here; OGS downloads are cached here
     ogs: OgsConfig = field(default_factory=OgsConfig)
@@ -179,11 +141,7 @@ class Config:
 def _fill(dc, data: dict):
     for k, v in (data or {}).items():
         if hasattr(dc, k):
-            cur = getattr(dc, k)
-            if isinstance(cur, Unit) and isinstance(v, dict):
-                _fill(cur, v)
-            else:
-                setattr(dc, k, v)
+            setattr(dc, k, v)
     return dc
 
 
@@ -199,9 +157,9 @@ def load_config(path: str | Path | None) -> Config:
     _fill(cfg.katago, data.get("katago"))
     _fill(cfg.throughput, data.get("throughput"))
     _fill(cfg.student, data.get("student"))
-    _fill(cfg.budget, data.get("budget"))          # unit_base / unit_cap tables fill their Unit in place
+    _fill(cfg.search, data.get("search"))
     _fill(cfg.thresholds, data.get("thresholds"))
-    _fill(cfg.verification, data.get("verification"))
+    _fill(cfg.prefetch, data.get("prefetch"))
     cfg.reviews_dir = data.get("paths", {}).get("reviews_dir", cfg.reviews_dir)
     cfg.games_dir = data.get("paths", {}).get("games_dir", cfg.games_dir)
     _fill(cfg.ogs, data.get("ogs"))

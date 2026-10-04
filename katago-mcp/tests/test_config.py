@@ -15,6 +15,11 @@ def machine_toml(name: str) -> str:
 
 
 class TestMachineConfigs(unittest.TestCase):
+    def test_slower_machines_search_less(self):
+        sizes = {n: load_config(machine_toml(n)).search for n in MACHINES}
+        self.assertGreater(sizes["m5pro"].root, sizes["m2air"].root)
+        self.assertGreaterEqual(sizes["m5pro"].line_node, sizes["r5700xt"].line_node)
+
     def test_search_threads_reach_the_engine_command(self):
         for name in MACHINES:
             cfg = load_config(machine_toml(name))
@@ -29,27 +34,27 @@ class TestMachineConfigs(unittest.TestCase):
         self.assertNotIn("-override-config", KataGoEngine("katago", "a.cfg", "m.bin.gz").command())
 
     def test_shared_sections_are_identical_across_machines(self):
-        """Calibration edits [thresholds] (and budget/student) once per machine; keep the three in sync."""
+        """[thresholds], [prefetch], [student] and [paths] are the same on every machine; [search] differs."""
         data = {}
         for name in MACHINES:
             with open(machine_toml(name), "rb") as f:
                 data[name] = tomllib.load(f)
-        for section in ("student", "budget", "thresholds", "paths"):
+        for section in ("student", "thresholds", "prefetch", "paths"):
             first = data[MACHINES[0]].get(section)
             for name in MACHINES[1:]:
                 self.assertEqual(data[name].get(section), first, f"[{section}] differs in {name}.toml")
 
 
 class TestLoadConfig(unittest.TestCase):
-    def test_budget_units_and_throughput_path(self):
+    def test_search_sizes_and_throughput_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = os.path.join(tmp, "box.toml")
             with open(p, "w") as f:
-                f.write("[budget]\nsurvey_cap = 800\n[budget.unit_base]\nroot = 1234\n[budget.unit_cap]\nplies = 10\n")
-            cfg = load_config(p)
-            self.assertEqual(cfg.budget.survey_cap, 800)
-            self.assertEqual((cfg.budget.unit_base.root, cfg.budget.unit_base.line_node), (1234, 250))
-            self.assertEqual((cfg.budget.unit_cap.plies, cfg.budget.unit_cap.root), (10, 6000))
+                f.write("[search]\nsurvey_cap = 800\nroot = 1234\n[budget]\nmin_episodes = 3\n[prefetch]\nmoments = 0\n")
+            cfg = load_config(p)             # an old [budget] section is ignored
+            self.assertEqual((cfg.search.survey_cap, cfg.search.root, cfg.search.line_node), (800, 1234, 600))
+            self.assertEqual(cfg.prefetch.moments, 0)
+            self.assertFalse(hasattr(cfg, "budget"))
             self.assertEqual(str(cfg.throughput_path), os.path.join(tmp, "box.throughput.json"))
         self.assertIsNone(load_config(None).throughput_path)
 

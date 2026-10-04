@@ -71,3 +71,14 @@ Changes from v0.5.2 to v0.5.3 (recall quizzes on past lessons):
 
 1. `dashboard_row` boards take `from_game`: a position of a past game, shown on this review's page with that game's record in the row (§1.25). go-teaching §4.4 uses it to quiz old lessons while the verification runs.
 2. `sgf` inputs accept the memory's game id form `ogs_12345678`.
+
+Changes from v0.5.3 to v0.6.0 (the teacher-pattern redesign, `docs/plan.md` WS10, decisions 19–22):
+
+1. No time budget: `plan_budget` and the active plan are gone; budget profiles resolve to fixed per-machine sizes in `[search]` (§0.4), which replaces `[budget]`; `engine_info` reports `search` and `estimates` (how long `explain_moment` takes on this machine) instead of `active_plan` (§1.1).
+2. `job_results` returns the story instead of the digest (§1.5): `lead`, `group_events` (§3.6), `swings` (§3.7), `decisive` / `last_chance`, `points_lost` (`you` / `opponent`), and `moments` (§3.3) in place of `episodes`, each with `findable_move`, `opponent_best_reply`, its `group_events` and `prepared`; `detail` is `story` | `moves` | `full`, `max_moments` replaces `max_episodes`.
+3. New `explain_moment` (§1.6): the deeper search with a stability re-run, both forced lines with resistance, the end comparison, both moves' purpose, human probabilities, the findable move and, when asked or when the reply is a local fight, the reading check; `background: true` queues it.
+4. The sealed verification queue is gone (`start_verification`, `record_interview`, `verification_results`, the `sealed` error and every check of it): when a survey finishes, the server prepares `explain_moment` for the top `[prefetch].moments` key moments (§1.3, §0.8); "ask before you tell" is a rule of conduct.
+5. The taxonomy is gone: candidate tags, style axis, pattern hashes, got-away-with-it, game type and the after-best ownership searches of the survey; `intent_probe` keeps its evidence and drops `belief` / `matches` (§1.11) and their thresholds.
+6. `get_position_ref`, `group_status` and `ownership_diff` are gone (positions are passed as `{job_id, move_number}`; `analyze_position` returns groups; `terminal_features` compares ends).
+7. `validate_variations`: episode `kind` is `moment` | `question`; `takeaway` replaces `category`, `tags`, `rule_check`, `principle`, `cue`, `belief` and the branches' `ledger_ref`; the summary has `story` and `takeaways` instead of `headline`, `lessons` and `selfReview` (§1.18).
+8. The seeding command (`katago-mcp-seed`) and its calibration pass are removed. Positives are capped at 3.

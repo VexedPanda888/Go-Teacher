@@ -23,44 +23,32 @@ rank = "7k"
 target_offset_stones = 3
 horizon_rank = "rank_1d"
 
-[budget]
-overhead_minutes = 4
-claude_minutes_per_episode = 1.0
-self_review_minutes_default = 5     # blind self-review
-interview_minutes_default = 5       # per-episode interviews
-survey_minutes_target = 10          # survey sized to finish in about this long
+[search]
+# Fixed search sizes for this machine: a review takes as long as it needs (engine_info reports how long
+# explain_moment takes here). Slower machine: smaller sizes, never fewer checks.
+survey_minutes_target = 10          # the survey is sized from the measured visits/s to take about this long
 survey_floor = 100
 survey_cap = 1000
-ld_reserve_episodes = 1
-student_lines_per_episode = 1       # lines the student proposes per episode, budgeted (a fix, a resistance line)
-max_episodes = 5
-min_episodes = 1                    # one lesson per review: one episode is selected, interviewed and verified
-unit_base = { root = 1000, line_node = 250, plies = 6, stability = [4], solve = 1500 }
-unit_cap  = { root = 6000, line_node = 1000, plies = 8, stability = [4, 16], solve = 4000 }
-ladder = ["root_3000", "line_600", "stability_16x", "plies_8", "solve_4000_all_ld", "root_6000", "line_1000"]
+root = 2000                         # a position's own search
+line_node = 400                     # each search inside a line or a probe
+plies = 8                           # forced lines, imagined lines, PV continuations
+stability = 4                       # the stability re-run searches at root x this
+local_solve = 2500                  # each move of a life-and-death playout
+quick = 200
 
 [thresholds]
 acceptable_margin = 1.0
-episode_min_loss = 2.0
+episode_min_loss = 2.0              # a move losing at least this is a swing the story names
 alive = 0.6
 dead = -0.6
 reconciliation_tolerance = 2.5
-# candidate-tag rules, calibrated in WS8 (notes in seed/calibration.md, kept locally, not in git)
-tag_plausible_min_loss = 2.0
-tag_plausible_min_peer = 0.20
-tag_plausible_ratio = 1.5
-tag_intuition_best_min = 0.20
-tag_intuition_played_max = 0.10
-tag_punish_min_loss = 5.0
-tag_direction_min_distance = 5
-tag_passive_own_up = 0.5
-tag_passive_opp_down = 0.5
 positive_min_choice = 0.5
+group_event_min_size = 4            # the story tells the fate of groups this big
+group_event_hold = 6                # ... when the new status still holds this many moves later
 
-[verification]
-speculative_episodes = 4            # when a planned survey finishes, precompute this many top episodes (0: off)
-background_priority = 5             # KataGo priority of queued probes: survey 0 < background < Claude's calls 10
-max_wait_seconds = 240              # cap of verification_results(wait_seconds)
+[prefetch]
+moments = 3                         # when a survey finishes, prepare explain_moment for this many key moments (0: off)
+priority = 5                        # KataGo priority of that work: survey 0 < prefetch < Claude's calls 10
 
 [paths]
 reviews_dir = "reviews"

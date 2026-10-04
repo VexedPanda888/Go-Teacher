@@ -89,14 +89,15 @@ def cmd_selfcheck(args) -> int:
         print("human model ok:", hp["profiles"]["rank_7k"]["top"][:3])
         if args.sgf:
             text = open(args.sgf, encoding="utf-8").read()
-            s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student)
+            s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student, options={"prefetch": False})
             print(f"survey {s['job_id']} started ({s['positions_total']} positions @ {s['visits_per_move']} visits)")
             t.wait_for_job(s["job_id"], 2, lambda st: print(f"  {st['positions_done']}/{st['positions_total']} "
                                                             f"elapsed {st['elapsed_seconds']}s", end="\r"))
             print()
-            d = t.job_results(s["job_id"], "digest", max_episodes=5)
-            print(json.dumps({k: d[k] for k in ("game", "phases", "game_type", "decisive", "last_chance", "points_lost")}, indent=2))
-            print("episodes:", [(e["id"], e["moves"], e["points_lost_total"], e["candidate_tags"]) for e in d["episodes"]])
+            d = t.job_results(s["job_id"], "story", max_moments=5)
+            print(json.dumps({k: d[k] for k in ("game", "phases", "lead", "decisive", "last_chance", "points_lost")}, indent=2))
+            print("group events:", [(e["move"], e["group"], e["from"], e["to"]) for e in d["group_events"]])
+            print("key moments:", [(m["id"], m["moves"], m["played"], m["best"], m["points_lost"]) for m in d["moments"]])
             if d["game"]["reconciliation"]["status"] == "mismatch":
                 print("RECONCILIATION MISMATCH:", d["game"]["reconciliation"], file=sys.stderr)
                 rc = max(rc, 3)
@@ -112,9 +113,9 @@ def cmd_survey(args) -> int:
     t = _tools(args, start_engine=not args.mock)
     try:
         text = open(args.sgf, encoding="utf-8").read()
-        s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student)
+        s = t.start_game_analysis(text, {"visits_per_move": args.visits}, args.student, options={"prefetch": False})
         t.wait_for_job(s["job_id"], 0.5 if args.mock else 2)
-        print(json.dumps(t.job_results(s["job_id"], "digest", max_episodes=args.episodes), indent=2, ensure_ascii=False))
+        print(json.dumps(t.job_results(s["job_id"], "story", max_moments=args.moments), indent=2, ensure_ascii=False))
         return 0
     except ToolError as e:
         print(json.dumps(e.to_dict(), indent=2), file=sys.stderr)
@@ -144,12 +145,12 @@ def main(argv=None) -> int:
     c.add_argument("--student")
     c.add_argument("--visits", type=int, default=200)
     c.set_defaults(fn=cmd_selfcheck)
-    v = sub.add_parser("survey", help="run a whole-game survey and print the digest")
+    v = sub.add_parser("survey", help="run a whole-game survey and print its story")
     v.add_argument("sgf")
     v.add_argument("--config")
     v.add_argument("--student")
     v.add_argument("--visits", type=int, default=300)
-    v.add_argument("--episodes", type=int, default=6)
+    v.add_argument("--moments", type=int, default=6)
     v.add_argument("--mock", action="store_true", help="use the mock engine (no KataGo)")
     v.set_defaults(fn=cmd_survey)
     args = p.parse_args(argv)

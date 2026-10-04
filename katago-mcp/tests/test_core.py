@@ -220,18 +220,35 @@ class TestRender(unittest.TestCase):
         self.assertEqual(row16.split()[1:][15], "@")
 
 
-class TestPersistentBest(unittest.TestCase):
-    def test_links_episodes_sharing_best_or_teachable_point(self):
-        from katago_mcp.metrics import link_persistent_best
-        def ep(i, best, teach):
-            return {"id": i, "root": {"best": best}, "teachable_move_preliminary": teach}
-        eps = [ep("E1", "M6", "M6"), ep("E2", "Q3", "M6"), ep("E3", "D4", "D4"), ep("E4", "pass", "pass"),
-               ep("E5", "pass", "pass")]
-        link_persistent_best(eps)
-        self.assertEqual(eps[0]["persistent_best"], ["E2"])
-        self.assertEqual(eps[1]["persistent_best"], ["E1"])
-        self.assertEqual(eps[2]["persistent_best"], [])
-        self.assertEqual(eps[3]["persistent_best"], [])   # passes never link
+class TestGroupEvents(unittest.TestCase):
+    def test_a_group_that_dies_is_told_once_and_a_wobble_is_not(self):
+        """The story's group fates: the Black group dies at move 5 and stays dead; the White group's
+        one-position wobble to unsettled at move 3 is not an event."""
+        from katago_mcp.config import Thresholds
+        from katago_mcp.engine import Analysis
+        from katago_mcp.metrics import GameAnalysis, group_events
+        black = [gtp_to_idx(p) for p in ("C3", "D3", "E3", "F3")]
+        white = [gtp_to_idx(p) for p in ("Q10", "Q11", "Q12", "Q13")]
+        moves = [(WHITE, gtp_to_idx(p)) if k % 2 == 0 else (BLACK, gtp_to_idx(p))
+                 for k, p in enumerate(("Q16", "Q4", "R16", "R4", "S16", "S4", "P16", "P4"))]
+
+        def position(k):
+            own = [0.0] * 361
+            for i in black:
+                own[i] = 0.9 if k < 5 else -0.9
+            for i in white:
+                own[i] = 0.0 if k == 3 else -0.9
+            return Analysis(to_move=BLACK if k % 2 else WHITE, visits=100, winrate=0.5, score_lead=0.0, score_stdev=1.0,
+                            candidates=[], ownership=own)
+        ga = GameAnalysis(game_id="g", size=19, rules="japanese", komi=6.5, handicap=0, student_color=BLACK, moves=moves,
+                          setup_black=black, setup_white=white, first_to_move=WHITE,
+                          positions=[position(k) for k in range(len(moves) + 1)], refs=[], visits_per_move=100,
+                          result={"raw": "W+R"})
+        events = group_events(ga, Thresholds())
+        self.assertEqual(len(events), 1, events)
+        e = events[0]
+        self.assertEqual((e["move"], e["by"], e["whose"], e["from"], e["to"]), (5, "opponent", "yours", "alive", "dead"))
+        self.assertEqual(e["size"], 4)
 
 
 class TestPositives(unittest.TestCase):

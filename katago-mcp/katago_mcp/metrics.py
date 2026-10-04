@@ -5,14 +5,13 @@ Conventions: `positions[k]` is the Analysis of P_k (after move k); move n is
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 
 from .board import BLACK, EMPTY, COLOR_CHAR, Board, opponent
 from .config import Thresholds
 from .coords import chebyshev, gtp_to_idx, idx_to_gtp, neighbors
 from .engine import Analysis
-from .regions import LABELS, STANDARD_CODES, standard_code, standard_partition, bbox
+from .regions import LABELS, standard_code, standard_partition
 
 
 def sign_of(color: int) -> float:
@@ -36,7 +35,6 @@ class GameAnalysis:
     visits_per_move: int
     result: dict
     profiles: dict[str, str] = field(default_factory=dict)      # alias -> rank_xx
-    after_best_ownership: dict[int, list[float]] = field(default_factory=dict)   # move n -> ownership after best move
     boards: list[Board] = field(default_factory=list, repr=False)
 
     def build_boards(self) -> None:
@@ -156,34 +154,6 @@ def phase_of(n: int, ph: dict) -> str:
     return "opening" if n <= ph["opening"][1] else "middlegame"
 
 
-# ------------------------------------------------------------------ ownership attribution
-def regional_attribution(own_a: list[float], own_b: list[float], mover: int, size: int, score_delta: float | None) -> dict:
-    """Δownership by standard region, mover-perspective (negative = loss for mover)."""
-    s = sign_of(mover)
-    parts = standard_partition(size)
-    regional = []
-    total_loss = 0.0
-    for code in STANDARD_CODES:
-        d = s * sum(own_b[i] - own_a[i] for i in parts[code])
-        regional.append({"region": code, "label": LABELS[code], "ownership_delta_points": round(d, 2)})
-        total_loss += max(0.0, -d)
-    primary = min(regional, key=lambda r: r["ownership_delta_points"])
-    local_share = (-primary["ownership_delta_points"]) / total_loss if total_loss > 1e-6 else 0.0
-    for r in regional:
-        r["share"] = round(max(0.0, -r["ownership_delta_points"]) / total_loss, 3) if total_loss > 1e-6 else 0.0
-    explained = min(1.0, total_loss / abs(score_delta)) if score_delta and abs(score_delta) > 1e-6 else None
-    return {"regional": regional, "primary_region": primary["region"], "local_share": round(local_share, 3),
-            "explained_share": None if explained is None else round(explained, 3)}
-
-
-def classify_local(local_share: float, th: Thresholds) -> str:
-    if local_share >= th.local_share_local:
-        return "local"
-    if local_share <= th.local_share_global:
-        return "global"
-    return "mixed"
-
-
 # ------------------------------------------------------------------ groups
 def group_status_label(mean_own_owner: float, th: Thresholds) -> str:
     if mean_own_owner >= th.alive:
@@ -295,73 +265,6 @@ def race_anchor_set(races: list[dict], board_size: int) -> set[int]:
     return {gtp_to_idx(g["anchor"], board_size) for r in races for g in r["groups"]}
 
 
-def group_changes(board_before: Board, own_before: list[float], own_after: list[float], th: Thresholds,
-                  min_size: int = 3, top: int = 3) -> list[dict]:
-    """Ownership change of the groups present before the move (captured stones count as -1 after)."""
-    out = []
-    for g in board_before.groups():
-        if g.size < min_size:
-            continue
-        mb, ma = group_mean_ownership(g, own_before), group_mean_ownership(g, own_after)
-        code = standard_code(g.anchor, board_before.size)
-        out.append({"group": f"{COLOR_CHAR[g.color]} {LABELS[code]} ({g.size})", "anchor": idx_to_gtp(g.anchor, board_before.size),
-                    "before": f"{group_status_label(mb, th)} {mb:+.2f}", "after": f"{group_status_label(ma, th)} {ma:+.2f}",
-                    "before_value": round(mb, 3), "after_value": round(ma, 3), "points": round(g.size * (ma - mb), 2),
-                    "status_before": group_status_label(mb, th), "status_after": group_status_label(ma, th)})
-    out.sort(key=lambda r: abs(r["after_value"] - r["before_value"]), reverse=True)
-    return out[:top]
-
-
-# ------------------------------------------------------------------ style axis
-def style_axis(board_before: Board, own_played: list[float], own_best: list[float], student: int) -> dict:
-    d_own = 0.0
-    d_opp = 0.0
-    for g in board_before.groups():
-        s = sign_of(g.color)
-        diff_best_minus_played = s * sum(own_best[i] - own_played[i] for i in g.stones)   # owner perspective, points
-        if g.color == student:
-            d_own += max(0.0, diff_best_minus_played)             # best protects my groups
-        else:
-            d_opp += max(0.0, -diff_best_minus_played)            # best hurts the opponent's groups
-    tot = d_own + d_opp
-    own_share = d_own / tot if tot > 1e-6 else 0.5
-    label = "overplay" if own_share >= 0.6 else "slack" if own_share <= 0.4 else "neutral"
-    if tot < 0.5:
-        label = "neutral"
-    return {"label": label, "own_share": round(own_share, 3), "opponent_share": round(1 - own_share, 3),
-            "own_points": round(d_own, 2), "opponent_points": round(d_opp, 2)}
-
-
-# ------------------------------------------------------------------ pattern hash
-def pattern_hash(board: Board, idx: int, mover: int, window: int = 7) -> str:
-    size = board.size
-    half = window // 2
-    r0, c0 = divmod(idx, size)
-    cells = []
-    for dr in range(-half, half + 1):
-        row = []
-        for dc in range(-half, half + 1):
-            r, c = r0 + dr, c0 + dc
-            if not (0 <= r < size and 0 <= c < size):
-                row.append("#")
-            else:
-                v = board.cells[r * size + c]
-                row.append("." if v == EMPTY else ("X" if v == mover else "O"))
-        cells.append(row)
-
-    def variants(m):
-        out = []
-        cur = m
-        for _ in range(4):
-            out.append(cur)
-            out.append([list(reversed(row)) for row in cur])
-            cur = [list(row) for row in zip(*cur[::-1])]   # rotate 90
-        return out
-
-    canon = min("".join("".join(r) for r in v) for v in variants(cells))
-    return ("ph_" if window == 7 else f"ph{window}_") + hashlib.sha1(canon.encode()).hexdigest()[:12]
-
-
 # ------------------------------------------------------------------ stability
 def stability_flag(before: Analysis, played: int | None, th: Thresholds) -> str:
     if len(before.candidates) < 2 or before.visits <= 0:
@@ -435,8 +338,84 @@ def decisive_and_last_chance(ga: GameAnalysis, rows: list[dict], th: Thresholds)
     return decisive, last_chance
 
 
-# ------------------------------------------------------------------ episodes
-def build_episodes(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds, max_episodes: int = 10) -> list[dict]:
+# ------------------------------------------------------------------ the story: groups that live or die
+def group_events(ga: GameAnalysis, th: Thresholds, max_events: int = 15) -> list[dict]:
+    """Moves at which a group of at least `group_event_min_size` stones changes status (alive / unsettled /
+    dead, from ownership; captured stones count as dead) and the new status still holds `group_event_hold`
+    moves later. The fates of the groups are the plot of a game: who lived, who died, when."""
+    if ga.student_color is None or ga.M < 1 or any(a.ownership is None for a in ga.positions):
+        return []
+    ga.build_boards()
+    M, hold = ga.M, th.group_event_hold
+    reported: list[tuple[set[int], str]] = []
+    events = []
+    for k in range(1, M + 1):
+        prev, own_prev, own_now = ga.boards[k - 1], ga.positions[k - 1].ownership, ga.positions[k].ownership
+        for g in prev.groups():
+            if g.size < th.group_event_min_size:
+                continue
+            before = group_mean_ownership(g, own_prev)
+            after = group_mean_ownership(g, own_now, ga.boards[k])
+            s_before, s_after = group_status_label(before, th), group_status_label(after, th)
+            if s_before == s_after:
+                continue
+            if k >= 2 and group_status_label(group_mean_ownership(g, ga.positions[k - 2].ownership), th) != s_before:
+                continue                                  # the old status was itself a one-move wobble
+            j = min(M, k + hold)
+            if group_status_label(group_mean_ownership(g, ga.positions[j].ownership, ga.boards[j]), th) != s_after:
+                continue
+            stones = set(g.stones)
+            last = next((to for st, to in reversed(reported) if st & stones), None)
+            if last == s_after:
+                continue                              # the same group told again with the same fate
+            reported.append((stones, s_after))
+            mover = ga.moves[k - 1][0]
+            events.append({"move": k, "by": "you" if mover == ga.student_color else "opponent",
+                           "group": group_label(g, ga.size), "whose": "yours" if g.color == ga.student_color else "opponent's",
+                           "anchor": idx_to_gtp(g.anchor, ga.size), "size": g.size, "from": s_before, "to": s_after,
+                           "ownership_before": round(before, 2), "ownership_after": round(after, 2)})
+    if len(events) > max_events:
+        keep = sorted(events, key=lambda e: -e["size"])[:max_events]
+        events = [e for e in events if e in keep]
+    return events
+
+
+def lead_timeline(ga: GameAnalysis, step: int = 20) -> list[dict]:
+    """The student's score lead every `step` moves and at the end: the shape of the game at a glance."""
+    if ga.student_color is None:
+        return []
+    s = sign_of(ga.student_color)
+    ks = list(range(0, ga.M + 1, step))
+    if ks[-1] != ga.M:
+        ks.append(ga.M)
+    return [{"move": k, "lead": round(s * ga.positions[k].score_lead, 1)} for k in ks]
+
+
+def swings(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds, top: int = 10) -> list[dict]:
+    """The biggest single-move losses of both players, in move order: where the points changed hands. An
+    opponent's swing says how much of it the student's next move gave back (`gave_back`)."""
+    if ga.student_color is None:
+        return []
+    s = sign_of(ga.student_color)
+    you = COLOR_CHAR[ga.student_color]
+    big = sorted((r for r in rows if r["points_lost"] >= th.episode_min_loss), key=lambda r: -r["points_lost"])[:top]
+    out = []
+    for r in sorted(big, key=lambda r: r["n"]):
+        e = {"move": r["n"], "by": "you" if r["color"] == you else "opponent", "played": r["move"], "best": r["best"],
+             "points_lost": r["points_lost"], "lead_after": round(s * r["score_after"], 1),
+             "region": LABELS[standard_code(r["idx"], ga.size)] if r["idx"] is not None else None,
+             "phase": phase_of(r["n"], ph)}
+        if e["by"] == "opponent" and r["n"] < len(rows):
+            e["gave_back"] = rows[r["n"]]["points_lost"]
+        out.append(e)
+    return out
+
+
+# ------------------------------------------------------------------ the story: key moments
+def build_moments(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds, events: list[dict] | None = None,
+                  max_moments: int = 6) -> list[dict]:
+    """The student's costly sequences (a move losing at least episode_min_loss, chained with the student's
+    nearby losses that follow), ranked by the first move's loss. Candidates for the review's key moments."""
     if ga.student_color is None:
         return []
     ga.build_boards()
@@ -460,80 +439,44 @@ def build_episodes(ga: GameAnalysis, rows: list[dict], ph: dict, th: Thresholds,
                 break
         if not placed:
             chains.append([r])
-    # ranked by the root's loss: the chain sum counts the same group again each time both sides swing it
+    # ranked by the first move's loss: a chain sum counts the same group again each time both sides swing it
     chains.sort(key=lambda ch: -ch[0]["points_lost"])
-    episodes = []
     s = sign_of(ga.student_color)
-    for k, ch in enumerate(chains[:max_episodes], 1):
+    moments = []
+    for k, ch in enumerate(chains[:max_moments], 1):
         root = ch[0]
-        n = root["n"]
-        before, after = ga.positions[n - 1], ga.positions[n]
-        board_before = ga.boards[n - 1]
-        pts = {x["idx"] for x in ch if x["idx"] is not None}
-        region_idx = pts or {root["best_idx"]}
-        region_code = standard_code(root["idx"] if root["idx"] is not None else root["best_idx"], ga.size)
-        bb = bbox(region_idx, ga.size)
+        n, last_n = root["n"], ch[-1]["n"]
+        before = ga.positions[n - 1]
         lead_before = s * before.score_lead
         state = "ahead" if lead_before > th.game_state_close else "behind" if lead_before < -th.game_state_close else "close"
-        acc = root["acceptable"]
-        best_idx = root["best_idx"]
-        cp_best = candidate_for(before, best_idx)
-        cp_played = candidate_for(before, root["idx"])
-        attribution = None
-        if before.ownership is not None and after.ownership is not None:
-            attribution = regional_attribution(before.ownership, after.ownership, ga.student_color, ga.size,
-                                               -root["points_lost"])
-        style = {"label": "neutral", "own_share": 0.5, "opponent_share": 0.5, "note": "no after-best ownership"}
-        if n in ga.after_best_ownership and after.ownership is not None:
-            style = style_axis(board_before, after.ownership, ga.after_best_ownership[n], ga.student_color)
         human_played = human_prob(before, ga.profiles, root["idx"], ga.size)
-        human_best = human_prob(before, ga.profiles, best_idx, ga.size)
-        # preliminary teachable move: highest target probability within the acceptable set
-        teach, learn = best_idx, human_best.get("target", 0.0)
-        for m in acc:
+        human_best = human_prob(before, ga.profiles, root["best_idx"], ga.size)
+        # the findable move: within a point of the best, the one a player a few stones stronger most often plays
+        findable, findable_p = root["best_idx"], human_best.get("target", 0.0)
+        for m in root["acceptable"]:
             hp = human_prob(before, ga.profiles, m, ga.size).get("target", 0.0)
-            if hp > learn:
-                teach, learn = m, hp
-        gaw = got_away_with_it(rows, n, th)
-        sig = {
-            "prior_played": root["prior_played"], "prior_best": root["prior_best"],
-            "policy_top": idx_to_gtp(_policy_top(before, ga.size), ga.size) if before.policy else None,
-            "search_best": root["best"],
-            "local_loss_share": attribution["local_share"] if attribution else None,
-            "explained_share": attribution["explained_share"] if attribution else None,
-            "score_stdev_played": round(cp_played.score_stdev, 2) if cp_played else None,
-            "score_stdev_best": round(cp_best.score_stdev, 2) if cp_best else None,
-            "ko_present": board_before.ko_capture_available(ga.rules),
-        }
-        changes = group_changes(board_before, before.ownership, after.ownership, th) if (before.ownership and after.ownership) else []
-        ep = {
-            "id": f"E{k}", "moves": [n, ch[-1]["n"]], "student_moves": [x["n"] for x in ch],
-            "root": {"move": n, "played": root["move"], "best": root["best"], "points_lost": root["points_lost"],
-                     "position_ref_before": ga.refs[n - 1], "position_ref_after": ga.refs[n]},
-            "points_lost_total": round(sum(x["points_lost"] for x in ch), 2),
-            "region": {"standard": region_code, "label": LABELS[region_code],
-                       "bbox": [idx_to_gtp(bb[0], ga.size), idx_to_gtp(bb[1], ga.size)]},
+            if hp > findable_p:
+                findable, findable_p = m, hp
+        after_chain = min(ga.M, last_n + 1)
+        reply = reply_character(ga.positions[n], root["idx"], ga.size, th)
+        moments.append({
+            "id": f"M{k}", "moves": [n, last_n], "student_moves": [x["n"] for x in ch],
+            "move": n, "played": root["move"], "best": root["best"], "points_lost": root["points_lost"],
+            "net_loss": round(max(0.0, lead_before - s * ga.positions[after_chain].score_lead), 1),
+            "position_ref_before": ga.refs[n - 1],
+            "region": LABELS[standard_code(root["idx"] if root["idx"] is not None else root["best_idx"], ga.size)],
             "phase": phase_of(n, ph),
-            "game_state_before": {"score_lead": round(lead_before, 2), "label": state},
-            "acceptable_set": {"margin": th.acceptable_margin, "moves": [idx_to_gtp(m, ga.size) for m in acc],
-                               "played_in_set": root["in_acceptable_set"],
-                               "violation": round(max(0.0, s * ((cp_best.score_lead if cp_best else before.score_lead) - (cp_played.score_lead if cp_played else after.score_lead))), 2)},
-            "signature": sig,
-            "style_axis": style,
-            "got_away_with_it": gaw,
-            "human": {"played": human_played, "best": human_best},
-            "learnability": round(learn, 4),
-            "teachable_move_preliminary": idx_to_gtp(teach, ga.size),
+            "lead_before": {"score_lead": round(lead_before, 1), "label": state},
+            "acceptable_moves": [idx_to_gtp(m, ga.size) for m in root["acceptable"]],
+            "played_in_acceptable_set": root["in_acceptable_set"],
+            "human": {"played": {k: v for k, v in human_played.items() if k in ("peer", "target")},
+                      "best": {k: v for k, v in human_best.items() if k in ("peer", "target")}},
+            "findable_move": idx_to_gtp(findable, ga.size), "findable_probability": round(findable_p, 4),
+            "opponent_best_reply": None if reply is None else {"move": reply["move"], "character": reply["character"]},
+            "group_events": [e for e in (events or []) if n <= e["move"] <= last_n + th.group_event_hold],
             "stability": stability_flag(before, root["idx"], th),
-            "pattern_hash": pattern_hash(board_before, root["idx"], ga.student_color, 7) if root["idx"] is not None else None,
-            "pattern_hash_5": pattern_hash(board_before, root["idx"], ga.student_color, 5) if root["idx"] is not None else None,
-            "group_status_change": changes,
-        }
-        ep["best_reply"] = reply_character(after, root["idx"], ga.size, th)
-        ep["candidate_tags"] = candidate_tags(ep, rows, ga, n, before, after, th)
-        episodes.append(ep)
-    link_persistent_best(episodes)
-    return episodes
+        })
+    return moments
 
 
 def reply_character(after: Analysis, move_idx: int | None, size: int, th: Thresholds) -> dict | None:
@@ -562,132 +505,6 @@ def reply_character(after: Analysis, move_idx: int | None, size: int, th: Thresh
             "score_stdev": round(best.score_stdev, 2)}
 
 
-def link_persistent_best(episodes: list[dict]) -> None:
-    """A point that is best (or teachable) at several episode roots is one big point left open across
-    the game: list the other episodes sharing it (hint for 2 / 15, and one lesson candidate)."""
-    for ep in episodes:
-        mine = {ep["root"]["best"], ep["teachable_move_preliminary"]} - {None, "pass"}
-        ep["persistent_best"] = [o["id"] for o in episodes if o is not ep
-                                 and mine & ({o["root"]["best"], o["teachable_move_preliminary"]} - {None, "pass"})]
-
-
-def _policy_top(a: Analysis, size: int) -> int | None:
-    if not a.policy:
-        return None
-    best_i, best_v = None, -1.0
-    for i, v in enumerate(a.policy[:size * size]):
-        if v is not None and v > best_v:
-            best_i, best_v = i, v
-    return best_i
-
-
-def got_away_with_it(rows: list[dict], n: int, th: Thresholds) -> dict | None:
-    r = rows[n - 1]
-    if r["points_lost"] < th.tag_min_loss:
-        return None
-    for k in (n + 1, n + 3):
-        if k - 1 < len(rows):
-            o = rows[k - 1]
-            if o["color"] != r["color"] and o["points_lost"] >= th.got_away_ratio * r["points_lost"]:
-                return {"opponent_move": k, "restored_points": o["points_lost"]}
-    return None
-
-
-def candidate_tags(ep: dict, rows: list[dict], ga: GameAnalysis, n: int, before: Analysis, after: Analysis,
-                   th: Thresholds) -> list[str]:
-    tags: list[str] = []
-    root = rows[n - 1]
-    sig = ep["signature"]
-    pl = root["points_lost"]
-    played_idx, best_idx = root["idx"], root["best_idx"]
-    # "Plausible" is judged by the human model (what a player of the student's rank plays), not by
-    # KataGo's policy, which almost always prefers the best move; fall back to the policy without it.
-    hp, hb = ep["human"]["played"], ep["human"]["best"]
-    if "peer" in hp and "peer" in hb:
-        pp, pb = hp["peer"], hb["peer"]
-        pb_target = hb.get("target", pb)
-    else:
-        pp, pb = sig["prior_played"] or 0.0, sig["prior_best"] or 0.0
-        pb_target = pb
-    changes = ep["group_status_change"]
-    own_fell = any(c["group"].startswith(COLOR_CHAR[ga.student_color]) and c["after_value"] < c["before_value"] - 0.15 for c in changes)
-    dist = chebyshev(played_idx, best_idx, ga.size) if played_idx is not None and best_idx is not None else None
-    # 13 failure to punish
-    if n >= 2:
-        prev = rows[n - 2]
-        if prev["color"] != root["color"] and prev["points_lost"] >= th.tag_punish_min_loss and pl >= th.got_away_ratio * prev["points_lost"]:
-            tags.append("13")
-    # 3 / 4 / 5: plausible move refuted by search
-    plausible = pp >= th.tag_plausible_min_peer and pp >= th.tag_plausible_ratio * pb and pl >= th.tag_plausible_min_loss
-    if plausible:
-        if own_fell:
-            tags.append("3")
-        elif n in ga.after_best_ownership and after.ownership is not None:
-            opp_hurt = sum(1 for g in ga.boards[n - 1].groups() if g.color != ga.student_color and g.size >= 3
-                           and sign_of(g.color) * sum(ga.after_best_ownership[n][i] - after.ownership[i] for i in g.stones) / g.size < -0.15)
-            tags.append("4" if opp_hurt else "5")
-        else:
-            tags.append("5")
-    # 6 / 15 / 1 / 2: intuition failed — by KataGo's policy, or the target rank finds the best move
-    # and the student's rank does not
-    prior_pp, prior_pb = sig["prior_played"] or 0.0, sig["prior_best"] or 0.0
-    by_policy = prior_pb >= th.tag_intuition_best_min and prior_pp <= th.tag_intuition_played_max
-    by_human = not plausible and pb_target >= th.tag_intuition_best_min and pp <= th.tag_intuition_played_max
-    if (by_policy or by_human) and dist is not None:
-        if dist <= 2:
-            tags.append("6")
-        elif standard_code(played_idx, ga.size) == standard_code(best_idx, ga.size):
-            tags.append("15")
-        elif dist >= th.tag_direction_min_distance:
-            tags.append("1")
-            best_region = standard_code(best_idx, ga.size)
-            if before.ownership is not None and any(
-                    standard_code(g.anchor, ga.size) == best_region and g.size >= 2
-                    and group_status_label(group_mean_ownership(g, before.ownership), th) == "unsettled"
-                    for g in ga.boards[n - 1].groups()):
-                tags.append("2")
-    # 1 whole-board by ownership attribution, only when the best move is genuinely elsewhere
-    if sig.get("local_loss_share") is not None and sig["local_loss_share"] <= th.local_share_global \
-            and "1" not in tags and not any(t in tags for t in ("6", "15")) \
-            and dist is not None and dist >= th.tag_direction_min_distance:
-        tags.append("1")
-    # 9 choice of fight
-    if ep["style_axis"]["label"] == "overplay" and sig.get("score_stdev_played") and sig.get("score_stdev_best") \
-            and sig["score_stdev_played"] >= 1.5 * sig["score_stdev_best"]:
-        tags.append("9")
-    # 10 aji
-    if before.ownership_stdev is not None and best_idx is not None and played_idx is not None \
-            and standard_code(best_idx, ga.size) != standard_code(played_idx, ga.size):
-        parts = standard_partition(ga.size)
-        reg = parts[standard_code(best_idx, ga.size)]
-        if sum(before.ownership_stdev[i] for i in reg) / len(reg) >= 0.35:
-            tags.append("10")
-    # 11 endgame
-    if ep["phase"] == "endgame" and not any(t in tags for t in ("3", "4", "5")):
-        tags.append("11")
-    # 12 ko
-    if sig.get("ko_present"):
-        tags.append("12")
-    # 7 joseki
-    if ep["phase"] == "opening" and n <= 40 and best_idx is not None and standard_code(best_idx, ga.size) in ("UL", "UR", "LL", "LR"):
-        tags.append("7")
-    # 14 passive
-    if n in ga.after_best_ownership and after.ownership is not None and before.ownership is not None:
-        b = ga.boards[n - 1]
-        own_up = sum(sign_of(g.color) * sum(after.ownership[i] - before.ownership[i] for i in g.stones)
-                     for g in b.groups() if g.color == ga.student_color)
-        opp_down = sum(-sign_of(g.color) * sum(ga.after_best_ownership[n][i] - before.ownership[i] for i in g.stones)
-                       for g in b.groups() if g.color != ga.student_color)
-        if own_up >= th.tag_passive_own_up and opp_down >= th.tag_passive_opp_down:
-            tags.append("14")
-    # dedupe, keep order, cap 3
-    seen = []
-    for t in tags:
-        if t not in seen:
-            seen.append(t)
-    return seen[:3]
-
-
 # ------------------------------------------------------------------ summaries
 def points_lost_summary(rows: list[dict], ph: dict, color_char: str) -> dict:
     out = {"opening": 0.0, "middlegame": 0.0, "endgame": 0.0, "total": 0.0, "per_move": 0.0}
@@ -706,14 +523,6 @@ def points_lost_summary(rows: list[dict], ph: dict, color_char: str) -> dict:
     return out
 
 
-def game_type(episodes: list[dict], student_total: float, th: Thresholds) -> dict:
-    if not episodes or student_total <= 0:
-        return {"type": "mixed", "top_episode_share": 0.0}
-    share = max(e["points_lost_total"] for e in episodes) / student_total
-    t = "single_blunder" if share >= th.single_blunder_share else "accumulation" if share <= th.accumulation_share else "mixed"
-    return {"type": t, "top_episode_share": round(share, 3)}
-
-
 def reconciliation(ga: GameAnalysis, th: Thresholds) -> dict:
     res = ga.result
     if res.get("method") != "score" or res.get("margin") is None or ga.M < 1:
@@ -726,7 +535,8 @@ def reconciliation(ga: GameAnalysis, th: Thresholds) -> dict:
             "engine_final_score": round(eng, 2), "sgf_margin": margin_black, "diff": round(diff, 2)}
 
 
-def positives(ga: GameAnalysis, rows: list[dict], th: Thresholds, top: int = 5) -> list[dict]:
+def positives(ga: GameAnalysis, rows: list[dict], th: Thresholds, top: int = 3) -> list[dict]:
+    """Correct moves a player of the student's rank rarely finds, where the position offered a real choice."""
     if ga.student_color is None:
         return []
     s = sign_of(ga.student_color)
@@ -748,15 +558,15 @@ def positives(ga: GameAnalysis, rows: list[dict], th: Thresholds, top: int = 5) 
     return out[:top]
 
 
-def digest(ga: GameAnalysis, th: Thresholds, max_episodes: int = 10, include_positives: bool = True,
-           complete: bool = True, job_id: str | None = None) -> dict:
+def story(ga: GameAnalysis, th: Thresholds, max_moments: int = 6, complete: bool = True, job_id: str | None = None) -> dict:
+    """The survey read as a teacher's first pass (contract §1.6): how the lead moved, which groups lived or
+    died and when, where the points changed hands, where the game was decided, and the candidate key moments."""
     rows = move_rows(ga, th)
     ph = phases(ga, th)
-    eps = build_episodes(ga, rows, ph, th, max_episodes)
+    events = group_events(ga, th)
+    moments = build_moments(ga, rows, ph, th, events, max_moments)
     student_char = COLOR_CHAR[ga.student_color] if ga.student_color else None
     opp_char = COLOR_CHAR[opponent(ga.student_color)] if ga.student_color else None
-    pl_student = points_lost_summary(rows, ph, student_char) if student_char else None
-    pl_opp = points_lost_summary(rows, ph, opp_char) if opp_char else None
     dec, lc = decisive_and_last_chance(ga, rows, th)
     low_visit = [r["n"] for r in rows if r["visits"] < 0.5 * ga.visits_per_move]
     return {
@@ -765,11 +575,15 @@ def digest(ga: GameAnalysis, th: Thresholds, max_episodes: int = 10, include_pos
         "game": {"student_color": student_char, "handicap": ga.handicap, "komi": ga.komi, "rules": ga.rules,
                  "result": ga.result.get("raw", ""), "reconciliation": reconciliation(ga, th)},
         "phases": ph,
-        "game_type": game_type(eps, pl_student["total"] if pl_student else 0.0, th),
+        "lead": lead_timeline(ga),
+        "group_events": events,
+        "swings": swings(ga, rows, ph, th),
         "decisive": dec, "last_chance": lc,
-        "points_lost": {"student": pl_student, "opponent": pl_opp},
-        "episodes": eps,
-        "positives": positives(ga, rows, th) if include_positives else [],
-        "reliability": {"low_visit_positions": low_visit, "unstable_episodes": [e["id"] for e in eps if e["stability"] == "unstable"]},
+        "points_lost": {"you": points_lost_summary(rows, ph, student_char) if student_char else None,
+                        "opponent": points_lost_summary(rows, ph, opp_char) if opp_char else None},
+        "moments": moments,
+        "positives": positives(ga, rows, th),
+        "reliability": {"low_visit_positions": low_visit,
+                        "unstable_moments": [m["id"] for m in moments if m["stability"] == "unstable"]},
         "profiles": ga.profiles,
     }

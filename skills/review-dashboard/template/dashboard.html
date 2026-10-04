@@ -233,7 +233,7 @@ a { color: var(--accent); }
         <div class="legend" id="graphLegend"></div>
       </div>
       <div class="panel lesson" id="lesson">
-        <h2>Lessons</h2>
+        <h2>Key moments</h2>
         <ul class="eplist" id="eplist"></ul>
         <h2 class="qhead" id="qhead" hidden>Your questions</h2>
         <ul class="eplist q" id="qlist" hidden></ul>
@@ -366,8 +366,8 @@ function App(D) {
   const M = D.moves.length;
   const game = Core.replay(D.setup, D.moves);
   const episodes = D.episodes || [];
-  const isQuestion = (e) => e.kind === "question";   // follow-up questions: same shape as a lesson, shown apart
-  const lessonEps = episodes.filter((e) => !isQuestion(e));
+  const isQuestion = (e) => e.kind === "question";   // follow-up questions: same shape as a key moment, shown apart
+  const lessonEps = episodes.filter((e) => !isQuestion(e));   // the key moments
   const $ = (id) => document.getElementById(id);
   const state = { move: 0, mode: "game", ep: lessonEps[0] || episodes[0] || null, br: null, vpos: null, vply: 0, quiz: null, showOwn: false, showNums: false, showBest: true,
                   bd: null, bpos: null, bply: 0 };
@@ -611,7 +611,7 @@ function App(D) {
     const leg = [];
     if (D.decisive && D.decisive.move) leg.push("<span>● decisive move " + D.decisive.move + (D.decisive.by === "student" ? " (yours)" : " (opponent)") + "</span>");
     if (D.lastChance && D.lastChance.move) leg.push("<span>○ last chance at move " + D.lastChance.move + ", " + esc(D.lastChance.best) + " instead of " + esc(D.lastChance.played) + "</span>");
-    leg.push("<span>shaded: lessons</span>");
+    leg.push("<span>shaded: key moments</span>");
     $("graphLegend").innerHTML = leg.join("");
   }
   G.addEventListener("click", (ev) => {
@@ -620,7 +620,7 @@ function App(D) {
     const n = Math.round((p.x - GL) / (GW - GL - GR) * M); setMove(n);
   });
 
-  // ---------- lesson panel ----------
+  // ---------- key-moment panel ----------
   function renderEpList() {
     const fill = (ul, list) => {
       ul.innerHTML = "";
@@ -638,16 +638,16 @@ function App(D) {
   }
   function renderEpBody() {
     const body = $("epbody"); const e = state.ep;
-    if (!e) { body.innerHTML = "<p class='commentary'><span class='empty'>No lessons in this review.</span></p>"; return; }
+    if (!e) { body.innerHTML = "<p class='commentary'><span class='empty'>No key moments in this review.</span></p>"; return; }
     const cur = state.mode === "quiz" ? state.quiz.at - 1 : state.mode === "variation" ? state.br.fromMove : state.move;
     const inRange = cur >= e.moves[0] - 1 && cur <= e.moves[1];
-    let html = "<h3>" + esc(e.title || e.id) + "</h3><div class='meta'>" + (isQuestion(e) ? "Your question, " : "") + (e.category ? esc(e.category) + ", " : "") + "moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", <span class='lost'>" + (+e.pointsLost).toFixed(1) + " points lost</span>" : "") + "</div>";
+    let html = "<h3>" + esc(e.title || e.id) + "</h3><div class='meta'>" + (isQuestion(e) ? "Your question, " : "") + "moves " + e.moves[0] + "–" + e.moves[1] + (e.pointsLost !== null && e.pointsLost !== undefined ? ", <span class='lost'>" + (+e.pointsLost).toFixed(1) + " points lost</span>" : "") + "</div>";
     html += "<div class='commentary'>";
     if (state.mode === "variation") {
       html += "<p><span class='at'>Variation: " + esc(state.br.label) + "</span><br>" + esc(variationText()) + "</p>";
     } else {
       const entries = (e.commentary || []).filter((c) => c.atMove <= (state.mode === "quiz" ? cur : cur));
-      if (!inRange) html += "<p><span class='empty'>" + (isQuestion(e) ? "This question" : "This lesson") + " starts at move " + (e.moves[0] - 1) + ". </span><button type='button' class='chip' data-jump='" + (e.moves[0] - 1) + "'>Go there</button></p>";
+      if (!inRange) html += "<p><span class='empty'>" + (isQuestion(e) ? "This question" : "This moment") + " starts at move " + (e.moves[0] - 1) + ". </span><button type='button' class='chip' data-jump='" + (e.moves[0] - 1) + "'>Go there</button></p>";
       else if (!entries.length) html += "<p><span class='empty'>Step forward for the commentary.</span></p>";
       else { const c = entries[entries.length - 1]; html += "<p><span class='at'>at move " + c.atMove + "</span><br>" + esc(c.text) + "</p>"; }
     }
@@ -658,7 +658,7 @@ function App(D) {
       html += "<div class='branches'>" + e.branches.map((br, i) => "<button type='button' data-br='" + i + "' class='" + (state.br === br ? "active" : "") + "'>" + esc(br.label) + "<small>" + esc(origin(br)) + ", " + br.moves.length + (br.moves.length === 1 ? " move" : " moves") + (br.evals && br.evals.length ? ", ends " + Core.fmtScore(br.evals[br.evals.length - 1]) : "") + "</small></button>").join("") + "</div>";
     }
     if (e.comparison) html += renderComparison(e.comparison);
-    if (e.ruleCheck || e.principle) html += "<div class='principle'>" + (e.ruleCheck ? "<div class='check'>Check at the board: " + esc(e.ruleCheck) + "</div>" : "") + (e.principle ? esc(e.principle) : "") + (e.cue ? "<div class='cue'>Cue: " + esc(e.cue) + "</div>" : "") + "</div>";
+    if (e.takeaway) html += "<div class='principle'><div class='check'>Next time</div>" + esc(e.takeaway) + "</div>";
     if (e.quiz) html += renderQuizHtml(e);
     body.innerHTML = html;
     body.querySelectorAll("[data-jump]").forEach((b) => b.addEventListener("click", () => setMove(parseInt(b.dataset.jump, 10))));
@@ -736,14 +736,11 @@ function App(D) {
     $("summary").hidden = LIVE; $("lesson").hidden = LIVE;
     if (LIVE) return;
     const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
-    if (S.headline) html += "<p class='headline'>" + esc(S.headline) + "</p>";
+    if (S.story) html += "<p class='headline'>" + esc(S.story) + "</p>";
     html += "<div class='cols'>";
-    const lessons = S.lessons && S.lessons.length ? S.lessons : lessonEps.filter((e) => e.ruleCheck || e.principle).map((e) => ({ episodeId: e.id, title: e.title, ruleCheck: e.ruleCheck, principle: e.principle, cue: e.cue }));
-    if (lessons.length) html += "<div><h4>Take with you</h4><ul>" + lessons.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.ruleCheck || l.principle || "") + (l.cue ? " <span style='color:var(--muted)'>Cue: " + esc(l.cue) + "</span>" : "") + "</li>").join("") + "</ul></div>";
+    const takeaways = S.takeaways && S.takeaways.length ? S.takeaways : lessonEps.filter((e) => e.takeaway).map((e) => ({ momentId: e.id, title: e.title, takeaway: e.takeaway }));
+    if (takeaways.length) html += "<div><h4>What you will do differently</h4><ul>" + takeaways.map((l) => "<li>" + (l.title ? "<b>" + esc(l.title) + ".</b> " : "") + esc(l.takeaway || "") + "</li>").join("") + "</ul></div>";
     if (S.strengths && S.strengths.length) html += "<div><h4>What went well</h4><ul>" + S.strengths.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul></div>";
-    if (S.selfReview && ((S.selfReview.agreements || []).length || (S.selfReview.blindSpots || []).length)) {
-      html += "<div><h4>Your self-review against the engine</h4><ul>" + (S.selfReview.agreements || []).map((s) => "<li>Agreed: " + esc(s) + "</li>").join("") + (S.selfReview.blindSpots || []).map((s) => "<li>Blind spot: " + esc(s) + "</li>").join("") + "</ul></div>";
-    }
     if (S.nextGame) html += "<div><h4>For the next game</h4><p style='margin:0'>" + esc(S.nextGame) + "</p></div>";
     html += "</div>";
     const meta = D.meta || {};
@@ -755,7 +752,7 @@ function App(D) {
   // A board is a position of the game with an optional numbered line and highlighted points that Claude
   // sends during the review, instead of an ASCII diagram in chat. With `ask`, the student answers by
   // clicking: one move ("move") or a sequence ("line"), starting with `ask_color`, then Send.
-  // A board with `from_game` is a position of a past game (a quiz on an old lesson): it carries that
+  // A board with `from_game` is a position of a past game (a quiz on an old takeaway): it carries that
   // game's setup and moves up to `at_move`, and is replayed from them instead of this review's game.
   function boardBase(r) {
     if (!r.from_game) return game.positions[r.at_move];
@@ -910,7 +907,7 @@ function App(D) {
     ? Promise.all([window.claude.use("db").catch(() => null), window.claude.use("user").catch(() => null)]) : Promise.resolve([null, null]);
   if (!D.__live__) { const app = App(D); caps.then(([db, user]) => app.attach(db, user)); return; }
 
-  // live page: nothing of the engine until the lessons; the game record arrives as a checksummed db row
+  // live page: nothing of the engine until the dashboard; the game record arrives as a checksummed db row
   $("graphPanel").hidden = true; $("lesson").hidden = true; $("summary").hidden = true; $("live").hidden = false;
   $("liveStatus").textContent = "Connecting…";
   caps.then(([db, user]) => {

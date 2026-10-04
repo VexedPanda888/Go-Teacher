@@ -38,7 +38,8 @@ def build_server(config_path: str | None = None, engine=None, start_engine: bool
              "starting" if cfg.katago.start_on_boot else "starts on first use")
     server = FastMCP("katago-mcp", instructions=(
         "KataGo analysis for Go teaching. Coordinates are GTP (A1..T19, no I). Scores are points from the "
-        "stated perspective; ownership is Black-positive. Call plan_budget before verification work."))
+        "stated perspective; ownership is Black-positive. job_results tells the story of a surveyed game; "
+        "explain_moment gathers the evidence for one move against the best one."))
 
     def guarded(fn):
         @functools.wraps(fn)

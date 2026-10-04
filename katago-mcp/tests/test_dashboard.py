@@ -10,10 +10,9 @@ import tempfile
 import time
 import unittest
 
-from _helpers import make_tools  # noqa: E402  (also puts the package on sys.path)
+from _helpers import make_tools, quiet_points  # noqa: E402  (also puts the package on sys.path)
 from katago_mcp.tools import ToolError, dashboard_row_sha  # noqa: E402
 from test_tools_mock import synthetic_game  # noqa: E402
-from test_verify import quiet_points  # noqa: E402
 
 REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 TEMPLATE = os.path.join(REPO, "skills", "review-dashboard", "template", "dashboard.html")
@@ -110,8 +109,7 @@ class DashboardRowTest(unittest.TestCase):
         self.assertEqual(self.tools.sgf_summary("ogs_123456")["game_id"], "ogs_123456")   # memory's id form
 
     def test_rows_for_a_job_match_the_survey_game_id(self):
-        self.tools.plan_budget(40, move_count=40)
-        jid = self.tools.start_game_analysis("g.sgf", {"profile": "survey"})["job_id"]
+        jid = self.tools.start_game_analysis("g.sgf", options={"prefetch": False})["job_id"]
         self.tools.wait_for_job(jid, 0.05, timeout=30)
         by_job = self.tools.dashboard_row("game", jid)["row"]
         by_sgf = self.tools.dashboard_row("game", "g.sgf")["row"]
@@ -138,11 +136,12 @@ class PageChecksumTest(unittest.TestCase):
                 t.close()
             with open(TEMPLATE, encoding="utf-8") as f:
                 core = re.search(r'<script id="core">(.*?)</script>', f.read(), re.S).group(1)
-            with open(os.path.join(tmp, "core.js"), "w") as f:
+            with open(os.path.join(tmp, "core.js"), "w", encoding="utf-8") as f:
                 f.write(core)
             with open(os.path.join(tmp, "rows.json"), "w", encoding="utf-8") as f:
                 json.dump([game, board], f, ensure_ascii=False)
             js = """
+if (!globalThis.crypto) globalThis.crypto = require("crypto").webcrypto;   // node 18: the browsers' Web Crypto, as in node 19+
 const Core = require(process.argv[2]); const rows = require(process.argv[3]);
 (async () => {
   const out = [];
@@ -153,10 +152,10 @@ const Core = require(process.argv[2]); const rows = require(process.argv[3]);
   out.push(Core.replay(D.setup, D.moves).positions.length - 1, D.game.opponent);
   console.log(JSON.stringify(out));
 })();"""
-            with open(os.path.join(tmp, "t.js"), "w") as f:
+            with open(os.path.join(tmp, "t.js"), "w", encoding="utf-8") as f:
                 f.write(js)
             res = subprocess.run(["node", os.path.join(tmp, "t.js"), os.path.join(tmp, "core.js"), os.path.join(tmp, "rows.json")],
-                                 capture_output=True, text=True, timeout=60)
+                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(json.loads(res.stdout), [True, True, False, True, 30, 'Łukasz 碁 "q"\\'])
 
@@ -315,15 +314,15 @@ setTimeout(() => { const out = {};
 
     def test_final_review_keeps_the_boards(self):
         t = self.tools
-        t.plan_budget(40, move_count=70)
-        jid = t.start_game_analysis("g.sgf", {"profile": "survey"})["job_id"]
+        jid = t.start_game_analysis("g.sgf", options={"prefetch": False})["job_id"]
         t.wait_for_job(jid, 0.05, timeout=30)
-        ep = t.job_results(jid)["episodes"][0]
-        n = ep["root"]["move"]
-        r = t.validate_variations(jid, [{"id": "E1", "moves": ep["moves"], "title": "Test lesson",
-                                         "commentary": [{"at_move": n, "text": "Here."}],
+        m = t.job_results(jid)["moments"][0]
+        n = m["move"]
+        r = t.validate_variations(jid, [{"id": "M1", "moves": m["moves"], "title": "Test moment",
+                                         "commentary": [{"at_move": n, "text": "Here."}], "takeaway": "Count first.",
                                          "branches": [{"id": "B1", "label": "As played", "from_move": n - 1,
-                                                       "moves": [f"B{ep['root']['played']}"]}]}], {"headline": "The headline."})
+                                                       "moves": [f"B{m['played']}"]}]}],
+                                  {"story": "The headline.", "takeaways": [{"momentId": "M1", "takeaway": "Count first."}]})
         self.assertTrue(r["valid"], r["errors"])
         blob = os.path.join(self.tmp.name, "blob.json")
         with open(blob, "w", encoding="utf-8") as f:
@@ -333,7 +332,9 @@ setTimeout(() => { const out = {};
 setTimeout(() => { const out = {};
   out.headline = (document.querySelector('#summary .headline') || {}).textContent || null;
   out.liveHead = document.getElementById('liveHead').textContent; out.liveHidden = document.getElementById('live').hidden;
-  out.lessons = document.querySelectorAll('#eplist button').length; out.graph = !!document.querySelector('#graph path');
+  out.moments = document.querySelectorAll('#eplist button').length; out.graph = !!document.querySelector('#graph path');
+  out.takeaways = Array.from(document.querySelectorAll('#summary li')).map((li) => li.textContent);
+  out.boxTakeaway = (document.querySelector('#epbody .principle') || {}).textContent || null;
   out.boards = Array.from(document.querySelectorAll('#boardlist button')).map((b) => b.textContent);
   const slider = document.getElementById('slider'); slider.value = N; slider.dispatchEvent(new Event('input'));
   const blue = () => document.querySelectorAll('#marks circle[fill="var(--best)"], #marks circle[stroke="var(--best)"]').length;
@@ -344,13 +345,15 @@ setTimeout(() => { const out = {};
 """.replace("N;", f"{n};")
         out = self.run_page(self.build("--blob", blob, "--sha", r["sha256"]), {"boards/" + board["doc_id"]: board["row"]}, script)
         self.assertEqual(out["headline"], "The headline.")
-        self.assertEqual(out["lessons"], 1)
+        self.assertEqual(out["moments"], 1)
+        self.assertTrue(any("Count first." in x for x in out["takeaways"]), out["takeaways"])
+        self.assertIn("Count first.", out["boxTakeaway"])
         self.assertTrue(out["graph"])
         self.assertFalse(out["liveHidden"])
         self.assertEqual(out["liveHead"], "During the review")
         self.assertEqual(len(out["boards"]), 1)
         # at the episode's move, the survey's best move is named and marked in blue; the toggle hides both
-        self.assertIn("Best move: " + ep["root"]["best"], out["best"])
+        self.assertIn("Best move: " + m["best"], out["best"])
         self.assertIn("lost", out["best"])
         self.assertEqual(out["blue"], 1)
         self.assertTrue(out["bestOff"])

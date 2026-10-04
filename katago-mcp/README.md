@@ -1,24 +1,25 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.5.3** (25 tools): whole-game surveys, budgeted verification
-(`plan_budget`), forced-line playouts, pass probes, swing values, local life-and-death solves,
-human-model move distributions, background verification during the student interviews
-(`start_verification`, `record_interview`, `verification_results`), checksummed rows for the live review
-page (`dashboard_row`), and the checksummed dashboard export.
+It implements **tool contract v0.6.0** (19 tools): a whole-game survey read as the story of the game
+(`job_results`: the lead, which groups lived or died and when, the swings, the key moments),
+`explain_moment` (everything a teacher needs to explain one move against the best one, prepared in the
+background for the key moments), forced-line playouts, pass probes, swing values, local life-and-death
+solves, human-model move distributions, checksummed rows for the live review page (`dashboard_row`), and
+the checksummed dashboard export.
 
 Design rules baked in:
 
 - Coordinates are GTP (`A1`…`T19`, no `I`). Scores are **points**, from the stated perspective
   (default: the student's colour when the position belongs to a job). Ownership is Black-positive.
 - The server computes; Claude narrates. Every derived metric of contract §3 is computed here.
+- No time budget: search sizes are fixed per machine (`[search]` in the TOML), so a slower machine
+  searches less per position but never skips a check, and a review takes as long as it needs.
 - One server per machine, one KataGo process, one job at a time. Three KataGo priorities: the survey
-  at 0, the background verification queue at 5, Claude's own calls at 10, so whatever Claude is waiting
-  for returns first.
+  at 0, background work at 5, Claude's own calls at 10, so whatever Claude is waiting for returns first.
 - A tool call blocks Claude's turn, so slow work runs in the background while Claude talks to the
-  student: the survey during the blind self-review, the verification probes during the episode
-  interviews. Their results are stored whole, so Claude's later identical calls return at once, and are
-  sealed per episode until its interview answer is recorded.
+  student: the survey during the upfront questions, `explain_moment` for the top key moments while
+  Claude tells the story. Results are stored whole, so Claude's later identical calls return at once.
 - Nothing is a Go-truth claim unless it came out of the engine: branches are validated for legality
   and evaluated before they reach the dashboard, and the export carries a SHA-256.
 
@@ -32,16 +33,14 @@ katago_mcp/
   regions.py    the standard 9-region partition and Region specs
   render.py     ASCII boards and overlays (contract §4)
   config.py     per-machine TOML (contract §6)
-  budget.py     plan_budget (contract §1.2), pure function
   engine.py     KataGo analysis-engine wrapper (+ MockEngine for tests)
   store.py      position refs, analysis cache, reviews/<game_id>/ persistence, query log
-  metrics.py    derived metrics (contract §3): points lost, episodes, phases, tags, style axis, …
+  metrics.py    derived metrics (contract §3): points lost, phases, group events, swings, key moments, …
   jobs.py       asynchronous survey jobs
-  verify.py     background verification queue, stored probe results, per-episode sealing
-  tools.py      the 25 tools as plain Python
+  prefetch.py   stored tool results, and the background preparation of key moments
+  tools.py      the 19 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
-  seed.py       katago-mcp-seed: survey a folder of SGFs for the WS8 calibration pass
 config/         analysis.cfg (shared) + m5pro.toml, r5700xt.toml, m2air.toml (per machine)
 install/        macos.sh, windows.ps1, register_claude_desktop.py
 scripts/        verify_export.py (dashboard checksum check)
@@ -66,9 +65,9 @@ katago-mcp selfcheck --config config/m5pro.toml --sgf path/to/game.sgf
 ```
 
 Homebrew's KataGo may be an OpenCL build; a Metal build from source is usually faster on Apple
-silicon. Either works — `plan_budget` uses the *measured* visits/s, so the plan adapts to whatever
-you have. The Air is fanless: the benchmark is the 20-second figure, so sustained throughput will be
-lower; if a survey runs late, `plan_budget` re-plans with the remaining time after triage.
+silicon. Either works — the survey is sized from the *measured* visits/s, and `engine_info` turns the
+same figure into how long `explain_moment` takes. The Air is fanless: the benchmark is the 20-second
+figure, so sustained throughput will be lower, and its `[search]` sizes are smaller.
 
 **Windows + RX 5700 XT**
 
@@ -101,14 +100,14 @@ python -m pytest            # if pytest is installed
 ```
 
 The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
-variations, ranks, results), regions (49/35/25 tiling), rendering, `plan_budget` against the two
-worked examples of contract §1.2.3 and the interview overlap, all 25 tools end to end on synthetic games
-including the dashboard export and its checksum, the background verification (sealing, run order,
-KataGo priorities, stored results, line checks), the live review page (the page's checksum against the
+variations, ranks, results), regions (49/35/25 tiling), rendering, the story (group events on a constructed game), all 19 tools end
+to end on synthetic games including `explain_moment`, the dashboard export and its checksum, the
+background preparation of key moments (KataGo priorities, stored results, turning it off), the live
+review page (the page's checksum against the
 server's in node, and the page itself in headless Chrome with a stand-in database: boards arriving,
 an answer clicked and saved, the final dashboard keeping its boards; both skip when node or Chrome is
 missing), job reuse across a server restart, and a handicap game. It also
-checks that the three machine TOMLs share the same `[thresholds]`, `[budget]` and `[student]`, and
+checks that the three machine TOMLs share the same `[thresholds]`, `[prefetch]` and `[student]`, and
 that the header of the tool contract (`skills/go-teacher-flow/references/tool-contract.md`) names the
 code's versions.
 
@@ -174,15 +173,15 @@ misbehave, run `pip install 'mcp<2'`.
      perspective convention is inverted: set `[katago].perspective = "SIDETOMOVE"` and re-run.
    - `human model ok: [...]` lists three plausible moves; a `human_model_unavailable` error means
      `-human-model` did not load (path, or KataGo < 1.15).
-   - the survey progress line, then the digest excerpt: `reconciliation.status` should be `ok` for a
+   - the survey progress line, then the story excerpt: `reconciliation.status` should be `ok` for a
      game decided by counting (`n/a` for resignations); `mismatch` usually means komi/rules/handicap were
      read wrongly — compare the SGF header (`KM`, `RU`, `HA`, `AB`) with `sgf_summary`.
-   - episodes: `(id, [from, to], points_lost, tags)` — sanity, not truth, at 200 visits.
+   - group events and key moments: `(id, [from, to], played, best, points_lost)` — sanity, not truth, at 200 visits.
 3. Register the server (§4), restart Claude Desktop, open a plain chat (no project yet) and ask, in
    turn: "call engine_info", "here is an SGF … run sgf_summary", "start_game_analysis with 300 visits
    per move, then poll job_status", "job_results", "analyze_position for the position after move 60 and
-   render_board it", "analyze_line the best move for 4 plies". Each answer should quote numbers that
-   appear in the tool results.
+   render_board it", "explain_moment for move 61". Each answer should quote numbers that appear in the
+   tool results.
 
 If anything fails, look first at the selfcheck output, the last 40 lines of
 `~/Library/Logs/Claude/mcp-server-katago.log`, and `katago version`.
@@ -195,15 +194,13 @@ The review flow lives in the skills, not here: `skills/go-teacher-flow` (phase o
 downloads the SGF from online-go.com and caches it in `games/`) or as the **name of a file in `games/`**;
 raw SGF text is accepted but pasting it through the chat mangles long records.
 
-Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id` that the ledger cites.
+Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id`.
 
-**Background verification.** When a survey that was started under a plan finishes, the server
-precomputes the probes of its top episodes (`[verification].speculative_episodes`, default 4; 0 turns it
-off). After triage, `start_verification` queues the selected episodes' probes that need no interview
-answer, `record_interview` queues the ones that do, and `verification_results` hands them over (contract
-§1.22–§1.24). A precomputed result answers an identical probe call with `precomputed: {query_id}`. The
-queue and the stored results live in memory: a server restart loses them, and the probes simply run
-again when called.
+**Background work.** When a survey finishes, the server runs `explain_moment` for the story's top
+three key moments (`[prefetch].moments`; 0 turns it off; the CLI never does it). `explain_moment(...,
+background: true)` queues more. A prepared result answers Claude's identical call at once, with
+`precomputed: {query_id}`; `job_results` shows each key moment's state as `prepared`. The queue and the
+stored results live in memory: a server restart loses them, and the calls simply run again.
 
 ## 5a. Memory over long sessions
 
@@ -216,41 +213,19 @@ does not need periodic restarts:
   recently used, and looks them up by position. It used to be unbounded and scanned in full on every lookup.
 
 `job_status(job_id, "release")` frees a finished job's memory; its results stay in `reviews/<game_id>/` and
-are reused. The seeding command releases each game as it finishes.
+are reused.
 
 As a guard, `start_game_analysis` restarts KataGo if its resident memory is above
 `[katago].restart_above_mb` (default 4000; 0 disables). A restart reloads the model (~30 s on Metal). In
 normal use memory levels off near 2 GB, so the guard does not fire; if you see its warning in the server log,
-check `nnCacheSizePowerOfTwo`. The check uses `ps`, so it is skipped on Windows. `katago-mcp-seed
---restart-every N` still forces a restart every N games if you want one (default 0, off).
-
-## 5b. Seeding memory from past games (WS8)
-
-```bash
-katago-mcp-seed --config config/m5pro.toml --sgf-dir seed/ --visits 500
-```
-
-Surveys every `.sgf` in the folder (finished surveys are reused on re-runs), then writes
-`seed/seed_summary.json` and `seed/seed_summary.md`. Paste the `.md` into a plain Claude Desktop chat
-(project chats cannot reach the local server) and ask for the calibration pass: it checks reconciliation per game, reviews the tag frequencies
-and the top episodes, proposes threshold changes for `config/*.toml` (`[thresholds]`), and writes the
-seeded episodes into memory with `verdict: "SURVEY"` (unverified; half weight in recurrence).
-Twenty games at 500 visits/move take roughly `20 × 200 × 500 / vps` seconds — about 50 minutes at
-650 visits/s. Run it on the Pro and leave it.
-
-Add `--probes` to also run `intent_probe` on the five biggest episodes of each game (`--probe-episodes`,
-`--probe-visits`, default 200). Each probed episode gets an inferred belief (`probe.belief`), and the
-`.md` gains a belief table and, when one belief repeats among the biggest losses, the sentence that
-says so ("3 of your 5 biggest probed losses share the belief 'needs_defending': …"). An intent probe is
-about 8 searches, so this adds a few seconds per episode (estimated at roughly 10 minutes for 20 games
-on the Pro). These beliefs are survey grade: inferred at low visits, never stated by the student.
+check `nnCacheSizePowerOfTwo`. The check uses `ps`, so it is skipped on Windows.
 
 ## 6. Known limits
 
 - 19×19 only (`unsupported_board_size` otherwise).
 - One job at a time; a second `start_game_analysis` while a survey runs answers `engine_busy`.
-- One background worker: queued probes run one after another. A probe already running cannot be
-  cancelled; `verification_results(action: "cancel")` stops the ones still queued.
+- One background worker: prepared key moments run one after another; `job_status(action: "release")`
+  drops a job's queued ones.
 - `human_policy` costs one extra 1-visit query per profile and position (cached per ref).
 - The mock engine is *not* a Go engine: it only produces well-formed, self-consistent data for tests.
 - The KataGo wrapper uses the analysis-engine JSON protocol (`reportDuringSearchEvery`, `terminate`,

@@ -6,8 +6,20 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, ROOT)
 
 from katago_mcp.config import Config  # noqa: E402
+from katago_mcp.coords import idx_to_gtp, neighbors  # noqa: E402
 from katago_mcp.engine import MockEngine  # noqa: E402
 from katago_mcp.tools import Tools  # noqa: E402
+
+
+def quiet_points(board, k: int) -> list[str]:
+    """k empty points with no stone next to them (always legal), far apart enough to be distinct."""
+    out = []
+    for i in range(361):
+        if board.cells[i] == 0 and all(board.cells[n] == 0 for n in neighbors(i, 19)):
+            out.append(idx_to_gtp(i))
+            if len(out) == k:
+                break
+    return out
 
 
 def make_tools(tmp: str, engine=None, **overrides) -> Tools:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from .board import BLACK, WHITE, COLOR_CHAR, CHAR_COLOR, opponent
 from .config import Config
 from .engine import Analysis, PositionSpec, EngineError
-from .metrics import GameAnalysis, move_rows, phases, build_episodes, digest
+from .metrics import GameAnalysis, move_rows, story
 from .sgf import SgfGame, parse, rank_to_profile, rank_stronger_by
 from .store import Store, timestamp
 
@@ -51,12 +51,12 @@ def game_id_of(game: SgfGame, text: str) -> str:
 
 
 def game_analysis(game_id: str, game: SgfGame, student_color: int | None, positions: list[Analysis], refs: list[str],
-                  visits_per_move: int, profiles: dict[str, str], after_best: dict[int, list[float]] | None = None) -> GameAnalysis:
+                  visits_per_move: int, profiles: dict[str, str]) -> GameAnalysis:
     return GameAnalysis(
         game_id=game_id, size=game.size, rules=game.rules, komi=game.komi, handicap=game.handicap,
         student_color=student_color, moves=list(game.moves), setup_black=list(game.setup_black),
         setup_white=list(game.setup_white), first_to_move=game.first_to_move, positions=positions, refs=refs,
-        visits_per_move=visits_per_move, result=game.result(), profiles=profiles, after_best_ownership=after_best or {})
+        visits_per_move=visits_per_move, result=game.result(), profiles=profiles)
 
 
 @dataclass
@@ -78,7 +78,6 @@ class Job:
     reused: bool = False
     ga: GameAnalysis | None = None
     _cancel: threading.Event = field(default_factory=threading.Event)
-    plan: dict | None = None
 
     @property
     def elapsed(self) -> float:
@@ -105,11 +104,11 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self.active: Job | None = None
-        self.on_done = None          # called with the job when a survey is done (Tools: speculative verification)
+        self.on_done = None          # called with the job when a survey is done (Tools: prefetch of key moments)
 
     # ---------------------------------------------------------------- start
     def start(self, sgf_text: str, visits_per_move: int, student_username: str | None = None,
-              game_id: str | None = None, options: dict | None = None, plan: dict | None = None) -> Job:
+              game_id: str | None = None, options: dict | None = None) -> Job:
         options = options or {}
         game = parse(sgf_text)
         if game.size != 19:
@@ -122,7 +121,7 @@ class JobManager:
                                   True, f"call job_status with job_id {self.active.job_id}, or cancel it")
             job = Job(job_id=f"job_{uuid.uuid4().hex[:8]}", game_id=gid, game=game, sgf_text=sgf_text,
                       visits_per_move=int(visits_per_move), student_color=student,
-                      profiles=resolve_profiles(self.cfg, game, student), options=options, plan=plan)
+                      profiles=resolve_profiles(self.cfg, game, student), options=options)
             job.positions_total = len(game.moves) + 1
             self.jobs[job.job_id] = job
             self.active = job
@@ -172,7 +171,6 @@ class JobManager:
                 if (k + 1) % 20 == 0:
                     self._persist(job, complete=False)
             if job.state != "cancelled":
-                self._after_best(job)
                 job.finished_at = time.time()
                 self._persist(job, complete=True)      # persist before announcing "done" (no partial-file race)
                 job.state = "done"
@@ -198,37 +196,12 @@ class JobManager:
         except Exception:  # noqa: BLE001
             log.exception("on_done hook failed for %s", job.job_id)
 
-    def _after_best(self, job: Job) -> None:
-        """Ownership after the best move at the top episode roots (style axis, tags 4/14)."""
-        ga = job.ga
-        th = self.cfg.thresholds
-        rows = move_rows(ga, th)
-        ph = phases(ga, th)
-        eps = build_episodes(ga, rows, ph, th, max_episodes=12)
-        for ep in eps:
-            n = ep["root"]["move"]
-            best = rows[n - 1]["best_idx"]
-            if best is None:
-                continue
-            spec = self.spec_at(job.game, n - 1)
-            color = job.game.moves[n - 1][0]
-            spec.moves.append((color, best))
-            try:
-                a = self.engine.analyze(spec, th.quick_visits, include_ownership=True, include_policy=False, priority=0)
-            except EngineError:
-                continue
-            if a.ownership is not None:
-                ga.after_best_ownership[n] = a.ownership
-                rec = self.store.put_position(spec, job.game_id, None, persist=False)
-                self.store.put_cached(rec.ref, a, ownership=True)
-
     def _persist(self, job: Job, complete: bool) -> None:
         ga = job.ga
         obj = {
             "job_id": job.job_id, "game_id": job.game_id, "complete": complete, "visits_per_move": job.visits_per_move,
             "student_color": None if ga.student_color is None else COLOR_CHAR[ga.student_color],
             "profiles": ga.profiles, "positions": [a.to_dict() for a in ga.positions], "refs": list(ga.refs),
-            "after_best_ownership": {str(k): v for k, v in ga.after_best_ownership.items()},
             "written_at": timestamp(),
         }
         self.store.write_json(job.game_id, "analysis.json", obj)
@@ -243,8 +216,7 @@ class JobManager:
         game = parse(sgf_path.read_text(encoding="utf-8"))
         sc = obj.get("student_color")
         ga = game_analysis(game_id, game, CHAR_COLOR[sc] if sc else None, [Analysis.from_dict(d) for d in obj["positions"]],
-                           list(obj["refs"]), obj["visits_per_move"], obj.get("profiles", {}),
-                           {int(k): v for k, v in obj.get("after_best_ownership", {}).items()})
+                           list(obj["refs"]), obj["visits_per_move"], obj.get("profiles", {}))
         # rebuild the position store and cache so refs resolve
         for k, a in enumerate(ga.positions):
             spec = self.spec_at(game, k)
@@ -274,7 +246,7 @@ class JobManager:
         job._cancel.set()
         return job.status()
 
-    def digest(self, job_id: str, max_episodes: int = 10, include_positives: bool = True) -> dict:
+    def story(self, job_id: str, max_moments: int = 6) -> dict:
         job = self.get(job_id)
         if job.ga is None or job.positions_done < 2:
             raise EngineError("job_not_finished", f"job {job_id} has no results yet", True,
@@ -286,8 +258,7 @@ class JobManager:
             ga = GameAnalysis(**{**ga.__dict__, "positions": ga.positions[:job.positions_done],
                                  "refs": ga.refs[:job.positions_done], "moves": ga.moves[:max(0, job.positions_done - 1)],
                                  "boards": []})
-        d = digest(ga, self.cfg.thresholds, max_episodes=max_episodes, include_positives=include_positives,
-                   complete=complete, job_id=job_id)
+        d = story(ga, self.cfg.thresholds, max_moments=max_moments, complete=complete, job_id=job_id)
         d["state"] = job.state
         return d
 

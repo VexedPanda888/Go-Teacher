@@ -65,18 +65,17 @@ class MockToolsTest(unittest.TestCase):
         cls.tools = make_tools(cls.tmp.name)
         cls.sgf = synthetic_game(70, seed=7)
         cls.summary = cls.tools.sgf_summary(cls.sgf)
-        cls.plan = cls.tools.plan_budget(40, move_count=70)
-        cls.started = cls.tools.start_game_analysis(cls.sgf, {"profile": "survey"})
+        cls.started = cls.tools.start_game_analysis(cls.sgf, options={"prefetch": False})
         cls.job_id = cls.started["job_id"]
         cls.status = cls.tools.wait_for_job(cls.job_id, 0.05, timeout=30)
-        cls.digest = cls.tools.job_results(cls.job_id, "digest", max_episodes=6)
+        cls.story = cls.tools.job_results(cls.job_id, "story", max_moments=6)
 
     @classmethod
     def tearDownClass(cls):
         cls.tools.close()
         cls.tmp.cleanup()
 
-    # ---------------------------------------------------------------- summary / plan / job
+    # ---------------------------------------------------------------- summary / job / story
     def test_sgf_summary(self):
         s = self.summary
         self.assertEqual(s["student"]["color"], "B")
@@ -89,32 +88,37 @@ class MockToolsTest(unittest.TestCase):
         self.assertTrue(s["boards"][0]["ascii"].startswith("Black to move" if 50 % 2 == 0 else "White to move"))
         self.assertEqual(s["profiles"], {"peer": "rank_7k", "target": "rank_4k", "horizon": "rank_1d", "opponent": "rank_6k"})
 
-    def test_plan_and_job(self):
-        self.assertTrue(self.plan["feasible"])
-        self.assertEqual(self.started["visits_per_move"], self.plan["profiles"]["survey"])
+    def test_job_and_story(self):
+        # no budget: the survey is sized from the machine's speed (650 visits/s, 70 moves, 10 minutes -> the cap)
+        self.assertEqual(self.started["visits_per_move"], self.tools.cfg.search.survey_cap)
         self.assertEqual(self.status["state"], "done", self.status.get("error"))
         self.assertEqual(self.status["positions_done"], 71)
-        d = self.digest
+        d = self.story
         self.assertTrue(d["complete"])
         self.assertEqual(d["game"]["student_color"], "B")
         self.assertEqual(d["phases"]["opening"][0], 1)
-        self.assertGreaterEqual(d["points_lost"]["student"]["total"], 0.0)
-        self.assertEqual(d["points_lost"]["student"]["moves"], 35)
-        eps = d["episodes"]
-        self.assertTrue(eps, "mock game should produce at least one episode")
-        roots = [e["root"]["points_lost"] for e in eps]       # ranked by root loss, not the chain sum
+        self.assertEqual([p["move"] for p in d["lead"]], [0, 20, 40, 60, 70])
+        self.assertGreaterEqual(d["points_lost"]["you"]["total"], 0.0)
+        self.assertEqual(d["points_lost"]["you"]["moves"], 35)
+        sw = d["swings"]
+        self.assertEqual([s["move"] for s in sw], sorted(s["move"] for s in sw))
+        self.assertTrue(all(s["by"] in ("you", "opponent") for s in sw))
+        self.assertTrue(all("gave_back" in s for s in sw if s["by"] == "opponent" and s["move"] < 70))
+        ms = d["moments"]
+        self.assertTrue(ms, "mock game should produce at least one key moment")
+        roots = [m["points_lost"] for m in ms]                   # ranked by the first move's loss, not the chain sum
         self.assertEqual(roots, sorted(roots, reverse=True))
-        e = eps[0]
-        for key in ("root", "region", "phase", "acceptable_set", "signature", "style_axis", "human", "learnability",
-                    "candidate_tags", "pattern_hash", "stability", "group_status_change"):
-            self.assertIn(key, e)
-        self.assertIn(e["region"]["standard"], ("UL", "U", "UR", "L", "C", "R", "LL", "D", "LR"))
-        self.assertTrue(e["pattern_hash"].startswith("ph_"))
-        self.assertIn("peer", e["human"]["played"])
-        self.assertLessEqual(len(e["candidate_tags"]), 3)
-        self.assertIn(e["best_reply"]["character"], ("tenuki", "local_calm", "local_sharp"))
-        self.assertEqual(e["best_reply"]["local"], e["best_reply"]["character"] != "tenuki")
-        self.assertIn(d["game_type"]["type"], ("single_blunder", "accumulation", "mixed"))
+        m = ms[0]
+        self.assertEqual(m["id"], "M1")
+        self.assertEqual(m["moves"][0], m["move"])
+        for key in ("played", "best", "net_loss", "position_ref_before", "region", "phase", "lead_before",
+                    "acceptable_moves", "human", "findable_move", "opponent_best_reply", "group_events", "stability"):
+            self.assertIn(key, m)
+        self.assertEqual(set(m["human"]["played"]), {"peer", "target"})
+        self.assertIn(m["opponent_best_reply"]["character"], ("tenuki", "local_calm", "local_sharp"))
+        self.assertEqual(m["prepared"], "no")                    # prefetch is off for this job
+        for gone in ("episodes", "game_type", "candidate_tags"):
+            self.assertNotIn(gone, d)
         rows = self.tools.job_results(self.job_id, "moves", range=[10, 12])["moves"]
         self.assertEqual([r["n"] for r in rows], [10, 11, 12])
         self.assertNotIn("idx", rows[0])
@@ -124,21 +128,25 @@ class MockToolsTest(unittest.TestCase):
         self.assertTrue(r["reused"])
         self.assertEqual(r["state"], "done")
 
-    def test_budget_replan_with_job(self):
-        sel = [{"id": "E1", "needs_local_solve": True}, {"id": "E2", "needs_local_solve": False}]
-        p = self.tools.plan_budget(40, job_id=self.job_id, selected=sel)
-        self.assertEqual(p["mode"], "replan")
-        self.assertEqual(p["verification"]["episodes"], 2)
-        self.assertEqual(p["survey"]["visits_per_move"], self.started["visits_per_move"])
+    def test_search_profiles_come_from_the_config(self):
+        sc = self.tools.cfg.search
+        self.assertEqual(self.tools._budget_visits({"profile": "root"}), sc.root)
+        self.assertEqual(self.tools._budget_visits({"profile": "stability"}), sc.root * sc.stability)
+        self.assertEqual(self.tools._budget_visits({"profile": "stability", "multiplier": 2}), sc.root * 2)
+        self.assertEqual(self.tools._budget_visits("line_node"), sc.line_node)
+        with self.assertRaises(ToolError):
+            self.tools._budget_visits({"profile": "ladder"})
+        info = self.tools.engine_info()
+        self.assertEqual(info["search"]["root"], sc.root)
+        self.assertGreater(info["estimates"]["explain_moment_with_reading_seconds"], info["estimates"]["explain_moment_seconds"])
+        self.assertNotIn("active_plan", info)
 
     # ---------------------------------------------------------------- position tools
     def test_position_ref_and_analyze(self):
-        ref = self.tools.get_position_ref(job_id=self.job_id, move_number=30)
+        ref = {"position_ref": self.tools.render_board({"job_id": self.job_id, "move_number": 30})["position_ref"]}
         self.assertTrue(ref["position_ref"].startswith("pos_"))
-        self.assertEqual(ref["move_number"], 30)
-        self.assertEqual(ref["to_move"], "B")
-        self.assertIsNotNone(ref["cached_analysis"])
         a = self.tools.analyze_position({"ref": ref["position_ref"]}, {"profile": "root"}, {"include_ownership": True})
+        self.assertEqual(a["to_move"], "B")
         self.assertEqual(a["perspective"], "B")   # student color from the job
         self.assertEqual(len(a["ownership"]), 361)
         self.assertTrue(a["candidates"])
@@ -229,15 +237,11 @@ class MockToolsTest(unittest.TestCase):
         r = self.tools.intent_probe(pos, mv, {"visits": 60})
         self.assertEqual(r["player"], "B")
         self.assertEqual(r["move"], mv)
-        for key in ("score", "reply", "threat", "tenuki_value", "defense", "left_behind", "better_move", "risk", "matches"):
+        for key in ("score", "reply", "threat", "tenuki_value", "defense", "left_behind", "better_move", "risk"):
             self.assertIn(key, r)
+        self.assertNotIn("belief", r)                       # the evidence, not a label
         self.assertIn(r["reply"]["character"], ("tenuki", "local_calm", "local_sharp"))
         self.assertGreaterEqual(r["score"]["loss"], 0.0)
-        ids = {"needs_defending", "group_is_safe", "is_sente", "behind_must_invade", "ahead_can_coast", "sequence_works", "biggest_move"}
-        self.assertTrue(set(r["matches"]) <= ids)
-        if r["belief"]:
-            self.assertEqual(r["belief"]["id"], r["matches"][0])
-            self.assertTrue(r["belief"]["categories"])
         with self.assertRaises(ToolError):
             self.tools.intent_probe(pos, "pass", {"visits": 20})
 
@@ -268,20 +272,18 @@ class MockToolsTest(unittest.TestCase):
             self.tools.expectation_probe(pos, mv, {"visits": 20}, {"expected_line": [f"B{reply}"]})
         self.assertEqual(cm.exception.code, "bad_request")
 
-    def test_expectation_probe_plies_from_plan(self):
+    def test_expectation_probe_plies_from_the_config(self):
         pos = {"job_id": self.job_id, "move_number": 40}
         mv = self.tools.analyze_position(pos, {"visits": 100})["candidates"][0]["move"]
-        saved = self.tools.plans[self.job_id]
-        plan = json.loads(json.dumps(saved))
-        plan["verification"]["per_episode"]["expectation_plies"] = 2
-        self.tools.plans[self.job_id] = plan
+        saved = self.tools.cfg.search.plies
+        self.tools.cfg.search.plies = 2
         try:
             r = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"misread_margin": 999})
             self.assertEqual(len(r["nodes"]), 2)
             r = self.tools.expectation_probe(pos, mv, {"visits": 60}, {"misread_margin": 999, "plies": 3})
             self.assertEqual(len(r["nodes"]), 3)
         finally:
-            self.tools.plans[self.job_id] = saved
+            self.tools.cfg.search.plies = saved
 
     def test_pass_probe_and_regions(self):
         pos = {"job_id": self.job_id, "move_number": 40}
@@ -318,15 +320,8 @@ class MockToolsTest(unittest.TestCase):
             self.tools.local_solve(pos, idx_to_gtp(board.empties()[0]), None, {"visits": 10})
         self.assertEqual(cm.exception.code, "no_group_at_point")
 
-    def test_group_status_ownership_diff_human_render(self):
+    def test_human_and_render(self):
         a = {"job_id": self.job_id, "move_number": 44}
-        b = {"job_id": self.job_id, "move_number": 45}
-        gs = self.tools.group_status(a)
-        self.assertTrue(gs["groups"])
-        self.assertEqual(set(gs["summary"].keys()), {"B", "W"})
-        od = self.tools.ownership_diff(a, b)
-        self.assertEqual(len(od["regional"]), 9)
-        self.assertIn(od["local_vs_global"]["classification"], ("local", "mixed", "global"))
         hm = self.tools.human_move_distribution(a, ["peer", "rank_2d"], ["K10"])
         self.assertEqual(hm["profiles"]["peer"]["profile"], "rank_7k")
         self.assertEqual(hm["profiles"]["rank_2d"]["profile"], "rank_2d")
@@ -362,22 +357,21 @@ class MockToolsTest(unittest.TestCase):
 
     # ---------------------------------------------------------------- export
     def test_validate_variations_export(self):
-        d = self.digest
-        ep = d["episodes"][0]
-        n = ep["root"]["move"]
+        m = self.story["moments"][0]
+        n = m["move"]
+        ep = {"moves": m["moves"], "root": {"played": m["played"], "best": m["best"], "points_lost": m["points_lost"]}}
         a = self.tools.analyze_position({"job_id": self.job_id, "move_number": n - 1}, {"visits": 80})
         best = a["candidates"][0]["move"]
         branch_moves = [f"B{best}"]
         episodes = [{
-            "id": "E1", "moves": ep["moves"], "title": "Test episode", "category": "5", "tags": ep["candidate_tags"],
-            "points_lost": ep["points_lost_total"],
+            "id": "M1", "moves": ep["moves"], "title": "Test moment", "points_lost": ep["root"]["points_lost"],
             "commentary": [{"at_move": n, "text": "The played move loses points."}],
             "branches": [
-                {"id": "B1", "label": "Engine's move", "from_move": n - 1, "moves": branch_moves, "ledger_ref": "H1"},
+                {"id": "B1", "label": "Better", "from_move": n - 1, "moves": branch_moves},
                 {"id": "B2", "label": "As played", "from_move": n - 1, "moves": [f"B{ep['root']['played']}"]},
             ],
             "quiz": {"at_move": n, "type": "move", "candidates": [best]},
-            "principle": "Check liberties before extending.", "cue": "Two-liberty group nearby.",
+            "takeaway": "Before extending, count what the cut leaves you.",
         }]
         r = self.tools.validate_variations(self.job_id, episodes, {"headline": "x"})
         self.assertTrue(r["valid"], r["errors"])
@@ -394,6 +388,11 @@ class MockToolsTest(unittest.TestCase):
         self.assertEqual(data["bestMoves"][n - 1]["best"], ep["root"]["best"])
         self.assertAlmostEqual(data["bestMoves"][n - 1]["pointsLost"], ep["root"]["points_lost"], delta=0.06)
         e1 = data["episodes"][0]
+        self.assertEqual(e1["kind"], "moment")
+        self.assertEqual(e1["takeaway"], "Before extending, count what the cut leaves you.")
+        for gone in ("category", "tags", "ruleCheck", "belief", "principle", "cue"):
+            self.assertNotIn(gone, e1)
+        self.assertNotIn("ledgerRef", e1["branches"][0])
         self.assertEqual(len(e1["branches"]), 2)
         self.assertEqual(e1["branches"][0]["moves"], branch_moves)
         self.assertEqual(len(e1["branches"][0]["evals"]), 1)
@@ -402,13 +401,11 @@ class MockToolsTest(unittest.TestCase):
         labels = {c["move"]: c["labels"] for c in e1["quiz"]["candidates"]}
         self.assertIn("actual", labels[ep["root"]["played"]])
         self.assertTrue(any("peer" in l for l in labels.values()))
-        # a branch off another branch, a comparison of two branch ends, rule_check and belief
+        # a branch off another branch and a comparison of two branch ends
         fl = self.tools.forced_line({"job_id": self.job_id, "move_number": n - 1}, best, {"visits": 40},
                                     {"max_plies": 3, "forced_margin": -100})
         nested = [{
-            "id": "E1", "moves": ep["moves"], "title": "Nested", "category": "14", "tags": [], "points_lost": 1.0,
-            "commentary": [], "rule_check": "Name the attack you fear and read your answer.",
-            "belief": {"id": "needs_defending", "source": "stated"},
+            "id": "M1", "moves": ep["moves"], "title": "Nested", "points_lost": 1.0, "commentary": [],
             "branches": [
                 {"id": "B1", "label": "Better: forced line", "kind": "better", "from_move": n - 1, "moves": fl["line"]},
                 {"id": "B2", "label": "As played", "kind": "as_played", "from_move": n - 1, "moves": [f"B{ep['root']['played']}"]},
@@ -427,8 +424,6 @@ class MockToolsTest(unittest.TestCase):
         self.assertEqual(b3["moves"], fl["line"][:2])
         self.assertEqual(len(b3["evals"]), 2)
         self.assertEqual(e3["branches"][0]["kind"], "better")
-        self.assertEqual(e3["ruleCheck"], "Name the attack you fear and read your answer.")
-        self.assertEqual(e3["belief"]["id"], "needs_defending")
         cmp_ = e3["comparison"]
         self.assertEqual((cmp_["a"], cmp_["b"], cmp_["aLabel"]), ("B2", "B1", "As played"))
         for key in ("scoreDiff", "groups", "territory", "sente", "nextMove", "weakGroups"):
@@ -443,12 +438,12 @@ class MockToolsTest(unittest.TestCase):
         r5 = self.tools.validate_variations(self.job_id, episodes + question, {"headline": "x"})
         self.assertTrue(r5["valid"], r5["errors"])
         eps5 = json.loads(r5["dashboard_data"])["episodes"]
-        self.assertEqual([e["kind"] for e in eps5], ["lesson", "question"])
+        self.assertEqual([e["kind"] for e in eps5], ["moment", "question"])
         self.assertEqual(eps5[1]["branches"][0]["kind"], "question")
-        r6 = self.tools.validate_variations(self.job_id, [{**question[0], "kind": "aside"}])
+        r6 = self.tools.validate_variations(self.job_id, [{**question[0], "kind": "lesson"}])
         self.assertEqual({e["code"] for e in r6["errors"]}, {"bad_kind"})
         # illegal branch and wrong color are reported, not exported
-        bad = [{"id": "E2", "moves": ep["moves"], "branches": [
+        bad = [{"id": "M2", "moves": ep["moves"], "branches": [
             {"id": "B1", "from_move": n - 1, "moves": ["WK10"]},
             {"id": "B2", "from_move": n - 1, "moves": [f"B{ep['root']['played']}", f"W{ep['root']['played']}"]}]}]
         r2 = self.tools.validate_variations(self.job_id, bad)
@@ -489,6 +484,7 @@ class HandicapDigestTest(unittest.TestCase):
             t.wait_for_job(r["job_id"], 0.05, timeout=20)
             d = t.job_results(r["job_id"])
             self.assertTrue(d["complete"])
+            self.assertIn("group_events", d)
             self.assertEqual(d["game"]["handicap"], 4)
             self.assertEqual(d["game"]["reconciliation"]["status"], "n/a")
             if d["decisive"]:
@@ -512,11 +508,10 @@ class SharedOpeningTest(unittest.TestCase):
                 jobs.append(r)
             self.assertNotEqual(jobs[0]["game_id"], jobs[1]["game_id"])
             for r, colour in zip(jobs, ("B", "W")):
-                ref = t.get_position_ref(r["job_id"], move_number=3)
-                self.assertEqual(ref["game_id"], r["game_id"])
                 a = t.analyze_position({"job_id": r["job_id"], "move_number": 3}, {"visits": 20})
+                self.assertEqual(t._resolve_position({"ref": a["position_ref"]}).game_id, r["game_id"])
                 self.assertEqual(a["perspective"], colour)
-                self.assertEqual(t.analyze_position({"ref": ref["position_ref"]}, {"visits": 20})["perspective"], colour)
+                self.assertEqual(t.analyze_position({"ref": a["position_ref"]}, {"visits": 20})["perspective"], colour)
             t.close()
 
 
@@ -599,8 +594,8 @@ class SgfInputTest(unittest.TestCase):
             s2 = self.tools.sgf_summary("78123456")          # bare id, served from the cache
             self.assertEqual(len(calls), 1)
             self.assertIn("cached", s2["input"])
-            ref = self.tools.get_position_ref(sgf="78123456", move_number=5)
-            self.assertEqual(ref["move_number"], 5)
+            rb = self.tools.render_board({"sgf": "78123456", "move_number": 5})
+            self.assertEqual(rb["to_move"], "W")
         finally:
             urllib.request.urlopen = real
 
@@ -666,7 +661,7 @@ class LenientInputsTest(unittest.TestCase):
         self.assertTrue(r["reused"])
 
     def test_bare_ref_and_colour_words(self):
-        ref = self.tools.get_position_ref(job_id=self.job, move_number=20)["position_ref"]
+        ref = self.tools.render_board({"job_id": self.job, "move_number": 20})["position_ref"]
         a = self.tools.analyze_position(ref, "quick")                # bare ref string, profile string
         self.assertEqual(a["position_ref"], ref)
         p = self.tools.pass_probe(ref, "black", None, 40)
@@ -676,27 +671,6 @@ class LenientInputsTest(unittest.TestCase):
         self.assertIn("D4", hm["profiles"]["peer"]["moves_of_interest"])
         with self.assertRaises(ToolError):
             self.tools.analyze_position(12345)
-
-
-class SeedBeliefsTest(unittest.TestCase):
-    def test_belief_clusters(self):
-        from katago_mcp.seed import belief_clusters
-
-        def ep(move, loss, belief):
-            return {"moves": [move, move], "root_points_lost": loss, "probe": {"belief": belief}}
-        records = [
-            {"game_id": "g1", "episodes": [ep(40, 9.0, "needs_defending"), ep(80, 2.0, "is_sente")]},
-            {"game_id": "g2", "episodes": [ep(30, 7.0, "needs_defending"), ep(90, 6.0, None), {"moves": [5, 5], "root_points_lost": 20.0}]},
-            {"game_id": "g3", "episodes": [ep(55, 8.0, "needs_defending"), ep(60, 1.0, "biggest_move")]},
-            {"file": "bad.sgf", "error": "x"},
-        ]
-        c = belief_clusters(records, top=5)
-        self.assertEqual(c["probed"], 6)
-        self.assertEqual(c["all"]["needs_defending"], 3)
-        self.assertEqual(c["top"]["needs_defending"], 3)
-        self.assertTrue(c["sentence"].startswith("3 of your 5 biggest probed losses share the belief 'needs_defending'"))
-        self.assertIn("g1 move 40", c["sentence"])
-        self.assertIsNone(belief_clusters([{"game_id": "g", "episodes": [ep(1, 3.0, None)]}])["sentence"])
 
 
 if __name__ == "__main__":

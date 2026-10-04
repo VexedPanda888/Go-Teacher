@@ -21,14 +21,16 @@ class ServerRegistrationTest(unittest.TestCase):
             server = build_server(cfg, engine=MockEngine(), start_engine=False)
             try:
                 tools = asyncio.run(server.list_tools())
-                self.assertEqual(len(PUBLIC_TOOLS), 25)
+                self.assertEqual(len(PUBLIC_TOOLS), 19)
                 self.assertEqual([t.name for t in tools], list(PUBLIC_TOOLS))
                 self.assertTrue(all(t.description for t in tools))
-                pb = next(t for t in tools if t.name == "plan_budget")
-                self.assertEqual(pb.inputSchema["required"], ["total_minutes"])
-                res = asyncio.run(server.call_tool("plan_budget", {"total_minutes": 40, "move_count": 70}))
+                em = next(t for t in tools if t.name == "explain_moment")
+                self.assertEqual(em.inputSchema["required"], ["position"])
+                for gone in ("plan_budget", "start_verification", "record_interview", "verification_results"):
+                    self.assertNotIn(gone, PUBLIC_TOOLS)
+                res = asyncio.run(server.call_tool("engine_info", {}))
                 content = res[0] if isinstance(res, tuple) else res
-                self.assertTrue(json.loads(content[0].text)["feasible"])
+                self.assertEqual(json.loads(content[0].text)["search"]["root"], 3000)
                 res = asyncio.run(server.call_tool("job_status", {"job_id": "job_nope"}))
                 content = res[0] if isinstance(res, tuple) else res
                 self.assertEqual(json.loads(content[0].text)["error"]["code"], "job_not_found")
