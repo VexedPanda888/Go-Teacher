@@ -420,7 +420,7 @@ class Tools:
                  policy: bool = True, wide_root_noise: float | None = None, allow: list[dict] | None = None,
                  avoid: list[dict] | None = None, pv_len: int | None = None, human_profiles: list[str] | None = None,
                  stop_when_stable: bool = False, priority: int | None = None, spent: _Spent | None = None) -> tuple[Analysis, bool]:
-        if priority is None:      # Claude's calls 10; the background verification thread sets its own (lower)
+        if priority is None:      # Claude's calls 10; the prefetch thread sets its own (lower)
             priority = getattr(self._tls, "priority", 10)
         opts = dict(ownership=ownership, ownership_stdev=ownership_stdev, wide_root_noise=wide_root_noise or 0.0,
                     allow=allow, avoid=avoid)
@@ -567,7 +567,7 @@ class Tools:
         if refresh_benchmark:
             self.benchmark()
         else:
-            self.start_engine_background()      # Phase 0 calls this first: get the model loading now
+            self.start_engine_background()      # a review calls this first: get the model loading now
         info = self.engine.info()
         job = self.jobs.active
         prof = resolve_profiles(self.cfg, None, None)
@@ -736,7 +736,7 @@ class Tools:
             if detail == "moves":
                 rows = self.jobs.rows(job_id, tuple(range) if range else None)
                 return {"job_id": job_id, "game_id": job.game_id, "moves": [_row_out(r) for r in rows]}
-            if detail not in ("story", "full", "digest"):
+            if detail not in ("story", "full"):
                 raise ToolError("bad_request", "detail must be 'story', 'moves' or 'full'")
             d = self.jobs.story(job_id, max_moments=max_moments)
             if detail == "full":
@@ -809,7 +809,15 @@ class Tools:
         e = cands[0]["move"]
         same = g == e
         e_score = cands[0]["score_lead"]
-        cand_g = next((c for c in cands if c["move"] == g), None)
+        # the move's own score: from the search when it got a real share of the visits, else a search after it
+        share = self.cfg.thresholds.acceptable_min_visit_share * max(1, search["visits_used"])
+        cand_g = next((c for c in cands if c["move"] == g and c["visits"] >= share), None)
+        g_score = e_score if same else cand_g["score_lead"] if cand_g else None
+        if g_score is None:
+            after = self.analyze_position({"ref": rec.ref, "then": [[COLOR_CHAR[rec.to_move], g]]}, {"profile": "root"},
+                                          {**po, "include_groups": False, "max_candidates": 1, "human_profiles": ["peer"]})
+            qids["move_search"] = after["query_id"]
+            g_score = after["root"]["score_lead"]
         hm = self.human_move_distribution(pos, ["peer", "target"], list(dict.fromkeys([e, g])), 3)
         qids["human"] = hm["query_id"]
 
@@ -821,8 +829,7 @@ class Tools:
         fl_g = None if same else self.forced_line(pos, g, None, po)
         if fl_g is not None:
             qids["line_move"] = fl_g["query_id"]
-        g_score = e_score if same else cand_g["score_lead"] if cand_g else fl_g["move"]["score_after"]
-        loss = 0.0 if same else round(max(0.0, flip * (e_score - g_score)), 2)
+        loss =0.0 if same else round(max(0.0, flip * (e_score - g_score)), 2)
         comparison = None
         if fl_g is not None:
             tf = self.terminal_features({"ref": fl_g["end"]["position_ref"]}, {"ref": fl_e["end"]["position_ref"]}, None, po)
@@ -1879,7 +1886,7 @@ class Tools:
         return out
 
     def _vv_branch(self, v: "_Validation", br: dict, eid: str, root_n: int, earlier: list[dict]) -> tuple[dict, PositionRecord] | None:
-        """One lesson branch replayed and evaluated: (exported branch, end position), or None after recording its error."""
+        """One branch replayed and evaluated: (exported branch, end position), or None after recording its error."""
         job, ga, errors = v.job, v.job.ga, v.errors
         size, M = ga.size, ga.M
         bid = br.get("id", "B?")

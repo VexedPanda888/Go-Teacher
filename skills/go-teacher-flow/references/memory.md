@@ -13,7 +13,7 @@ name so the lessons of earlier reviews stay where they are and count as takeaway
 from this version on:
 
 ```json
-{"game_id": "ogs_12345678", "date": "2026-10-04", "moment": "M1", "move": 87, "played": "Q7", "better": "R8",
+{"game_id": "ogs_12345678", "date": "2026-10-04", "moments": ["M1", "M3"], "move": 87, "played": "Q7", "better": "R8",
  "title": "Saving a group that was already alive",
  "takeaway": "When my group already has a base and White plays a contact move nearby, I'll read whether I can ignore it before answering.",
  "student_words": "Don't answer every contact move near a living group.",
@@ -27,8 +27,9 @@ from this version on:
 - `theme`: a short phrase in plain words naming what the takeaway is about. Reuse the wording of an
   earlier takeaway's theme when it is the same thing again: that is how recurrence is found. No
   category numbers.
-- `move`, `played`, `better`: the key moment's move number, the move played, and the better move the
-  student learned (for recall quizzes).
+- `moments`: the key moments it came from (several moments that taught the same thing make one
+  takeaway). `move`, `played`, `better`: the first of them — its move number, the move played, and the
+  better move the student learned (for recall quizzes).
 - `recall`: the recall quizzes on it (go-teaching §6), oldest first: `{date, game_id, answer, result}`
   with `result` `found` (the better move), `acceptable` (another move within a point) or `missed`.
 - `status`: `open`, or `retired` after the student found it in two recall quizzes in a row.
@@ -95,8 +96,8 @@ After the dashboard is published, in this order (each write pins `if_version` wh
 read earlier; new documents need no version):
 
 1. `batch` (≤ 50 writes): `set` `games/<game_id>`; `set` each takeaway as `lessons/<game_id>-L<n>`
-   (n = 1, 2, … in the order of the moments, continuing after any lessons an earlier review of the same
-   game left; a moment the student did not take a takeaway from is not written); `update` each lesson quizzed in this review ("Recall" in `notes.md`) with its `recall` list
+   (one to three per game; n = 1, 2, … in the order of their first moments, continuing after any lessons
+   an earlier review of the same game left); `update` each lesson quizzed in this review ("Recall" in `notes.md`) with its `recall` list
    plus the new entry, and `status: "retired"` when this was its second `found` in a row.
 2. Recompute the profile from the last 10 games (query `games` ordered by `date` desc, limit 10, then
    their `lesson_ids`): group the takeaways by `theme` (same wording, or the same situation in other

@@ -42,8 +42,8 @@ the page ("On the page: Move 41").
 - `from_game` (an OGS link or game id, e.g. `ogs_12345678`, or an `.sgf` name) shows a position of
   that past game instead, with `at_move` counted in that game: a recall quiz (go-teaching §6). The
   page labels it with the game's opponent and date.
-- An engine line on a board is fine once the student has answered about that moment (go-teaching §7,
-  "Ask before you tell"). The server checks legality, not timing.
+- An engine line on a board is fine once the guided self-review is done and the student has answered
+  about that moment (go-teaching §7, "Ask before you tell"). The server checks legality, not timing.
 
 **Answers on the board** (`ask: "move"` or `"line"`): the student clicks the move, or the sequence
 starting with `ask_color`, then presses Send, and tells you "done" in chat. Read it with ArtifactData

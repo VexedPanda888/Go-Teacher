@@ -85,7 +85,7 @@ type ErrorCode =
   | "job_not_found" | "job_not_finished" | "budget_infeasible" | "validation_failed"
   | "bad_request" | "ogs_fetch_failed" | "wrong_color" | "no_candidates"
 ```
-`bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.2). `budget_infeasible`: a `{seconds}` budget or the survey sizing without a measured throughput. `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
+`bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.2). `budget_infeasible`: a `{seconds}` budget without a measured throughput (the survey then sizes itself at 300 visits per move). `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
 `suggestion` is written for Claude to act on ("start the engine with `katago-mcp serve`", "the job is 62% done; call job_status again in ~90 s").
 
 ---
@@ -274,7 +274,7 @@ type Moment = {
   purpose: { best: Purpose | null; move: Purpose | null };                // null for a pass
   reading: null | { source: "stated" | "mixed" | string; line: string[]; misread: Misread | null; note: string | null };   // §1.12
   notes: string[];                                                        // what not to claim (below)
-  query_ids: Record<"search" | "stability" | "human" | "line_best" | "line_move" | "comparison" | "purpose_best" | "purpose_move" | "reading", string>;
+  query_ids: Record<"search" | "stability" | "move_search" | "human" | "line_best" | "line_move" | "comparison" | "purpose_best" | "purpose_move" | "reading", string>;
   seconds_used: number; query_id: string; precomputed?: { query_id: string; seconds_saved: number }
 }
 type LineSummary = { line: string[];                                      // ["BQ7","WR8",…], ready for a dashboard branch
@@ -287,8 +287,8 @@ type Purpose = { threat; tenuki_value; defense: { opponent_local_move; value; gr
                  reply: ReplyCharacter; left_behind; query_id };          // from intent_probe (§1.11)
 ```
 With `background: true` the output is `{ queued: true, state, position_ref, move, estimate_seconds }`.
-**Behavior.** In order, each through the tool Claude would call, so every part is a stored result of its own (§0.8): `analyze_position` at `root` (top 6 candidates, peer and target probabilities); with `deep`, `analyze_position` at `stability`, whose candidates and best move are used from then on (`stability.stable` = same best move and the score moved < `stability_margin`, 0.5; a changed best move adds a note); `human_move_distribution` for both moves; `forced_line` from the best move and from `move` (§1.9); `terminal_features` of the two ends (§1.10); `intent_probe` on both moves (§1.11); and the reading check, `expectation_probe(move, expected_line)` (§1.12). `move.points_lost` uses the move's candidate score when it was searched, else the score after it in its forced line. `notes`: the ends differ by less than 2 points (no "why one is better"); a resistance that costs the opponent nothing (`loss_for_resister ≤ 0`: the line depends on the opponent cooperating); the deeper search changed the best move. Background requests run on the prefetch worker (§0.8); `job_results` reports each key moment's state as `prepared`. An identical later call returns the stored result.
-**Cost.** About `root × (1 + stability)` plus 78 searches at `line_node` with 8 plies (≈ 95 s at 650 visits/s on the Pro's sizes), plus `2·plies + 5` for the reading check; `engine_info.estimates` gives the figure for this machine. **Errors.** `bad_request` (no move and no game move to default to, `background` outside a surveyed game), `wrong_color` / `illegal_move` (`move` or `expected_line`), `no_candidates`, `unknown_ref`.
+**Behavior.** In order, each through the tool Claude would call, so every part is a stored result of its own (§0.8): `analyze_position` at `root` (top 6 candidates, peer and target probabilities); with `deep`, `analyze_position` at `stability`, whose candidates and best move are used from then on (`stability.stable` = same best move and the score moved < `stability_margin`, 0.5; a changed best move adds a note); `human_move_distribution` for both moves; `forced_line` from the best move and from `move` (§1.9); `terminal_features` of the two ends (§1.10); `intent_probe` on both moves (§1.11); and the reading check, `expectation_probe(move, expected_line)` (§1.12). `move.points_lost` uses the move's candidate score when it got at least `acceptable_min_visit_share` (5 %) of the search's visits, else a `root` search of the position after it (`query_ids.move_search`). `notes`: the ends differ by less than 2 points (no "why one is better"); a resistance that costs the opponent nothing (`loss_for_resister ≤ 0`: the line depends on the opponent cooperating); the deeper search changed the best move. Background requests run on the prefetch worker (§0.8); `job_results` reports each key moment's state as `prepared`. An identical later call returns the stored result.
+**Cost.** About `root × (1 + stability)` (plus one `root` search after the move when the deeper search gave it too few visits) plus 78 searches at `line_node` with 8 plies (≈ 95 s at 650 visits/s on the Pro's sizes), plus `2·plies + 5` for the reading check; `engine_info.estimates` gives the figure for this machine. **Errors.** `bad_request` (no move and no game move to default to, `background` outside a surveyed game), `wrong_color` / `illegal_move` (`move` or `expected_line`), `no_candidates`, `unknown_ref`.
 
 ---
 

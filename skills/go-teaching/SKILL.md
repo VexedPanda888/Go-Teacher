@@ -110,6 +110,10 @@ Then set it against their self-review, in three parts:
    of a lost game, or an opponent's big mistake they did not punish (a `swings` entry by the opponent
    with a large `gave_back`).
 
+Memory weighs in (`notes.md`, from the start of the review): the student's own priorities, and a
+recurring theme from earlier takeaways when this game shows it again — that moment is worth one of the
+places, and saying "this has come up before" is part of its value.
+
 Prefer one moment per theme: two moments with the same mistake teach once, unless the point is that it
 keeps happening (then do them together). Skip a moment whose `explain_moment` notes say the two moves
 are close. Stop adding moments when the takeaways would go past three; often two or three moments are

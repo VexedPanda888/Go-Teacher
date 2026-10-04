@@ -96,6 +96,25 @@ class ExplainMomentTest(unittest.TestCase):
             self.tools.explain_moment({"moves": ["BD4", "WQ16"]})
         self.assertEqual(cm.exception.code, "bad_request")
 
+    def test_the_best_move_a_pass_and_an_unsearched_move(self):
+        pos = {"job_id": self.job_id, "move_number": 30}
+        best = self.tools.explain_moment(pos, options={"deep": False})["best"]["move"]
+        r = self.tools.explain_moment(pos, best, {"deep": False})
+        self.assertEqual((r["move"]["verdict"], r["move"]["points_lost"]), ("best", 0.0))
+        self.assertIsNone(r["lines"]["move"])
+        self.assertIsNone(r["comparison"])
+        p = self.tools.explain_moment(pos, "pass", {"deep": False})
+        self.assertEqual(p["move"]["move"], "pass")
+        self.assertIsNone(p["purpose"]["move"])                 # nothing to probe for a pass
+        self.assertEqual(p["lines"]["move"]["line"][0], "Bpass")
+        # a move the search barely looked at is scored by its own search, not by the thin candidate estimate
+        q = quiet_points(self.tools._resolve_position(pos).board, 1)[0]
+        x = self.tools.explain_moment(pos, q, {"deep": False})
+        self.assertIn("move_search", x["query_ids"])
+        self.assertNotIn("move_search", r["query_ids"])
+        with self.assertRaises(ToolError):
+            self.tools.job_results(self.job_id, "digest")
+
     def test_background_request(self):
         n = self.moments[-1]["move"]
         out = self.tools.explain_moment({"job_id": self.job_id, "move_number": n - 2}, background=True)

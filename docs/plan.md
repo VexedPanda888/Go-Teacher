@@ -196,7 +196,7 @@ moments), `explain_moment` (one call for the evidence a teacher needs, prepared 
 the top key moments), fixed `[search]` sizes per machine with time estimates, takeaways in memory.
 
 **Acceptance**
-- 80 tests pass offline with the mock engine (done 4 Oct); the headless-Chrome page tests pass on a machine with Chrome.
+- 81 tests pass offline with the mock engine (done 4 Oct); the headless-Chrome page tests pass on a machine with Chrome.
 - One real review on the Pro: the story names the group fates and the turning point you recognise; each key moment's `explain_moment` is ready or arrives within the `engine_info` estimate; each moment ends in a takeaway you would sign; about 30 minutes for two to three moments.
 - You prefer the explanations to those of the taxonomy reviews, on two games reviewed both ways.
 

@@ -54,7 +54,7 @@ class PositionRecord:
 
 def make_ref(spec: PositionSpec, board: Board | None = None, game_id: str | None = None) -> str:
     """A position's ref.  It names the game too: the same opening in two games gets two refs, so each
-    resolves to its own game's student colour, plan and log."""
+    resolves to its own game's student colour and log."""
     board = board or spec.board()
     h = hashlib.sha1()
     h.update(f"{spec.rules}|{spec.komi}|{spec.size}|{board.board_hash}|{board.to_move}|{board.ko_point}|"
