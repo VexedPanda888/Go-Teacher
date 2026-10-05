@@ -1,7 +1,7 @@
 # Go Teacher — Build Plan
 
 **Status:** built through WS7; WS10 (the teacher-pattern redesign, 4 Oct) replaces the time budget, the
-taxonomy and WS8; WS9 not started (§3). The details live where they are used: the tool contract in
+taxonomy and the old WS8; WS8 is rebuilt as seeding with the student (5 Oct); WS9 not started (§3). The details live where they are used: the tool contract in
 `skills/go-teacher-flow/references/tool-contract.md`, the teaching method in `skills/go-teaching`, the
 tool recipes in `skills/katago-analysis`, the review steps in `skills/go-teacher-flow`, the memory
 schema in `skills/go-teacher-flow/references/memory.md`. This file
@@ -53,7 +53,7 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 | C6 | Review flow | Claude project instructions, or the `go-teacher-flow` skill in a plain Claude Desktop chat | phases + handoff files | M |
 | C7 | Memory artifact | claude.ai (published page with `db`) | artifact + schema | M |
 | C8 | Review dashboards | claude.ai (published pages) | generated per review | part of C5 |
-| C9 | Seed corpus + calibration | one-time | retired with the taxonomy (WS10) | — |
+| C9 | Seeding | on request | `seed_*` tools + seed page + `references/seeding.md` | M |
 
 ```mermaid
 flowchart LR
@@ -172,9 +172,19 @@ the local server). (Rewritten in WS10.)
 
 **Dependencies:** WS3, WS4, WS5, WS6.
 
-### WS8 — Seeding and calibration (C9) — retired
-The taxonomy's calibration (tag accuracy, belief thresholds, seeding memory with survey-grade episodes).
-Retired by WS10 with the taxonomy; the seed survey's lessons stay in memory as takeaways.
+### WS8 — Seeding with the student (C9) — Size M — built 5 Oct (server 0.6.0, contract v0.7.0)
+The taxonomy's calibration (tag accuracy, belief thresholds, survey-grade episodes) was retired by WS10.
+Seeding is rebuilt as a brief review with the student (decision 24): a chat asks to seed; an earlier
+seeding is overwritten only after the student confirms; each recent game appears on one seed page with
+the survey's story, the student gives feedback, Claude proposes one lesson and the student confirms it;
+memory is written once, at the end. The server keeps the session on disk, surveys ahead of the student
+(stored surveys load at once), prepares each game's top key moment, finds the games on OGS, and returns
+the memory documents. `katago-mcp seed` prepares the surveys ahead of the chat.
+
+**Acceptance**
+- 93 tests pass offline (done 5 Oct), including the OGS list against a stand-in API and the seed page in headless Chrome.
+- One real seeding of 10 games on the Pro: no wait longer than two minutes after the first game, three to five minutes a game, a story you recognise or correct in one answer, a lesson you would sign for most games.
+- A review after the seeding names a recurring theme from the seeded lessons when the game shows it again.
 
 ### WS9 — Integration, hardening, remaining machines — Size M
 End-to-end reviews on three games (even as Black, even as White, handicap); the server on the 5700XT and
@@ -204,22 +214,22 @@ the top key moments), fixed `[search]` sizes per machine with time estimates, ta
 
 ---
 
-## 3. Status, 4 Oct 2026
+## 3. Status, 5 Oct 2026
 
-katago-mcp **0.5.0**, **19 tools**, tool contract **v0.6.0**: the teacher-pattern redesign (WS10) on
-top of the causal evidence (forced lines, end comparisons, `docs/archive/plan-causal-lessons.md`) and
-the review page that grows with the review (v0.5).
+katago-mcp **0.6.0**, **24 tools**, tool contract **v0.7.0**: seeding with the student (WS8, rebuilt) on
+top of the teacher-pattern redesign (WS10), the causal evidence (forced lines, end comparisons,
+`docs/archive/plan-causal-lessons.md`) and the review page that grows with the review (v0.5).
 
 | Workstream | State | Notes |
 |---|---|---|
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
-| WS2 katago-mcp server | running, 0.5.0 | 19 tools; 0.4.3 ran against live KataGo on the Pro; 0.5.0 (story, `explain_moment`, prefetch) tested on the mock engine only |
+| WS2 katago-mcp server | running, 0.6.0 | 24 tools; 0.4.3 ran against live KataGo on the Pro; 0.5.0 (story, `explain_moment`, prefetch) and 0.6.0 (seeding) tested on the mock engine, seeding also on the stored real surveys and the live OGS list |
 | WS3 katago-analysis skill | rewritten (WS10) | the story, `explain_moment`, follow-up tools, honesty checks |
 | WS4 go-teaching skill | rewritten (WS10) | the teacher's pattern, explanation standard, takeaways, recall quizzes |
 | WS5 review-dashboard | delivered | branches off branches, end comparison panel, the takeaway (WS10); follow-up questions as their own episodes (0.2.2); live from Phase 0 with boards and clicked answers (0.4.0), tested in headless Chrome with a stand-in database, not yet on claude.ai |
 | WS6 memory artifact | delivered; schema 2 (WS10) | takeaways in the `lessons` collection, the 37 earlier lessons carried over as they are; the read-only page does not show `theme` or `recurring_themes` yet |
 | WS7 review flow | rewritten (WS10) | the `go-teacher-flow` skill; repackage the skills (`skills/package.sh`) and re-upload |
-| WS8 seeding | retired (WS10) | |
+| WS8 seeding | **rebuilt, not yet used with the student** (5 Oct) | `seed_*` tools, the seed page, `references/seeding.md`; repackage go-teacher-flow and review-dashboard |
 | WS9 integration | not started | |
 | WS10 teacher-pattern redesign | **built, not yet used in a real review** | first real review on the Pro is the next step |
 
@@ -252,6 +262,7 @@ the review page that grows with the review (v0.5).
 | 21 | The teacher's pattern (4 Oct; replaces 5, 6, 14, 15's sealing, 17) | a quick pass for the story (`job_results`: lead, group fates, swings, key moments), then key moments chosen by Claude as the review goes (usually two to four in 30 minutes); at each: ask what they were thinking (a few upfront questions while the survey runs replace the blind self-review), `explain_moment` (prepared in the background for the top three), explain, back and forth until they can explain it back, a takeaway in their words; no server-side sealing (ask before you tell is a rule of conduct); the best move at every move stays on the final page |
 | 22 | Takeaways carry over (4 Oct) | new takeaways are written to the memory's `lessons` collection in a compatible shape, so the 37 earlier lessons stay where they are, count as takeaways for recall quizzes and recurrence, and the memory page keeps showing them; `episodes` and `patterns` are no longer written |
 | 23 | Guided self-review (4 Oct; replaces the upfront questions of 21) | the survey time becomes a guided self-review following a strong player's method for teaching yourself Go: the student steps through the game for surprises, shifts and successes and reasons about each, with no engine result until done (the engine seen early replaces self-doubt and reasoning); the story then checks their reasoning (what they saw, where their judgment was off, what they did not see — pointed to, and looked at again before it is explained); key moments start from their own ideas; one to three takeaways per game, ideally one, each a change in thought process, written down; the self-review is shown on the page and kept in memory |
+| 24 | Seeding with the student (5 Oct; replaces 10 and the old WS8) | a chat asks to seed; an earlier seeding (the profile's `seed`, or the September survey seeding) is replaced only after the student confirms; the student's recent OGS games (default 10, reviewed ones left out) appear one at a time on a seed page that shows the survey's engine data; per game the survey's story, the student's feedback, one lesson Claude proposes and the student confirms; memory is written once at the end (`games` with `seeded: true`, `lessons/<id>-S1` with `source: "seed"`), and seeded lessons count as takeaways |
 
 ---
 

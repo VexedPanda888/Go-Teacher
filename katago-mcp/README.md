@@ -1,12 +1,13 @@
 # katago-mcp
 
 An MCP server that exposes KataGo as a *teaching* tool surface for the Go-teacher Claude project.
-It implements **tool contract v0.6.0** (19 tools): a whole-game survey read as the story of the game
+It implements **tool contract v0.7.0** (24 tools): a whole-game survey read as the story of the game
 (`job_results`: the lead, which groups lived or died and when, the swings, the key moments),
 `explain_moment` (everything a teacher needs to explain one move against the best one, prepared in the
 background for the key moments), forced-line playouts, pass probes, swing values, local life-and-death
 solves, human-model move distributions, checksummed rows for the live review page (`dashboard_row`), and
-the checksummed dashboard export.
+the checksummed dashboard export, and seeding: a brief pass over many past games that seeds the teacher's
+memory (`seed_start` … `seed_finish`).
 
 Design rules baked in:
 
@@ -38,7 +39,8 @@ katago_mcp/
   metrics.py    derived metrics (contract §3): points lost, phases, group events, swings, key moments, …
   jobs.py       asynchronous survey jobs
   prefetch.py   stored tool results, and the background preparation of key moments
-  tools.py      the 19 tools as plain Python
+  seed.py       seeding: the session on disk, the background surveys, the OGS game list, the memory documents
+  tools.py      the 24 tools as plain Python
   server.py     FastMCP wiring (stdio)
   cli.py        serve | benchmark | selfcheck | sgf-summary | survey
 config/         analysis.cfg (shared) + m5pro.toml, r5700xt.toml, m2air.toml (per machine)
@@ -100,7 +102,7 @@ python -m pytest            # if pytest is installed
 ```
 
 The suite covers coordinates, board rules (captures, ko, suicide, superko), SGF parsing (handicap,
-variations, ranks, results), regions (49/35/25 tiling), rendering, the story (group events on a constructed game), all 19 tools end
+variations, ranks, results), regions (49/35/25 tiling), rendering, the story (group events on a constructed game), all 24 tools end
 to end on synthetic games including `explain_moment`, the dashboard export and its checksum, the
 background preparation of key moments (KataGo priorities, stored results, turning it off), the live
 review page (the page's checksum against the
@@ -219,6 +221,26 @@ As a guard, `start_game_analysis` restarts KataGo if its resident memory is abov
 `[katago].restart_above_mb` (default 4000; 0 disables). A restart reloads the model (~30 s on Metal). In
 normal use memory levels off near 2 GB, so the guard does not fire; if you see its warning in the server log,
 check `nnCacheSizePowerOfTwo`. The check uses `ps`, so it is skipped on Windows.
+
+## 5b. Seeding
+
+Seeding goes through the student's recent games one at a time: the survey's story, the student's feedback,
+one lesson they confirm (`skills/go-teacher-flow/references/seeding.md`). `seed_start` takes the most
+recent finished 19×19 OGS games of `[student].username` (or the games it is given) and surveys them in the
+background at `[seed].survey_visits`, keeping `[seed].ready_ahead` games loaded with their top key moment
+prepared. A finished survey on disk is reused, so games surveyed before load at once. The session lives in
+`reviews/_seed/session.json` and survives a restart.
+
+To prepare a long seeding ahead of the chat, with Claude Desktop closed (two servers would run two KataGo
+engines):
+
+```bash
+katago-mcp seed --config config/m5pro.toml              # the last [seed].games OGS games
+katago-mcp seed --config config/m5pro.toml --count 20 --exclude ogs_91215867
+```
+
+Then ask in a chat to continue the seeding. About 5 minutes of engine time per new game on the Pro at 500
+visits per move.
 
 ## 6. Known limits
 

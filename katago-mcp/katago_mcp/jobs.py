@@ -115,29 +115,37 @@ class JobManager:
             raise EngineError("unsupported_board_size", f"board size {game.size} not supported in v1", False)
         student = student_color_of(game, student_username or self.cfg.student.username)
         gid = game_id or game_id_of(game, sgf_text)
-        with self._lock:
-            if self.active is not None and self.active.state in ("queued", "running"):
-                raise EngineError("engine_busy", f"job {self.active.job_id} is running",
-                                  True, f"call job_status with job_id {self.active.job_id}, or cancel it")
-            job = Job(job_id=f"job_{uuid.uuid4().hex[:8]}", game_id=gid, game=game, sgf_text=sgf_text,
-                      visits_per_move=int(visits_per_move), student_color=student,
-                      profiles=resolve_profiles(self.cfg, game, student), options=options)
-            job.positions_total = len(game.moves) + 1
-            self.jobs[job.job_id] = job
-            self.active = job
+
+        def new_job() -> Job:
+            j = Job(job_id=f"job_{uuid.uuid4().hex[:8]}", game_id=gid, game=game, sgf_text=sgf_text,
+                    visits_per_move=int(visits_per_move), student_color=student,
+                    profiles=resolve_profiles(self.cfg, game, student), options=options)
+            j.positions_total = len(game.moves) + 1
+            return j
+
+        # A finished survey on disk needs no engine: it is reused even while another survey runs (seeding
+        # loads stored games while the next one is surveyed).
         (self.store.game_dir(gid) / "game.sgf").write_text(sgf_text, encoding="utf-8")
         if options.get("reuse_existing", True):
             existing = self.load_game(gid)
             if existing is not None and existing.visits_per_move >= visits_per_move and existing.M == len(game.moves):
+                job = new_job()
                 job.ga = existing
                 job.reused = True
                 job.positions_done = job.positions_total
                 job.state = "done"
                 job.finished_at = time.time()
                 with self._lock:
-                    self.active = None
+                    self.jobs[job.job_id] = job
                 self._done(job)
                 return job
+        with self._lock:
+            if self.active is not None and self.active.state in ("queued", "running"):
+                raise EngineError("engine_busy", f"job {self.active.job_id} is running",
+                                  True, f"call job_status with job_id {self.active.job_id}, or cancel it")
+            job = new_job()
+            self.jobs[job.job_id] = job
+            self.active = job
         t = threading.Thread(target=self._run, args=(job,), daemon=True)
         t.start()
         return job

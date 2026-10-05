@@ -37,6 +37,7 @@ from .render import LEGEND, LINE_LABELS, low_liberty_groups, render_board, rende
 from .sgf import OGS_GAME_RE, SgfError, parse, rank_to_profile
 from .store import PositionRecord, Store, timestamp
 from .prefetch import Prefetcher, ResultStore, StoredResult
+from .seed import LOG_ID as SEED_LOG_ID, Seeder
 
 log = logging.getLogger("katago_mcp")
 
@@ -56,7 +57,8 @@ class ToolError(Exception):
 PUBLIC_TOOLS = ("engine_info", "sgf_summary", "start_game_analysis", "job_status", "job_results", "explain_moment",
                 "analyze_position", "analyze_line", "forced_line", "terminal_features", "intent_probe", "expectation_probe",
                 "pass_probe", "swing_value", "local_solve", "human_move_distribution", "render_board",
-                "validate_variations", "dashboard_row")
+                "validate_variations", "dashboard_row", "seed_start", "seed_status", "seed_game", "seed_record",
+                "seed_finish")
 
 # Line-search sizes of the probes, in searches at line_node visits (engine_info turns them into an estimate).
 INTENT_SEARCHES = 8                       # intent_probe
@@ -154,6 +156,7 @@ class Tools:
         self.results = ResultStore()               # whole probe results (§0.8)
         self.prefetch = Prefetcher(self)           # key moments prepared in the background (§1.20)
         self.jobs.on_done = self.prefetch.after_survey
+        self.seeder = Seeder(self)                 # seeding: a brief review of past games (§1.20–§1.24)
         self._load_throughput_sidecar()
         self._start_thread: threading.Thread | None = None
         if start_engine:
@@ -2063,8 +2066,13 @@ class Tools:
         }
 
     # ================================================================ 1.25 dashboard_row
-    def dashboard_row(self, kind: str, game: str, board: dict | None = None) -> dict:
-        """A row for the live review page, to write with ArtifactData exactly as returned (collection, doc_id, row). kind 'game': the record (players, setup, moves), written once when the page opens. kind 'board': a position of the game for the student to look at, with an optional numbered line, highlighted points, a question, and ask 'move' | 'line' when the student should answer by clicking on the page. game: a job_id, or the OGS link/id or .sgf file name. board: {id?, title, text?, at_move, line?, highlight?, ask?, episode? (the key moment it belongs to, e.g. 'M1'), from_game?}; from_game (an OGS link/id or .sgf name) shows a position of that past game on this review's page, e.g. a recall quiz on an old takeaway. Legality-checked, no engine data; the row carries a sha256 the page checks."""
+    def dashboard_row(self, kind: str, game: str, board: dict | None = None, page: str = "review") -> dict:
+        """A row for the live review page, to write with ArtifactData exactly as returned (collection, doc_id, row). kind 'game': the record (players, setup, moves), written once when the page opens. kind 'board': a position of the game for the student to look at, with an optional numbered line, highlighted points, a question, and ask 'move' | 'line' when the student should answer by clicking on the page. game: a job_id, or the OGS link/id or .sgf file name. board: {id?, title, text?, at_move, line?, highlight?, ask?, episode? (the key moment it belongs to, e.g. 'M1'), from_game?}; from_game (an OGS link/id or .sgf name) shows a position of that past game on this review's page, e.g. a recall quiz on an old takeaway. page 'seed': a board for the seed page, which holds many games (its doc id names the game); the seed page's other rows come from seed_game and seed_record. Legality-checked, no engine data; the row carries a sha256 the page checks."""
+        if page not in ("review", "seed"):
+            raise ToolError("bad_request", "page must be 'review' or 'seed'")
+        if page == "seed" and kind != "board":
+            raise ToolError("bad_request", "on the seed page only boards come from dashboard_row; the game and the index "
+                            "come from seed_game, the record from seed_record")
         g, game_id, student = self._dashboard_game(game)
         size = g.size
         if kind == "game":
@@ -2103,6 +2111,8 @@ class Tools:
             to_move = rec.to_move if len(line) % 2 == 0 else opponent(rec.to_move)
             seq = self._dashboard_seq(game_id)
             bid = re.sub(r"[^A-Za-z0-9_-]", "", str(b.get("id") or "")) or f"b{seq:02d}"
+            if page == "seed" and not bid.startswith(game_id + "-"):
+                bid = f"{game_id}-{bid}"           # the seed page holds the boards of many games
             data = {"kind": "board", "id": bid, "seq": seq, "game_id": game_id, "title": str(b["title"]).strip(),
                     "text": str(b.get("text") or "").strip(), "at_move": at, "line": line, "highlight": highlight,
                     "ask": ask, "ask_color": COLOR_CHAR[to_move] if ask else None, "episode": b.get("episode") or None}
@@ -2125,6 +2135,43 @@ class Tools:
                "write": "ArtifactData set on the review page: this collection and doc_id, data = row exactly as given"}
         out["query_id"] = self._log(game_id, "dashboard_row", {"kind": kind, "doc_id": doc_id},
                                     result={"moves": len(data.get("moves", data.get("line", [])))})
+        return out
+
+    # ================================================================ 1.20–1.24 seeding
+    def seed_start(self, games: list | None = None, count: int | None = None, exclude: list | None = None,
+                   restart: bool = False) -> dict:
+        """Start seeding the teacher's memory from past games, or resume the unfinished seeding on this machine. With no games: the student's most recent finished 19x19 OGS games ([seed].games of them unless count says otherwise; annulled, cancelled and short games are left out), in the order they were played. games: OGS links/ids or .sgf names instead. exclude: game ids already reviewed (from memory), left out. restart: true abandons an unfinished seeding and starts a new one. The games are surveyed in the background ahead of the student (stored surveys load at once) and each game's top key moment is prepared. Returns the games, their state and how long the engine still needs."""
+        out = self.seeder.start(norm_list(games), count, norm_list(exclude), bool(restart))
+        out["query_id"] = self._log(SEED_LOG_ID, "seed_start", {"games": len(norm_list(games) or []), "count": count,
+                                                                "restart": bool(restart)},
+                                    result={"seed_id": out.get("seed_id"), "games": out.get("of"), "resumed": out.get("resumed")})
+        return out
+
+    def seed_status(self) -> dict:
+        """The seeding on this machine: every game's state (queued, surveying with progress, ready with its key moment's preparation, stored, failed), which ones are recorded, the next one, how long the engine still needs, and earlier seedings on this machine. {session: null} when there is none. Cheap; poll it while waiting."""
+        self.seeder.wake_if_active()
+        return self.seeder.status()
+
+    def seed_game(self, game: str | int | None = None) -> dict:
+        """One game of the seeding, for Claude to present: the story of its survey (as job_results), its top key moment and whether explain_moment has it ready, and the page rows that show it on the seed page (the index with this game as the current one, and the game with its scores and best moves). game: its number or id; default the next game not yet recorded. When its survey is not finished: {ready: false, state, eta_seconds}."""
+        out = self.seeder.game(game)
+        out["query_id"] = self._log(out.get("game_id") or SEED_LOG_ID, "seed_game", {"game": game},
+                                    result={"ready": out.get("ready")})
+        return out
+
+    def seed_record(self, game: str | int, status: str, story: str | None = None, feedback: str | None = None,
+                    lesson: dict | None = None) -> dict:
+        """Record what the student agreed for one game of the seeding. status: 'confirmed' (the story and the lesson), 'no_lesson' (the story; no lesson fit), 'skipped' (leave the game out). story: the story as it stands after the student's feedback, one to three sentences. feedback: what the student said about the story, in their words. lesson (confirmed only): {move: the student's move number, better: the better move, title, takeaway: the sentence the student confirmed (the situation to recognise and what to check), theme: a short phrase naming what it is about, cue?, student_words?: their own wording if they gave one, moment?: 'M1'}; the server checks the move is the student's and the better move is legal there, and fills in the move played. Recording again replaces the record. Returns the record row for the seed page."""
+        out = self.seeder.record(game, status, story, feedback, lesson)
+        out["query_id"] = self._log(out["recorded"]["game_id"], "seed_record", {"status": status},
+                                    result={"recorded": out["progress"]["recorded"], "of": out["progress"]["of"]})
+        return out
+
+    def seed_finish(self, page_url: str | None = None, leave_out_unrecorded: bool = False) -> dict:
+        """Finish the seeding once every game is recorded: the memory documents to write (games/<game_id> with seeded: true for every game not skipped, lessons/<game_id>-S1 for every confirmed lesson), in batches of at most 50 writes, the themes of the lessons, and the profile's seed entry. Claude writes them with ArtifactData exactly as given. page_url: the seed page, stored with each game. leave_out_unrecorded: true when the student stops early (the games not gone through are left out). Calling it again returns the same documents."""
+        out = self.seeder.finish(page_url, bool(leave_out_unrecorded))
+        out["query_id"] = self._log(SEED_LOG_ID, "seed_finish", {"leave_out_unrecorded": bool(leave_out_unrecorded)},
+                                    result={"games": out["games_written"], "lessons": out["lessons_written"]})
         return out
 
     def _dashboard_game(self, game: str):
@@ -2164,6 +2211,7 @@ class Tools:
             time.sleep(poll)
 
     def close(self) -> None:
+        self.seeder.stop()
         self.prefetch.stop()
         try:
             self.engine.stop()

@@ -1,6 +1,6 @@
 ---
 name: go-teacher-flow
-description: The Go-teacher review procedure for a plain Claude Desktop chat, the only kind that reaches the local katago MCP server — a guided self-review first (surprises, shifts, successes, the student's own reasoning, no engine), then the engine checks their reasoning (the story, the key moments one at a time, explained with engine-checked lines, back and forth), one to three takeaways in the student's words, then the page and memory. Use when the student asks for a game review or "the Go teacher". Works with go-teaching, katago-analysis and review-dashboard.
+description: The Go-teacher review procedure for a plain Claude Desktop chat, the only kind that reaches the local katago MCP server — a guided self-review first (surprises, shifts, successes, the student's own reasoning, no engine), then the engine checks their reasoning (the story, the key moments one at a time, explained with engine-checked lines, back and forth), one to three takeaways in the student's words, then the page and memory. Also seeding: a brief pass over many past games (the story, the student's feedback, one confirmed lesson each) that seeds or reseeds the memory. Use when the student asks for a game review or "the Go teacher", or asks to seed, reseed or continue a seeding. Works with go-teaching, katago-analysis and review-dashboard.
 ---
 
 # Go teacher — the review flow
@@ -84,6 +84,13 @@ at every move in blue). Follow-ups go on the same page (review-dashboard, "Follo
 
 **6 — Remember.** Write memory (`references/memory.md`, "At the end") and say in one line what was
 recorded; when a takeaway repeats an earlier one, say that too.
+
+## Seeding
+
+When the student asks to seed or reseed the teacher, or to continue a seeding, follow
+`references/seeding.md` instead of the steps above. It is a brief pass over many past games on one
+seed page: the survey's story, the student's feedback, one lesson they confirm. The memory is written
+at the end, and an earlier seeding is overwritten only after the student confirms.
 
 ## When things go wrong
 

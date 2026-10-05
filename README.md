@@ -10,6 +10,7 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 | [skills/katago-analysis/](skills/katago-analysis/SKILL.md) | How to use the tools: the story of the game, `explain_moment`, follow-up tools, what keeps explanations honest. |
 | [skills/go-teaching/](skills/go-teaching/SKILL.md) | How to teach: the teacher's review pattern, the questions, the explanation standard, takeaways, rules of conduct. |
 | [skills/review-dashboard/](skills/review-dashboard/SKILL.md) | The dashboard template and the build script that only accepts engine-validated data. |
+| [skills/go-teacher-flow/references/seeding.md](skills/go-teacher-flow/references/seeding.md) | Seeding: a brief pass over your recent games (story, your feedback, one confirmed lesson each) that fills or refills the memory. Ask a chat to "seed the teacher". |
 | [docs/plan.md](docs/plan.md) | The build plan, decisions and current status. |
 | [docs/contract-changes.md](docs/contract-changes.md) | The tool contract's decisions and version history. |
 | [skills/go-teacher-flow/references/tool-contract.md](skills/go-teacher-flow/references/tool-contract.md) | The tool contract (the only copy; skills must be self-contained). |

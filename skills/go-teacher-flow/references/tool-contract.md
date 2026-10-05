@@ -1,6 +1,6 @@
-# katago-mcp — Tool Contract (v0.6.0, as implemented in katago-mcp 0.5.0)
+# katago-mcp — Tool Contract (v0.7.0, as implemented in katago-mcp 0.6.0)
 
-**Status:** current; describes the implemented server, 19 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Decisions and the version history are in `docs/contract-changes.md`. Values marked *config* live in the per-machine config file (§6). Numbers in examples are illustrative.
+**Status:** current; describes the implemented server, 24 tools. This is the only copy (skills must be self-contained); `katago-mcp/tests/test_docs.py` checks that the header names the code's versions. Decisions and the version history are in `docs/contract-changes.md`. Values marked *config* live in the per-machine config file (§6). Numbers in examples are illustrative.
 
 Design points worth knowing up front:
 1. No time budget. Search sizes are fixed per machine (`[search]`, §6): a slower machine searches less per position, never fewer checks, and a review takes as long as it needs. `engine_info` says how long the main call (`explain_moment`) takes on this machine.
@@ -8,6 +8,7 @@ Design points worth knowing up front:
 3. A tool call blocks Claude's turn, so Claude cannot talk to the student while a search runs. When a survey finishes, the server prepares `explain_moment` for the story's top key moments in the background, and Claude may queue more; Claude's identical call later returns the stored result (§0.8). Nothing is shown to the student before Claude asks: the review asks the student what they were thinking first.
 4. Numeric dashboard data cannot pass through Claude by retyping without error, so `validate_variations` assembles the complete dashboard data blob and returns it with a checksum (§1.18, §5).
 5. The student follows the review on one page, published live at the start. Positions and lines reach it as rows Claude writes to the page's database, made by `dashboard_row` (§1.19) with a checksum the page verifies.
+6. Seeding (§1.20–§1.24) is a brief review of many past games, one at a time, on one seed page: the story of each survey, the student's feedback, one key lesson they confirm. The server keeps the session on disk and surveys ahead of the student; at the end it returns the memory documents for Claude to write. The server never touches memory itself.
 
 ---
 
@@ -84,8 +85,10 @@ type ErrorCode =
   | "invalid_sgf" | "unsupported_board_size" | "illegal_move" | "unknown_ref" | "bad_region" | "no_group_at_point"
   | "job_not_found" | "job_not_finished" | "budget_infeasible" | "validation_failed"
   | "bad_request" | "ogs_fetch_failed" | "wrong_color" | "no_candidates"
+  | "seed_not_started" | "seed_finished" | "seed_incomplete"
 ```
 `bad_request` covers malformed arguments (wrong colour to move, a bad point or budget, a missing field). `ogs_fetch_failed`: the OGS game could not be downloaded (§1.2). `budget_infeasible`: a `{seconds}` budget without a measured throughput (the survey then sizes itself at 300 visits per move). `validate_variations` reports validation problems in its `errors` list with `valid: false` rather than raising.
+`seed_not_started`: no seeding on this machine (§1.20). `seed_finished`: the seeding is finished; `seed_start` begins a new one. `seed_incomplete`: `seed_finish` with games not yet gone through (§1.24).
 `suggestion` is written for Claude to act on ("start the engine with `katago-mcp serve`", "the job is 62% done; call job_status again in ~90 s").
 
 ---
@@ -655,7 +658,8 @@ type DashboardSummary = {                              // the shape the review-d
             highlight?: Point[];         // marked with a square
             ask?: "move" | "line";       // the student answers by clicking one move, or a sequence, starting with ask_color
             episode?: string;          // the key moment it belongs to ("M1")
-            from_game?: string } }          // a past game (OGS link/id or .sgf name): the position comes from it; at_move counts in it
+            from_game?: string };          // a past game (OGS link/id or .sgf name): the position comes from it; at_move counts in it
+  page?: "review" | "seed" = "review" } // "seed": a board for the seed page (§1.20); only kind "board"
 ```
 **Output.**
 ```ts
@@ -675,7 +679,104 @@ type BoardRow = { kind: "board"; id: string; seq: number; game_id: string; title
 **Behavior.** `line` is legality-checked from the position after `at_move` (`illegal_move`, `wrong_color` with the ply); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`). With `from_game` the row still belongs to this review (`game_id`, `seq`, the log) and carries the past game's record up to `at_move`, which the page replays instead of the review's game (a recall quiz on an old takeaway, go-teaching §6).
 
 **The page side** (review-dashboard skill). The live page (`build_dashboard.py --live`) is published with `capabilities: { db: { rules: [{ path: "", read: "view", write: "owner" }] }, user: {} }` and reads `review/game`, `boards/*` and `answers/*`. It shows no engine data: no score, graph or ownership. A row whose checksum fails is listed as "did not arrive intact". The student's answer to a board with `ask` is written by the page to `answers/<board id>` as `{ board, moves: string[] /* "WQ7" */, sent_at }` (one move for `ask: "move"`); the page refuses an occupied point, suicide and an immediate ko retake, and `explain_moment` checks the moves again when they are passed as `expected_line`. The final dashboard is republished to the same URL; the `db` survives the republish, and the page lists its boards under "During the review".
-**Cost.** None. **Errors.** `bad_request` (unknown `kind`, no `title`, `at_move` out of range, a bad `ask` or `highlight` point), `illegal_move`, `wrong_color`, `invalid_sgf`, `job_not_found`.
+With `page: "seed"` the board's `id` and `doc_id` are prefixed with the game id (`ogs_123-b01`): the seed page holds the boards of many games and shows each game's own. The seed page's other rows come from `seed_game` and `seed_record`.
+**Cost.** None. **Errors.** `bad_request` (unknown `kind`, no `title`, `at_move` out of range, a bad `ask` or `highlight` point; `page: "seed"` with a kind other than `board`), `illegal_move`, `wrong_color`, `invalid_sgf`, `job_not_found`.
+
+---
+
+### 1.20 `seed_start`
+**Purpose.** Start seeding the teacher's memory from past games, or resume the unfinished seeding on this machine. Seeding is a brief review of each game in turn: the story of its survey, the student's feedback, one key lesson the student confirms (go-teacher-flow, `references/seeding.md`).
+
+**Inputs.** `{ games?: string[] /* OGS links/ids or .sgf names */; count?: number = [seed].games; exclude?: string[] /* game ids or links already reviewed */; restart?: boolean = false }`
+
+**Output.**
+```ts
+SeedStatus & { resumed: boolean; note?: string;
+               skipped?: { game: string; reason: string }[];          // "reviewed already", "only 47 moves", "student1 did not play in it", …
+               ignored?: Record<string, number> }                   // OGS games not counted at all: unfinished, annulled or cancelled, not 19x19, rengo
+```
+**Behavior.** With no `games`, the student's most recent finished 19×19 games on OGS (`[student].username`, newest first through `[seed].ogs_pages` pages of 50) until `count` are taken, then put in the order they were played. A game is left out when it is in `exclude`, shorter than `[seed].min_moves`, or the student did not play in it. An unfinished seeding is resumed (its `games` and `count` are ignored, with a `note`); `restart: true` abandons it, and a finished one is archived when the next starts. Each game's SGF is cached in `games/`.
+In the background, one worker surveys the games in order at `[seed].survey_visits` per move. A finished survey on disk with at least as many visits is loaded at once, even while another survey runs. When a survey is loaded, `explain_moment` is prepared for its top `[seed].prepare_moments` key moments (§1.6, prefetch). At most `[seed].ready_ahead` unrecorded games are kept loaded; later surveys still run but go to disk and load when their turn comes. A server restart keeps the session (`reviews/_seed/session.json`); the first seed call resumes the work.
+**Cost.** Each new survey: (moves + 1) × `survey_visits` visits. **Errors.** `bad_request` (no game left: `details.skipped`, `details.ignored`; no username), `ogs_fetch_failed`.
+
+### 1.21 `seed_status`
+**Purpose.** The seeding's progress, cheap enough to poll.
+
+**Inputs.** none. **Output.**
+```ts
+type SeedStatus = { seed_id: string; created_at: string; finished_at: string | null; source: "ogs" | "list"; survey_visits: number;
+  current: string | null;                                  // the game seed_game last presented
+  recorded: number; of: number;
+  games: { n: number; game_id: string; date: string | null; opponent: string; you: Color; result: string; handicap: number; moves: number;
+           state: "queued" | "surveying" | "ready" | "stored" | "failed";
+           recorded: "confirmed" | "no_lesson" | "skipped" | null;
+           progress?: number; eta_seconds?: number;            // surveying, queued: when it will be ready, in order
+           job_id?: string; lesson_prepared?: "queued" | "running" | "done" | "failed" | "no";   // ready
+           error?: string }[];
+  next: { n: number; game_id: string; state: string } | null;  // the first game not recorded
+  engine_seconds_ahead: number;
+  previous: { seed_id: string; created_at: string; finished_at: string | null; cancelled_at: string | null; games: number; lessons: number }[] }
+```
+`{ session: null, previous }` when there is no seeding. `previous` lists the seedings on this machine; memory (the profile's `seed`) is the record across machines.
+
+### 1.22 `seed_game`
+**Purpose.** One game of the seeding for Claude to present: its story and the page rows that show it.
+
+**Inputs.** `{ game?: number | string }`: the game's number or id; default the first game not recorded.
+**Output.**
+```ts
+{ ready: true; n: number; of: number; game_id: string; job_id: string;
+  game: { date; you; opponent; opponent_rank; your_rank; handicap; komi: string; result; moves };
+  recorded: "confirmed" | "no_lesson" | "skipped" | null;
+  story: JobResultsStory;                                   // as job_results (§1.5), query logged
+  top_moment: null | { id; move; played; best; points_lost; prepared };
+  page_rows: [ { collection: "seed"; doc_id: "index"; row: SeedIndexRow }, { collection: "seedgames"; doc_id: string; row: SeedGameRow } ];
+  write: string; query_id: string }
+| { ready: false; n; game_id; state; progress?; eta_seconds?; error?; note }
+| { ready: false; done: true; note }                        // every game is recorded
+type SeedIndexRow = { kind: "seed_index"; seed_id: string; current: string;
+                      games: { n; game_id; date; opponent; you; result }[]; sha256: string };
+type SeedGameRow = { kind: "seed_game"; game_id; n; of; you; players; handicap; komi: string; rules; result; date; first_to_move;
+                     setup: { AB: Point[]; AW: Point[] }; moves: string[];
+                     scores: number[];                     // the student's lead after each move, in tenths of a point (integers)
+                     best: (Point | null)[];               // per move n (index n − 1): the survey's best move before it
+                     phases; decisive: { move; by } | null; last_chance: { move; played; best } | null;
+                     moments: { id; moves: [number, number]; move; played; best; lost10: number }[];
+                     events: { move; group; whose; from; to }[]; visits_per_move: number;
+                     title: string; text: string /* free text: Claude's story */; sha256: string };
+```
+**Behavior.** A game that is stored is loaded at once, out of order if need be; a queued one starts surveying when the engine is free. The game becomes `current`. Every number in the rows is an integer, so the page's checksum (§1.19) cannot disagree with the server's float formatting; `title` and `text` are outside it. **Errors.** `seed_not_started`, `seed_finished`, `bad_request` (unknown game).
+
+### 1.23 `seed_record`
+**Purpose.** Record what the student agreed for one game.
+
+**Inputs.**
+```ts
+{ game: number | string; status: "confirmed" | "no_lesson" | "skipped";
+  story?: string;                // required unless skipped: the story as it stands after the feedback, one to three sentences
+  feedback?: string;             // what the student said about the story, in their words
+  lesson?: { move: number;       // confirmed only: the student's move the lesson is about
+             better: Point; title: string; takeaway: string; theme: string;
+             cue?: string; student_words?: string; moment?: string /* "M1" */ } }
+```
+**Output.** `{ recorded: { n, game_id, status, story, feedback, lesson: { move, played, better, title, takeaway, theme, cue, student_words, moment, points_lost } | null, recorded_at }; page_row: { collection: "seedrecords"; doc_id: string; row: SeedRecordRow }; progress: { recorded; of }; next; query_id }`, where `SeedRecordRow = { kind: "seed_record"; game_id; status; story; feedback; lesson: { move; played; better; title; takeaway; theme; cue } | null; sha256 }`.
+**Behavior.** The lesson's move must be the student's (not a pass), `better` a legal point there other than the move played; the server fills in `played` and the survey's `points_lost`. Recording a game again replaces its record. The game's job is released (its survey stays on disk) and the background work moves on. **Errors.** `bad_request`, `illegal_move`, `seed_not_started`, `seed_finished`.
+
+### 1.24 `seed_finish`
+**Purpose.** The memory documents of the seeding, once every game is recorded.
+
+**Inputs.** `{ page_url?: string /* the seed page */; leave_out_unrecorded?: boolean = false }`
+**Output.**
+```ts
+{ seed_id; finished_at; games_written: number; lessons_written: number;
+  left_out: { n; game_id; why: "skipped" | "not gone through" }[];
+  game_ids: string[]; lesson_ids: string[];
+  themes: { theme: string; count: number; lesson_ids: string[] }[];       // exact wording; Claude merges near-identical ones
+  batches: { op: "set"; collection: "games" | "lessons"; doc_id: string; data: object }[][];   // ≤ 50 writes each
+  profile_seed: { seed_id; date; games; lessons; page_url };
+  query_id }
+```
+**Behavior.** For every game not skipped, `games/<game_id>` (`seeded: true`, `seed_id`, `story`, `story_feedback`, `moments`, `lesson_ids`, `dashboard_url`); for every confirmed lesson, `lessons/<game_id>-S1` (`source: "seed"`, `status: "open"`, `recall: []`). The shapes are memory's (go-teacher-flow, `references/memory.md`). The session is marked finished; calling again returns the same documents. **Errors.** `seed_incomplete` (`details.games`), `seed_not_started`.
 
 ---
 
@@ -696,6 +797,7 @@ type BoardRow = { kind: "board"; id: string; seq: number; game_id: string; title
 | The engine-validated dashboard | `validate_variations` |
 | Result reconciliation | `job_results.game.reconciliation` |
 | Stability | `explain_moment.stability`; `analyze_position` with `profile: "stability"` |
+| Seeding: the games, each game's story and lesson on the seed page, the memory documents | `seed_start`, `seed_status`, `seed_game`, `seed_record`, `seed_finish`; `explain_moment`; `dashboard_row` (`page: "seed"`) |
 
 ---
 
@@ -795,14 +897,14 @@ The exported JSON is what `validate_variations` assembles (§1.18) and what the 
 - Ownership snapshots: 361-character strings; each character encodes ownership in 0.1 steps, `a` = −1.0 … `k` = 0.0 … `u` = +1.0 (`index = round((o + 1) × 10)`), Black-positive. Keys: `"m87"` for the position after move 87; `"M1:B1:end"` for a branch end.
 - Branch `evals`: one number per node (score lead, student perspective, one decimal).
 - Quiz candidates: `[{ "move": "Q8", "pointsLost": 0.0, "note": "" }]`, including the actual and peer moves, labeled.
-- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.6.0", "exported_at" }`.
+- `meta`: `{ "game_id", "job_id", "visits_per_move", "server_version", "contract_version": "0.7.0", "exported_at" }`.
 - The blob is minified; `sha256` is over the exact bytes of `dashboard_data`. Typical size: 10–20 KB.
 
 ---
 
 ## 6. Per-machine configuration (`config/<machine>.toml`)
 
-`[student]`, `[thresholds]`, `[prefetch]` and `[paths]` are the same on every machine (a test checks it); `[search]` differs.
+`[student]`, `[thresholds]`, `[prefetch]`, `[paths]` and `[seed]` except `survey_visits` are the same on every machine (a test checks it); `[search]` differs.
 
 ```toml
 [machine]
@@ -872,6 +974,14 @@ misread_margin = 3.0                      # §1.12
 moments = 3                               # §1.3: key moments prepared when a survey finishes (0: off)
 priority = 5                              # §0.8: KataGo priority of background work
 
+[seed]                                    # §1.20
+games = 10                                # recent games taken when the student names none
+min_moves = 60                            # shorter games are left out
+survey_visits = 500                       # 500 / 500 / 250: per move; a stored survey with at least this many is reused
+prepare_moments = 1                       # explain_moment prepared for each game's top key moment
+ready_ahead = 3                           # games kept loaded ahead of the student (0: all)
+ogs_pages = 6                             # pages of 50 OGS games read at most
+
 [paths]
 reviews_dir = "reviews"
 
@@ -894,6 +1004,10 @@ reviews/
     dashboard_rows.jsonl  # every row made by dashboard_row (the game record, the boards), in order
   _adhoc/
     queries.jsonl
+  _seed/
+    session.json          # the seeding in progress (or just finished): games, states, records
+    seed_<date>-<time>.json   # earlier seedings on this machine, archived when the next one starts
+    queries.jsonl         # seed_start / seed_finish calls (seed_game and seed_record log to their game)
 ```
 
 ---

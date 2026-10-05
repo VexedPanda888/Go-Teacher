@@ -34,6 +34,11 @@ from this version on:
   with `result` `found` (the better move), `acceptable` (another move within a point) or `missed`.
 - `status`: `open`, or `retired` after the student found it in two recall quizzes in a row.
 
+**Seeded lessons** (`references/seeding.md`) are `lessons/<game_id>-S1`, written by `seed_finish` with
+`source: "seed"` and `seed_id`. The student confirmed each one, but it is Claude's sentence unless
+`student_words` is set. Treat them like any takeaway, for recall quizzes and recurrence. A real review
+of a seeded game numbers its own takeaways `-L1`, `-L2`, … as usual.
+
 **Lessons from earlier reviews** (before October 2026) have the same document shape with older field
 names: `rule_check` (or `principle`) in place of `takeaway`, `cue`, `title`, `status`, `recall`, and no
 `move` / `played` / `better`: those are in `episodes/<the first of episode_ids>` (`moves[0]`, `played`,
@@ -53,6 +58,10 @@ change `status`.
  "lesson_ids": ["ogs_12345678-L1"], "dashboard_url": "https://claude.ai/artifact/…"}
 ```
 
+A seeded game (`seed_finish`) has the same shape with `seeded: true`, `seed_id`, `story_feedback` (what the
+student said about the survey's story) and no `self_review`. A real review of that game later replaces
+the document with its own, without `seeded`.
+
 `self_review` keeps the moves the student named in the guided self-review (go-teaching §2), `missed` the
 big moments the engine found that they did not name, and `judgment` one sentence on how their feeling
 for the game compared with the engine's. Across games it shows whether their self-review finds the
@@ -70,9 +79,15 @@ moments that matter.
   "recurring_themes": [{"theme": "answering moves that did not need an answer", "count_last10": 3,
                         "lesson_ids": ["ogs_12345678-L1", "ogs_91232433-L1"]}],
   "open_lesson_ids": ["ogs_12345678-L1", "ogs_12345001-L2"],
-  "student_priorities": "The student's own steer on what to focus on. Follow it when choosing key moments."
+  "student_priorities": "The student's own steer on what to focus on. Follow it when choosing key moments.",
+  "seed": {"seed_id": "seed_20261005-120000", "date": "2026-10-05", "games": 10, "lessons": 8,
+           "page_url": "https://claude.ai/artifact/…"}
 }
 ```
+
+`seed` records the last seeding (`seeding.md`); its absence with `games_seeded` / `seed_note` present means
+the survey seeding of September 2026, whose games carry `seeded: true` and whose survey-only episodes carry
+`verdict: "SURVEY"`. A reseed replaces both after the student confirms.
 
 Older collections (`episodes`, `patterns`) and older profile fields (`recurring`, `beliefs`,
 `belief_insight`, `tendencies`) come from the taxonomy reviews. Read an `episodes` document only to find
@@ -104,7 +119,7 @@ read earlier; new documents need no version):
    words: then reuse one wording); a theme with takeaways from two or more games is recurring. Write
    `summary` (3–4 sentences), `watch` (1 sentence), `recurring_themes`, `open_lesson_ids` (every
    lesson with `status: "open"`, newest first), `games_reviewed`, `updated_at`, `schema_version: 2`;
-   keep `student` and `student_priorities`. `set` `profile/main` with `if_version` from the start.
+   keep `student`, `student_priorities` and `seed`. `set` `profile/main` with `if_version` from the start.
 3. Say in chat, in one line, what was recorded ("memory: the game and 2 takeaways; 'answering moves that
    did not need an answer' has now come up in 3 of the last 10 games").
 

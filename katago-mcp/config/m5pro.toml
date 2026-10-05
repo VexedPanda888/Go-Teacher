@@ -50,6 +50,15 @@ group_event_hold = 6                # ... when the new status still holds this m
 moments = 3                         # when a survey finishes, prepare explain_moment for this many key moments (0: off)
 priority = 5                        # KataGo priority of that work: survey 0 < prefetch < Claude's calls 10
 
+[seed]
+# Seeding: a brief review of past games, one at a time (go-teacher-flow, references/seeding.md).
+games = 10                          # recent games taken when the student names none
+min_moves = 60                      # shorter games are left out
+survey_visits = 500                 # per move; a stored survey with at least this many is reused
+prepare_moments = 1                 # explain_moment prepared in the background for each game's top key moment
+ready_ahead = 3                     # games kept loaded and prepared ahead of the student (0: all)
+ogs_pages = 6                       # pages of 50 OGS games read at most to find them
+
 [paths]
 reviews_dir = "reviews"
 

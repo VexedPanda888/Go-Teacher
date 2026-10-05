@@ -362,3 +362,136 @@ setTimeout(() => { const out = {};
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeedPageTest(unittest.TestCase):
+    """The seed page: one page for many games, with the survey's engine data, the agreed records and per-game boards."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.tools = t = make_tools(cls.tmp.name, seed__survey_visits=30, seed__min_moves=40)
+        os.makedirs(os.path.join(cls.tmp.name, "games"))
+        names = []
+        for k, (n, seed) in enumerate(((70, 81), (60, 82))):
+            name = f"ogs_{8100 + k}.sgf"
+            with open(os.path.join(cls.tmp.name, "games", name), "w") as f:
+                f.write(synthetic_game(n, seed=seed).replace(f"game/{1000 + seed}", f"game/{8100 + k}"))
+            names.append(name)
+        t.seed_start(games=names)
+        deadline = time.time() + 30
+        while time.time() < deadline and not all(g["state"] == "ready" for g in t.seed_status()["games"]):
+            time.sleep(0.05)
+        cls.g1, cls.g2 = t.seed_game(1), t.seed_game(2)          # the index of g2 has game 2 as the current one
+        tm = cls.g1["top_moment"]
+        cls.board1 = t.dashboard_row("board", cls.g1["job_id"], {"title": "Better", "at_move": tm["move"] - 1,
+                                                                 "line": [tm["best"]]}, page="seed")
+        cls.board2 = t.dashboard_row("board", cls.g2["job_id"], {"title": "Game two board", "at_move": 5}, page="seed")
+        cls.rec1 = t.seed_record(1, "confirmed", story="Agreed story one.", feedback="Mostly right.",
+                                 lesson={"move": tm["move"], "better": tm["best"], "title": "Check first",
+                                         "takeaway": "Before X I check Y.", "theme": "checking first"})
+        cls.idx_back = t.seed_game(1)["page_rows"][0]["row"]     # a signed index with game 1 as the current one
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tools.close()
+        cls.tmp.cleanup()
+
+    def rows(self):
+        out = {}
+        for g, story in ((self.g1, "Story one."), (self.g2, "Story two.")):
+            for pr in g["page_rows"]:
+                row = dict(pr["row"])
+                if pr["collection"] == "seedgames":
+                    row["text"] = story
+                out[pr["collection"] + "/" + pr["doc_id"]] = row
+        out["boards/" + self.board1["doc_id"]] = self.board1["row"]
+        out["boards/" + self.board2["doc_id"]] = self.board2["row"]
+        out["seedrecords/" + self.rec1["page_row"]["doc_id"]] = self.rec1["page_row"]["row"]
+        return out
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_and_server_agree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(TEMPLATE, encoding="utf-8") as f:
+                core = re.search(r'<script id="core">(.*?)</script>', f.read(), re.S).group(1)
+            with open(os.path.join(tmp, "core.js"), "w", encoding="utf-8") as f:
+                f.write(core)
+            rows = self.rows()
+            with open(os.path.join(tmp, "rows.json"), "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False)
+            js = """
+if (!globalThis.crypto) globalThis.crypto = require("crypto").webcrypto;
+const Core = require(process.argv[2]); const rows = require(process.argv[3]);
+(async () => {
+  const out = {};
+  for (const k of Object.keys(rows)) out[k] = await Core.rowIntact(rows[k]);
+  const g = rows["seedgames/ogs_8100"];
+  out.tampered = await Core.rowIntact(Object.assign({}, g, { scores: g.scores.slice(1) }));
+  const D = Core.fromSeedRow(g, rows["seedrecords/ogs_8100"]);
+  out.shape = [D.scoreSeries.length, D.bestMoves.length, D.episodes.length > 0, D.seedInfo.story, D.seedRecord.status, D.game.you];
+  console.log(JSON.stringify(out));
+})();"""
+            with open(os.path.join(tmp, "t.js"), "w", encoding="utf-8") as f:
+                f.write(js)
+            res = subprocess.run(["node", os.path.join(tmp, "t.js"), os.path.join(tmp, "core.js"), os.path.join(tmp, "rows.json")],
+                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            out = json.loads(res.stdout)
+            self.assertFalse(out.pop("tampered"))
+            shape = out.pop("shape")
+            self.assertTrue(all(out.values()), out)
+            self.assertEqual(shape, [71, 70, True, "Story one.", "confirmed", "B"])
+
+    @unittest.skipUnless(CHROME, "Chrome is not installed")
+    def test_seed_page_in_a_browser(self):
+        out_html = os.path.join(self.tmp.name, "seeding.html")
+        subprocess.run(["python3", BUILD, "--seed", "--out", out_html], check=True, capture_output=True)
+        with open(out_html, encoding="utf-8") as f:
+            html = f.read()
+        seed_js = "\n".join(f"S[{json.dumps(k)}] = {json.dumps(v, ensure_ascii=False)};" for k, v in self.rows().items())
+        html = html.replace("<head>", "<head>" + FAKE_RUNTIME.replace("SEED", seed_js), 1)
+        script = """
+const out = {}; const txt = (sel) => (document.querySelector(sel) || {}).textContent || null;
+const snap = (k) => { out[k] = { title: txt('#title'), story: txt('#epbody .commentary'), lesson: txt('#epbody .principle'),
+  graph: !document.getElementById('graphPanel').hidden && !!document.querySelector('#graph path'),
+  boards: Array.from(document.querySelectorAll('#boardlist button')).map((b) => b.textContent),
+  tabs: Array.from(document.querySelectorAll('#seedbar button')).map((b) => b.textContent),
+  slider: document.getElementById('slider').max }; };
+setTimeout(() => { snap('first'); document.querySelector('#seedbar button').click(); }, 900);
+setTimeout(() => { snap('clicked'); const sl = document.getElementById('slider'); sl.value = 3; sl.dispatchEvent(new Event('input')); out.blue = document.querySelectorAll('#marks circle[fill="var(--best)"], #marks circle[stroke="var(--best)"]').length; }, 1500);
+setTimeout(() => { const g = Object.assign({}, window.__store['seedgames/ogs_8100'], { text: 'Rewritten story.' }); window.__write('seedgames/ogs_8100', g);
+                   window.__write('seedrecords/ogs_8100', null); delete window.__store['seedrecords/ogs_8100']; }, 1900);
+setTimeout(() => { snap('rewritten'); out.move = document.getElementById('moveNum').textContent;
+                   const idx = Object.assign({}, window.__store['seed/index']); window.__write('seed/index', idx); }, 2400);
+setTimeout(() => { snap('stays'); window.__write('seed/index', IDX_BACK); }, 2900);          // Claude goes back to game 1
+setTimeout(() => { window.__write('seed/index', IDX_ON); }, 3300);                              // ... and on to game 2
+setTimeout(() => { out.followsAgain = txt('#title'); document.title = 'RESULT:' + JSON.stringify(out); }, 3800);
+"""
+        script = script.replace("IDX_BACK", json.dumps(self.idx_back)).replace("IDX_ON", json.dumps(self.g2["page_rows"][0]["row"]))
+        html = html.replace("</body>", "<script>" + script + "</script></body>", 1)
+        page = os.path.join(self.tmp.name, "seedpage.html")
+        with open(page, "w", encoding="utf-8") as f:
+            f.write(html)
+        dump = run_chrome(page, self.tmp.name)
+        m = re.search(r"<title>RESULT:(.*?)</title>", dump, re.S)
+        self.assertIsNotNone(m, dump[-3000:])
+        import html as htmllib
+        out = json.loads(htmllib.unescape(m.group(1)))
+        first, clicked = out["first"], out["clicked"]
+        self.assertTrue(first["title"].startswith("Game 2 of 2"))            # follows Claude: the index's current game
+        self.assertIn("Story two.", first["story"])
+        self.assertEqual(first["boards"], ["Game two boardafter move 5"])    # only this game's boards
+        self.assertEqual(first["slider"], "60")
+        self.assertTrue(any("✓ lesson" in t for t in first["tabs"]), first["tabs"])
+        self.assertTrue(first["graph"])                                      # engine data is shown when seeding
+        self.assertTrue(clicked["title"].startswith("Game 1 of 2"))
+        self.assertIn("Agreed story one.", clicked["story"])                 # the record's story wins
+        self.assertIn("Before X I check Y.", clicked["lesson"])
+        self.assertEqual(len(clicked["boards"]), 1)
+        self.assertIn("Better", clicked["boards"][0])
+        self.assertEqual(out["blue"], 1)                                     # the best move at move 3
+        self.assertIn("Rewritten story.", out["rewritten"]["story"])         # new text, same game, no rebuild
+        self.assertEqual(out["move"], "3")
+        self.assertTrue(out["stays"]["title"].startswith("Game 1 of 2"))     # the student's choice holds until Claude moves on
+        self.assertTrue(out["followsAgain"].startswith("Game 2 of 2"))      # once Claude moves, the page follows again

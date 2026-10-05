@@ -82,3 +82,11 @@ Changes from v0.5.3 to v0.6.0 (the teacher-pattern redesign, `docs/plan.md` WS10
 6. `get_position_ref`, `group_status` and `ownership_diff` are gone (positions are passed as `{job_id, move_number}`; `analyze_position` returns groups; `terminal_features` compares ends).
 7. `validate_variations`: episode `kind` is `moment` | `question`; `takeaway` replaces `category`, `tags`, `rule_check`, `principle`, `cue`, `belief` and the branches' `ledger_ref`; the summary has `story` and `takeaways` instead of `headline`, `lessons` and `selfReview` (§1.18).
 8. The seeding command (`katago-mcp-seed`) and its calibration pass are removed. Positives are capped at 3.
+
+Changes from v0.6.0 to v0.7.0 (seeding, katago-mcp 0.6.0):
+
+1. New `seed_start`, `seed_status`, `seed_game`, `seed_record`, `seed_finish` (§1.20–§1.24): a brief review of past games, one at a time, that seeds memory with the stories and the lessons the student confirms. The session lives in `reviews/_seed/`; a background worker surveys the games ahead of the student and prepares each game's top key moment; `seed_finish` returns the memory documents (`games/<id>` with `seeded: true`, `lessons/<id>-S1` with `source: "seed"`) for Claude to write. Errors `seed_not_started`, `seed_finished`, `seed_incomplete`.
+2. The student's recent games come from OGS's player and games API when none are named; annulled, cancelled, unfinished, non-19×19 and short games are left out.
+3. `dashboard_row` takes `page: "seed"` for boards on the seed page (doc ids prefixed with the game id). The seed page is the dashboard template built with `--seed`: it shows one game at a time with the survey's score graph and best moves, the story, and the agreed record.
+4. A finished survey on disk loads even while another survey runs (`start_game_analysis` reuse no longer answers `engine_busy`).
+5. `[seed]` in the machine configs (§6); a job's `options.prefetch_moments` sets how many key moments are prepared after it.

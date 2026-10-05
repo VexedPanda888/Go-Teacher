@@ -98,6 +98,27 @@ through it at the board instead of reading coordinates in chat.
 A line the engine did not play or evaluate never goes on the page; one that fails validation is fixed
 from the error or left in chat with the reason.
 
+## The seed page
+
+Seeding (go-teacher-flow, `references/seeding.md`) shows many games on one page, one at a time. Unlike
+the live review page it shows the survey's engine data: the score graph, the best move at every move and
+the key moments. The student asked for the story first.
+
+1. `python3 <skill>/scripts/build_dashboard.py --seed --title "Seeding: <n> games" --out seeding.html`
+2. Publish it with the Artifact tool. Use icon `go`, title "Go teacher seeding, <date>", and the same
+   `capabilities` as the live page (`db` with owner writes, `user`). Keep the URL; `seed_finish` takes it.
+3. Rows:
+   - `seed_game` returns two rows: `seed/index` (the games, with this one current) and
+     `seedgames/<game_id>`. Write both exactly as returned; your story goes in the game row's `text`.
+   - `seed_record` returns `seedrecords/<game_id>`. The page then shows the agreed story, the student's
+     feedback and the lesson, and ticks the game's tab.
+   - The lesson's lines are boards from `dashboard_row(kind: "board", page: "seed", game: <job_id>,
+     board: {…})`. Their doc ids name the game, and each game shows its own boards.
+4. The page follows the current game. The student can click another tab to look back, and it returns to
+   following when Claude moves on.
+
+Nothing is rebuilt at the end: the seed page is the record, and each seeded game in memory links to it.
+
 ## Troubleshooting (live page)
 
 - A board is listed as "did not arrive intact": its `row` was changed between `dashboard_row` and the

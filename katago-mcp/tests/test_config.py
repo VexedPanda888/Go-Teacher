@@ -34,7 +34,7 @@ class TestMachineConfigs(unittest.TestCase):
         self.assertNotIn("-override-config", KataGoEngine("katago", "a.cfg", "m.bin.gz").command())
 
     def test_shared_sections_are_identical_across_machines(self):
-        """[thresholds], [prefetch], [student] and [paths] are the same on every machine; [search] differs."""
+        """[thresholds], [prefetch], [student], [paths] and most of [seed] are the same on every machine; [search] differs."""
         data = {}
         for name in MACHINES:
             with open(machine_toml(name), "rb") as f:
@@ -43,6 +43,12 @@ class TestMachineConfigs(unittest.TestCase):
             first = data[MACHINES[0]].get(section)
             for name in MACHINES[1:]:
                 self.assertEqual(data[name].get(section), first, f"[{section}] differs in {name}.toml")
+        # [seed] is shared except the survey size, which follows the machine's speed
+        seed = {n: {k: v for k, v in data[n]["seed"].items() if k != "survey_visits"} for n in MACHINES}
+        for name in MACHINES[1:]:
+            self.assertEqual(seed[name], seed[MACHINES[0]], f"[seed] differs in {name}.toml")
+        for name in MACHINES:
+            self.assertEqual(load_config(machine_toml(name)).seed.survey_visits, data[name]["seed"]["survey_visits"])
 
 
 class TestLoadConfig(unittest.TestCase):

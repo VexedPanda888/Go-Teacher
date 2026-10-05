@@ -3,6 +3,7 @@
 
 Usage
   build_dashboard.py --live --out review.html            # Phase 0: the live page (boards arrive through its db)
+  build_dashboard.py --seed --out seeding.html           # the seed page: many games, one at a time (seed tools)
   build_dashboard.py --export reviews/<game_id>/export-1.json --out review.html
   build_dashboard.py --blob blob.json --sha <sha256 from validate_variations> --out review.html
   (add --template path/to/dashboard.html to use another template; default: ../template/dashboard.html)
@@ -10,6 +11,7 @@ Usage
 The script refuses to build if the SHA-256 of the canonical JSON does not match: the dashboard only ever
 shows data that came out of the engine unchanged. The live page embeds no data at all: it reads the game
 record and the boards from its db, as rows made by katago-mcp's dashboard_row, and checks their SHA-256 itself.
+The seed page works the same way with the rows of katago-mcp's seed tools (seed_game, seed_record).
 """
 from __future__ import annotations
 
@@ -73,12 +75,15 @@ def check_shape(data: dict) -> list[str]:
 MARKER = '<script id="data" type="application/json">{"__placeholder__": true}</script>'
 
 
-def build_live(template: str, out: Path, title: str | None) -> None:
-    html = template.replace(MARKER, '<script id="data" type="application/json">{"__live__":true}</script>')
-    html = html.replace("<title>Go review</title>", f"<title>{_esc(title or 'Go review')}</title>", 1)
+def build_live(template: str, out: Path, title: str | None, seed: bool = False) -> None:
+    flag = "__seed__" if seed else "__live__"
+    html = template.replace(MARKER, f'<script id="data" type="application/json">{{"{flag}":true}}</script>')
+    default = "Go teacher: seeding" if seed else "Go review"
+    html = html.replace("<title>Go review</title>", f"<title>{_esc(title or default)}</title>", 1)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
-    print(f"wrote {out} ({out.stat().st_size:,} bytes), live page: publish it with the db capability, then write the rows")
+    kind = "seed page" if seed else "live page"
+    print(f"wrote {out} ({out.stat().st_size:,} bytes), {kind}: publish it with the db capability, then write the rows")
 
 
 def _esc(t: str) -> str:
@@ -88,7 +93,8 @@ def _esc(t: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="the live page for Phase 0 (no blob)")
-    ap.add_argument("--title", help="page title (with --live), e.g. 'Go review: vs rival'")
+    ap.add_argument("--seed", action="store_true", help="the seed page (no blob): many games, one at a time")
+    ap.add_argument("--title", help="page title (with --live or --seed), e.g. 'Go review: vs rival'")
     ap.add_argument("--export")
     ap.add_argument("--blob")
     ap.add_argument("--sha")
@@ -99,8 +105,8 @@ def main() -> int:
     template = Path(args.template).read_text(encoding="utf-8")
     if MARKER not in template:
         sys.exit("template has no data placeholder")
-    if args.live:
-        build_live(template, Path(args.out), args.title)
+    if args.live or args.seed:
+        build_live(template, Path(args.out), args.title, seed=args.seed)
         return 0
     data, expected = load(args)
     got = hashlib.sha256(canonical(data).encode("utf-8")).hexdigest()

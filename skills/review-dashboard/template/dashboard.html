@@ -175,6 +175,18 @@ a { color: var(--accent); }
 .answer button:disabled { opacity: 0.5; cursor: default; }
 .answer .msg { font-size: 13.5px; margin-top: 8px; }
 .answer .msg.warn { color: var(--loss); }
+/* seeding: one page, many games */
+.seedbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.seedbar button { border: 1px solid var(--rule); background: var(--panel); border-radius: 999px; padding: 4px 11px; cursor: pointer; font-size: 13px; }
+.seedbar button:disabled { color: var(--muted); cursor: default; border-style: dashed; }
+.seedbar button .s { color: var(--muted); margin-left: 5px; font-size: 12px; }
+.seedbar button.viewing { border-color: var(--accent); background: var(--accent-soft); }
+.seedbar button.current { font-weight: 600; }
+.seedbar button.done .s { color: var(--gain); }
+.seedbar button.skipped { color: var(--muted); text-decoration: line-through; }
+.lesson .said { margin: 10px 0 0; padding: 8px 12px; background: var(--panel-2); border-radius: 6px; font-size: 14.5px; }
+.lesson .said .at, .principle .at { color: var(--muted); font-family: var(--sans); font-size: 12.5px; }
+.lesson h4.seedsub { margin: 14px 0 6px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .scrollx { overflow-x: auto; }
 @media (prefers-reduced-motion: no-preference) {
@@ -190,6 +202,7 @@ a { color: var(--accent); }
     <span class="spacer"></span>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch color theme">Theme</button>
   </header>
+  <nav class="seedbar" id="seedbar" hidden aria-label="Games in this seeding"></nav>
 
   <div class="main">
     <section class="boardcol" aria-label="Board and replay">
@@ -350,8 +363,28 @@ const Core = (() => {
              yourRank: (pl[you] || {}).rank || null, date: g.date, handicap: g.handicap, komi: g.komi, rules: g.rules, result: g.result, players: pl },
              setup: g.setup || { AB: [], AW: [] }, moves: g.moves || [], scoreSeries: null, episodes: [], ownership: {}, summary: null };
   }
+  // the dashboard's data shape from a seed page's game row: the survey's engine data is shown (seeding tells the
+  // story first), scores arrive in tenths of a point, and the points each move lost follow from them
+  function fromSeedRow(g, rec) {
+    const you = g.you === "W" ? "W" : "B", opp = you === "B" ? "W" : "B", pl = g.players || {};
+    const moves = g.moves || [], scores = (g.scores || []).map((v) => v / 10);
+    const bestMoves = (g.best || []).map((b, k) => {
+      const d = (scores[k + 1] || 0) - (scores[k] || 0), lost = (moves[k] || "B")[0] === you ? -d : d;
+      return { best: b, pointsLost: Math.round(Math.max(0, lost) * 10) / 10 };
+    });
+    const episodes = (g.moments || []).map((m) => ({ id: m.id, kind: "moment", title: "move " + m.move + ": " + m.played + ", best " + m.best,
+      moves: m.moves, pointsLost: m.lost10 / 10, commentary: [], branches: [] }));
+    return { live: true, seed: true,
+             game: { id: g.game_id, you, opponent: (pl[opp] || {}).name || "opponent", opponentRank: (pl[opp] || {}).rank || null,
+                     yourRank: (pl[you] || {}).rank || null, date: g.date, handicap: g.handicap, komi: g.komi, rules: g.rules, result: g.result, players: pl },
+             setup: g.setup || { AB: [], AW: [] }, moves, scoreSeries: scores, bestMoves, phases: g.phases || {},
+             decisive: g.decisive ? { move: g.decisive.move, by: g.decisive.by } : null,
+             lastChance: g.last_chance ? { move: g.last_chance.move, played: g.last_chance.played, best: g.last_chance.best } : null,
+             episodes, ownership: {}, summary: null,
+             seedInfo: { n: g.n, of: g.of, story: g.text || "", visits: g.visits_per_move }, seedRecord: rec || null };
+  }
   return { N, COLS, EMPTY, B, W, parseMove, pointIdx, gtp, neighbors, group, play, replay, playLine, decodeOwnership, starPoints, fmtScore,
-           legalPlay, canonical, rowIntact, fromGameRow };
+           legalPlay, canonical, rowIntact, fromGameRow, fromSeedRow };
 })();
 if (typeof module !== "undefined") module.exports = Core;
 </script>
@@ -360,7 +393,11 @@ if (typeof module !== "undefined") module.exports = Core;
 // the game row from the db (Core.fromGameRow). Boards and answers come from the db in both cases.
 function App(D) {
   const { N, B, W, EMPTY } = Core;
-  const LIVE = !!D.live;
+  const LIVE = !!D.live;                    // boards arrive through the db while Claude talks (the live and the seed page)
+  const SEED = !!D.seed;                    // the seed page: one game of many, with the survey's engine data
+  const NOENGINE = LIVE && !SEED;           // the live review page shows nothing of the engine
+  const ac = new AbortController(), on = { signal: ac.signal };   // listeners on the fixed page, removed by destroy()
+  const unsubs = []; let dead = false;
   const you = D.game.you === "W" ? W : B, youName = you === B ? "Black" : "White";
   const M = D.moves.length;
   const game = Core.replay(D.setup, D.moves);
@@ -376,20 +413,22 @@ function App(D) {
   // ---------- header ----------
   const opp = D.game.opponent || "opponent";
   const oppRank = D.game.opponentRank ? " (" + D.game.opponentRank + ")" : "";
-  $("title").textContent = "You (" + youName + ") vs " + opp + oppRank;
-  document.title = "Go review: vs " + opp;
+  $("title").textContent = (SEED ? "Game " + D.seedInfo.n + " of " + D.seedInfo.of + ": " : "") + "You (" + youName + ") vs " + opp + oppRank;
+  document.title = SEED ? "Seeding: game " + D.seedInfo.n + " of " + D.seedInfo.of : "Go review: vs " + opp;
   const facts = [];
   if (D.game.date) facts.push(D.game.date);
   facts.push(D.game.handicap >= 2 ? D.game.handicap + " handicap stones" : "even game");
   facts.push("komi " + D.game.komi);
   if (D.game.result) facts.push("result " + D.game.result);
   if (D.meta && D.meta.visits_per_move) facts.push(D.meta.visits_per_move + " visits per move");
-  if (LIVE) facts.push("review in progress");
+  if (SEED && D.seedInfo.visits) facts.push("survey at " + D.seedInfo.visits + " visits per move");
+  if (LIVE) facts.push(SEED ? "seeding" : "review in progress");
   $("facts").innerHTML = facts.map((f) => "<span>" + esc(f) + "</span>").join("");
   function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
   // ---------- goban ----------
   const svg = $("goban"), NS = "http://www.w3.org/2000/svg";
+  Array.from(svg.childNodes).forEach((n) => { if (String(n.nodeName).toLowerCase() !== "title") svg.removeChild(n); });   // a seed page draws game after game
   const CELL = 40, OFF = 40, R = 18.6;
   const xy = (idx) => [OFF + (idx % N) * CELL, OFF + Math.floor(idx / N) * CELL];
   function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; }
@@ -473,7 +512,7 @@ function App(D) {
   }
   // the survey's best move for move n (the position after move n is on the board), only while replaying the game
   function bestForMove() {
-    if (LIVE || !D.bestMoves || !state.showBest || state.mode !== "game" || state.move < 1) return null;
+    if (NOENGINE || !D.bestMoves || !state.showBest || state.mode !== "game" || state.move < 1) return null;
     const e = D.bestMoves[state.move - 1]; if (!e || !e.best) return null;
     const played = game.parsed[state.move - 1];
     const idx = e.best === "pass" ? null : Core.pointIdx(e.best);
@@ -490,8 +529,8 @@ function App(D) {
   $("scoreWho").textContent = "(points, " + youName + ")";
   function renderReadout() {
     renderBestInfo();
-    $("scoreBox").hidden = LIVE || state.mode === "board";
-    if (!LIVE) {
+    $("scoreBox").hidden = NOENGINE || state.mode === "board";
+    if (!NOENGINE) {
       const s = state.mode === "variation" ? (state.vply > 0 ? state.br.evals[state.vply - 1] : D.scoreSeries[state.br.fromMove]) : D.scoreSeries[state.move];
       $("scoreNow").textContent = Core.fmtScore(s);
       $("scoreNow").style.color = s > 0.05 ? "var(--gain)" : s < -0.05 ? "var(--loss)" : "inherit";
@@ -522,7 +561,7 @@ function App(D) {
     $("tglOwn").hidden = LIVE;
     $("tglOwn").disabled = !ownershipKey(); $("tglOwn").title = ownershipKey() ? "Engine territory estimate at this position" : "No estimate stored for this position";
     $("tglOwn").setAttribute("aria-pressed", String(state.showOwn && !!ownershipKey()));
-    $("tglNums").hidden = LIVE;
+    $("tglNums").hidden = NOENGINE;
     $("tglNums").disabled = state.mode !== "game" || !state.ep;
     $("tglNums").setAttribute("aria-pressed", String(state.showNums));
     const vb = $("varbar");
@@ -534,7 +573,7 @@ function App(D) {
   }
   function renderBestInfo() {
     const box = $("bestInfo"), tg = $("tglBest");
-    tg.hidden = LIVE || !D.bestMoves; tg.disabled = state.mode !== "game"; tg.setAttribute("aria-pressed", String(state.showBest));
+    tg.hidden = NOENGINE || !D.bestMoves; tg.disabled = state.mode !== "game"; tg.setAttribute("aria-pressed", String(state.showBest));
     const bm = bestForMove(); box.hidden = !bm; if (!bm) return;
     const who = bm.played.color === you ? "your move" : "your opponent's move";
     const lost = +bm.pointsLost;
@@ -557,20 +596,20 @@ function App(D) {
     if (state.mode === "board") { state.bply = Math.max(0, Math.min(state.bpos.positions.length - 1, state.bply + d)); renderAll(); return; }
     setMove((state.mode === "quiz" ? state.quiz.at - 1 : state.move) + d);
   }
-  $("btnFirst").addEventListener("click", () => setMove(0)); $("btnLast").addEventListener("click", () => setMove(M));
-  $("btnPrev").addEventListener("click", () => step(-1)); $("btnNext").addEventListener("click", () => step(1));
-  slider.addEventListener("input", () => setMove(parseInt(slider.value, 10)));
-  $("tglOwn").addEventListener("click", () => { state.showOwn = !state.showOwn; renderAll(); });
-  $("tglBest").addEventListener("click", () => { state.showBest = !state.showBest; renderAll(); });
-  $("tglNums").addEventListener("click", () => { state.showNums = !state.showNums; renderAll(); });
-  $("varExit").addEventListener("click", () => { if (state.mode === "board") exitBoard(true); else exitVariation(true); });
+  $("btnFirst").addEventListener("click", () => setMove(0), on); $("btnLast").addEventListener("click", () => setMove(M), on);
+  $("btnPrev").addEventListener("click", () => step(-1), on); $("btnNext").addEventListener("click", () => step(1), on);
+  slider.addEventListener("input", () => setMove(parseInt(slider.value, 10)), on);
+  $("tglOwn").addEventListener("click", () => { state.showOwn = !state.showOwn; renderAll(); }, on);
+  $("tglBest").addEventListener("click", () => { state.showBest = !state.showBest; renderAll(); }, on);
+  $("tglNums").addEventListener("click", () => { state.showNums = !state.showNums; renderAll(); }, on);
+  $("varExit").addEventListener("click", () => { if (state.mode === "board") exitBoard(true); else exitVariation(true); }, on);
   document.addEventListener("keydown", (ev) => {
     if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName) && ev.target !== slider) return;
     if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); } else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
     else if (ev.key === "Home") { setMove(0); ev.preventDefault(); } else if (ev.key === "End") { setMove(M); ev.preventDefault(); }
     else if (ev.key === "Escape" && state.mode === "variation") exitVariation(true);
     else if (ev.key === "Escape" && state.mode === "board") exitBoard(true);
-  });
+  }, on);
 
   // ---------- strip ----------
   function renderStrip() {
@@ -590,8 +629,8 @@ function App(D) {
   const maxAbs = Math.max(10, ...(D.scoreSeries || []).map((v) => Math.abs(v || 0)));
   const gx = (n) => GL + n / Math.max(1, M) * (GW - GL - GR), gy = (v) => GT + (maxAbs - v) / (2 * maxAbs) * (GH - GT - GB);
   function drawGraph() {
-    $("graphPanel").hidden = LIVE;
-    if (LIVE) return;
+    $("graphPanel").hidden = NOENGINE;
+    if (NOENGINE) return;
     while (G.firstChild) G.removeChild(G.firstChild);
     const mk = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || G).appendChild(e); return e; };
     for (const e of lessonEps) mk("rect", { x: gx(e.moves[0] - 1), y: GT, width: Math.max(2, gx(e.moves[1]) - gx(e.moves[0] - 1)), height: GH - GT - GB, fill: "var(--accent-soft)" });
@@ -614,10 +653,10 @@ function App(D) {
     $("graphLegend").innerHTML = leg.join("");
   }
   G.addEventListener("click", (ev) => {
-    if (LIVE) return;
+    if (NOENGINE) return;
     const pt = G.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; const p = pt.matrixTransform(G.getScreenCTM().inverse());
     const n = Math.round((p.x - GL) / (GW - GL - GR) * M); setMove(n);
-  });
+  }, on);
 
   // ---------- key-moment panel ----------
   function renderEpList() {
@@ -635,7 +674,24 @@ function App(D) {
     fill($("qlist"), qs);
     $("qhead").hidden = $("qlist").hidden = !qs.length;
   }
+  function renderSeedBody() {
+    const body = $("epbody"), I = D.seedInfo, rec = D.seedRecord, st = rec ? rec.status : null;
+    const story = rec && rec.story ? rec.story : I.story;
+    let html = "<div class='meta'>" + (st === "skipped" ? "Left out of the seeding." : rec ? "The story as agreed after your feedback."
+      : "The survey's best guess at the story. Say in the chat what is wrong or missing.") + "</div>";
+    html += "<div class='commentary'>" + (story ? story.split(/\n+/).map((t) => "<p>" + esc(t) + "</p>").join("")
+      : "<p><span class='empty'>Claude tells the story in the chat; it appears here too.</span></p>") + "</div>";
+    if (rec && rec.feedback) html += "<div class='said'><span class='at'>What you said</span><br>" + esc(rec.feedback) + "</div>";
+    if (rec && rec.lesson) {
+      const L = rec.lesson;
+      html += "<div class='principle'><div class='check'>Next time" + (L.title ? ": " + esc(L.title) : "") + "</div>" + esc(L.takeaway) +
+        "<div class='at'>Move " + L.move + ": " + esc(L.better) + " instead of " + esc(L.played) + (L.theme ? ". Theme: " + esc(L.theme) : "") + "</div></div>";
+    } else if (st === "no_lesson") html += "<p class='meta'>No lesson from this game.</p>";
+    if (lessonEps.length) html += "<h4 class='seedsub'>Key moments from the survey (click one to go there)</h4>";
+    body.innerHTML = html;
+  }
   function renderEpBody() {
+    if (SEED) { renderSeedBody(); return; }
     const body = $("epbody"); const e = state.ep;
     if (!e) { body.innerHTML = "<p class='commentary'><span class='empty'>No key moments in this review.</span></p>"; return; }
     const cur = state.mode === "quiz" ? state.quiz.at - 1 : state.mode === "variation" ? state.br.fromMove : state.move;
@@ -732,7 +788,8 @@ function App(D) {
 
   // ---------- summary ----------
   function renderSummary() {
-    $("summary").hidden = LIVE; $("lesson").hidden = LIVE;
+    $("summary").hidden = LIVE; $("lesson").hidden = NOENGINE;
+    if (SEED) { $("lesson").querySelector("h2").textContent = "The story"; $("epbody").after($("eplist")); }
     if (LIVE) return;
     const S = D.summary || {}; const box = $("summary"); let html = "<h2>Summary</h2>";
     if (S.story) html += "<p class='headline'>" + esc(S.story) + "</p>";
@@ -815,10 +872,11 @@ function App(D) {
     const panel = $("live"); const list = boardsInOrder();
     panel.hidden = !LIVE && !list.length;
     if (panel.hidden) return;
-    $("liveHead").textContent = LIVE ? "Review in progress" : "During the review";
+    $("liveHead").textContent = SEED ? "Boards for this game" : LIVE ? "Review in progress" : "During the review";
     const st = $("liveStatus");
     st.classList.toggle("warn", !live.db);
     st.textContent = !live.db ? (LIVE ? "Live updates are not available in this view. Open the page on claude.ai, signed in; until then Claude shows the boards in the chat." : "")
+      : SEED ? (list.length ? "The lines Claude shows for this game." : "No boards for this game yet. The lines of its lesson appear here.")
       : list.length ? (LIVE ? "Boards appear here as the review goes on. Questions are asked in the chat." : "The boards from the conversation.")
       : "Waiting for the first board. Questions are asked in the chat.";
     const ul = $("boardlist"); ul.innerHTML = "";
@@ -854,9 +912,11 @@ function App(D) {
     body.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => { const a = b.dataset.a; if (a === "undo") undoAnswer(bd); else if (a === "clear") clearAnswer(bd); else sendAnswer(bd); }));
   }
   async function onBoardRows(snap) {
+    if (dead) return;
     const rows = [];
-    for (const d of snap.docs) { const r = d.data(); if (r && r.kind === "board") rows.push(r); }
+    for (const d of snap.docs) { const r = d.data(); if (r && r.kind === "board" && !(SEED && r.game_id !== D.game.id)) rows.push(r); }
     const ok = await Promise.all(rows.map((r) => Core.rowIntact(r)));
+    if (dead) return;
     const fresh = new Map(), bad = new Set();
     rows.forEach((r, k) => {
       if (!ok[k] || r.game_id !== D.game.id || !(r.at_move >= 0 && (r.from_game || r.at_move <= M))) { bad.add(r.id || "?"); return; }
@@ -870,6 +930,7 @@ function App(D) {
     else { if (state.mode === "board" && state.bd && !fresh.has(state.bd.id)) exitBoard(false); refreshBoard(false); renderAll(); }
   }
   function onAnswerRows(snap) {
+    if (dead) return;
     const m = new Map(); for (const d of snap.docs) { const a = d.data(); if (a && Array.isArray(a.moves)) m.set(d.id, { moves: a.moves.slice() }); }
     live.answers = m; refreshBoard(state.mode === "board"); renderAll();
   }
@@ -878,17 +939,25 @@ function App(D) {
     if (!db) { renderAll(); return; }
     let owner = null; try { owner = user ? await user.isOwner() : null; } catch (e) { owner = null; }
     live.canAnswer = owner !== false;     // unknown: keep the controls; a refused write decides
-    db.collection("boards").onSnapshot((s) => { onBoardRows(s); }, () => { live.db = null; renderAll(); });
-    db.collection("answers").onSnapshot(onAnswerRows, () => {});
+    unsubs.push(db.collection("boards").onSnapshot((s) => { onBoardRows(s); }, () => { if (!dead) { live.db = null; renderAll(); } }));
+    unsubs.push(db.collection("answers").onSnapshot(onAnswerRows, () => {}));
     renderAll();
   }
+  // the seed page: a new story text or record for the game on show; destroy() before showing another game
+  function update(u) {
+    if (dead) return;
+    if ("story" in u) D.seedInfo.story = u.story || "";
+    if ("record" in u) D.seedRecord = u.record || null;
+    renderEpBody();
+  }
+  function destroy() { dead = true; ac.abort(); for (const u of unsubs) { try { if (typeof u === "function") u(); } catch (e) { /* already gone */ } } }
 
   function renderAll() { drawStones(); renderReadout(); renderStrip(); drawGraph(); renderEpList(); renderEpBody(); renderBoards(); }
   renderSummary();
   const startEp = lessonEps[0] || episodes[0];
   if (startEp) { state.ep = startEp; state.move = startEp.moves[0] - 1; }
   renderAll();
-  return { attach };
+  return { attach, update, destroy };
 }
 
 // ---- boot: the theme, then the embedded review, or the live page's game row from the db ----------
@@ -908,6 +977,7 @@ function App(D) {
   if (D.__placeholder__) { $("epbody").innerHTML = "<p class='commentary'><span class='empty'>This template has no review data yet. Build it with build_dashboard.py.</span></p>"; return; }
   const caps = (window.claude && typeof window.claude.use === "function")
     ? Promise.all([window.claude.use("db").catch(() => null), window.claude.use("user").catch(() => null)]) : Promise.resolve([null, null]);
+  if (D.__seed__) { bootSeed(caps); return; }
   if (!D.__live__) { const app = App(D); caps.then(([db, user]) => app.attach(db, user)); return; }
 
   // live page: nothing of the engine until the dashboard; the game record arrives as a checksummed db row
@@ -926,6 +996,65 @@ function App(D) {
       shown = row.sha256; app = App(Core.fromGameRow(row)); app.attach(db, user);
     }, () => { $("liveStatus").textContent = "Lost the connection to the live data; reload the page."; });
   });
+
+  // seed page: the index (the games and the one Claude is on), each game's row with the survey's engine data,
+  // and what the student agreed per game, all checksummed rows from katago-mcp's seed tools
+  function bootSeed(caps) {
+    const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    $("graphPanel").hidden = true; $("lesson").hidden = true; $("summary").hidden = true; $("live").hidden = false;
+    $("title").textContent = "Seeding"; $("liveHead").textContent = "Seeding"; $("liveStatus").textContent = "Connecting…";
+    const seed = { index: null, games: new Map(), records: new Map(), viewing: null, follow: true, app: null, shown: null, bad: [] };
+    function warn(text) { $("liveStatus").textContent = text; $("liveStatus").classList.add("warn"); }
+    function renderBar() {
+      const bar = $("seedbar"), idx = seed.index;
+      bar.hidden = !idx; if (!idx) return;
+      bar.innerHTML = "";
+      for (const g of idx.games) {
+        const rec = seed.records.get(g.game_id), st = rec ? rec.status : null;
+        const b = document.createElement("button"); b.type = "button";
+        b.className = [g.game_id === seed.viewing ? "viewing" : "", g.game_id === idx.current ? "current" : "", st === "skipped" ? "skipped" : st ? "done" : ""].join(" ").trim();
+        b.innerHTML = g.n + " · " + esc(g.opponent || "?") + "<span class='s'>" + (st === "confirmed" ? "✓ lesson" : st === "no_lesson" ? "✓" : g.game_id === idx.current && !st ? "now" : "") + "</span>";
+        b.title = [g.date, g.result].filter(Boolean).join(", ");
+        b.disabled = !seed.games.has(g.game_id);
+        b.addEventListener("click", () => { seed.viewing = g.game_id; seed.follow = g.game_id === idx.current; show(); });
+        bar.appendChild(b);
+      }
+    }
+    function show() {
+      renderBar();
+      const row = seed.viewing ? seed.games.get(seed.viewing) : null;
+      if (!row) { if (!seed.app) $("liveStatus").textContent = seed.index ? "Waiting for the game…" : "Waiting for the first game…"; return; }
+      const rec = seed.records.get(seed.viewing) || null;
+      if (seed.app && seed.shown === row.sha256) { seed.app.update({ story: row.text, record: rec }); return; }
+      if (seed.app) seed.app.destroy();
+      $("liveStatus").classList.remove("warn");
+      seed.shown = row.sha256; seed.app = App(Core.fromSeedRow(row, rec)); seed.app.attach(seed.db, seed.user);
+    }
+    async function intact(snap, kind) {
+      const out = new Map(), bad = [];
+      for (const d of snap.docs) { const r = d.data(); if (!r || r.kind !== kind) continue; if (await Core.rowIntact(r)) out.set(r.game_id, r); else bad.push(d.id); }
+      return [out, bad];
+    }
+    caps.then(([db, user]) => {
+      if (!db) { warn("Live updates are not available in this view. Open the page on claude.ai, signed in; until then Claude shows the boards in the chat."); return; }
+      seed.db = db; seed.user = user;
+      $("liveStatus").textContent = "Waiting for the first game…";
+      db.doc("seed/index").onSnapshot(async (snap) => {
+        const row = snap.exists ? snap.data() : null; if (!row) return;
+        if (!(await Core.rowIntact(row))) { warn("The list of games did not arrive intact; ask Claude to send it again."); return; }
+        const moved = !seed.index || seed.index.current !== row.current;   // Claude went on to another game
+        seed.index = row;
+        if (seed.follow || moved || !seed.viewing) { seed.viewing = row.current; seed.follow = true; }
+        show();
+      }, () => warn("Lost the connection to the live data; reload the page."));
+      db.collection("seedgames").onSnapshot(async (snap) => {
+        const [m, bad] = await intact(snap, "seed_game"); seed.games = m;
+        if (bad.length) warn("Did not arrive intact: " + bad.join(", ") + ". Ask Claude to send it again.");
+        show();
+      }, () => {});
+      db.collection("seedrecords").onSnapshot(async (snap) => { const [m] = await intact(snap, "seed_record"); seed.records = m; show(); }, () => {});
+    });
+  }
 })();
 </script>
 </body>

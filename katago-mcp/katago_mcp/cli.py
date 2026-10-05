@@ -5,6 +5,7 @@
   katago-mcp selfcheck --config config/m5pro.toml [--sgf game.sgf]
   katago-mcp sgf-summary game.sgf [--student <ogs-name>]
   katago-mcp survey game.sgf --config ... [--visits 300] [--mock]
+  katago-mcp seed --config ... [--count 10 | --game <link or .sgf> ...] [--exclude <id> ...] [--restart]
 """
 from __future__ import annotations
 
@@ -124,6 +125,44 @@ def cmd_survey(args) -> int:
         t.close()
 
 
+def cmd_seed(args) -> int:
+    """Prepare a seeding ahead of the chat: pick the games and survey them all to disk. The chat (seed_start)
+    then resumes this seeding, and its games load at once. Stop the MCP server first: two servers would run
+    two KataGo engines."""
+    t = _tools(args, start_engine=not args.mock)
+    t.cfg.seed.prepare_moments = 0       # the key moments are prepared in the chat's server; their results live in memory
+    t.cfg.seed.ready_ahead = 1
+    try:
+        r = t.seed_start(games=args.game or None, count=args.count, exclude=args.exclude or None, restart=args.restart)
+        print(f"{r['seed_id']}: {r['of']} games{' (resumed)' if r.get('resumed') else ''}", file=sys.stderr)
+        for g in r["games"]:
+            print(f"  {g['n']:>2}. {g['game_id']}  {g['date'] or '':<10}  vs {g['opponent']}  {g['result']}  "
+                  f"{g['moves']} moves  {g['state']}", file=sys.stderr)
+        for k in r.get("skipped", []):
+            print(f"  left out {k['game']}: {k['reason']}", file=sys.stderr)
+        while True:
+            st = t.seed_status()
+            todo = [g for g in st["games"] if g["state"] in ("queued", "surveying") and not g["recorded"]]
+            done = st["of"] - len(todo)
+            now = next((g for g in st["games"] if g["state"] == "surveying"), None)
+            line = f"\r  surveyed {done}/{st['of']}" + (f", game {now['n']} at {int(100 * (now.get('progress') or 0))}%" if now else "")
+            print(line + f", about {round(st['engine_seconds_ahead'] / 60)} min left   ", end="", file=sys.stderr, flush=True)
+            if not todo:
+                break
+            time.sleep(0.2 if args.mock else 2)
+        print(file=sys.stderr)
+        failed = [g for g in t.seed_status()["games"] if g["state"] == "failed"]
+        for g in failed:
+            print(f"  game {g['n']} failed: {g.get('error')}", file=sys.stderr)
+        print("ready: in a Claude Desktop chat, ask to continue the seeding", file=sys.stderr)
+        return 1 if failed else 0
+    except ToolError as e:
+        print(json.dumps(e.to_dict(), indent=2), file=sys.stderr)
+        return 1
+    finally:
+        t.close()
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="katago-mcp")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -145,6 +184,14 @@ def main(argv=None) -> int:
     c.add_argument("--student")
     c.add_argument("--visits", type=int, default=200)
     c.set_defaults(fn=cmd_selfcheck)
+    sd = sub.add_parser("seed", help="prepare a seeding: pick the games and survey them before the chat")
+    sd.add_argument("--config")
+    sd.add_argument("--count", type=int, help="the student's most recent OGS games to take (default [seed].games)")
+    sd.add_argument("--game", action="append", help="an OGS link/id or .sgf name instead (repeatable)")
+    sd.add_argument("--exclude", action="append", help="a game id to leave out, e.g. one reviewed already (repeatable)")
+    sd.add_argument("--restart", action="store_true", help="abandon an unfinished seeding and start a new one")
+    sd.add_argument("--mock", action="store_true")
+    sd.set_defaults(fn=cmd_seed)
     v = sub.add_parser("survey", help="run a whole-game survey and print its story")
     v.add_argument("sgf")
     v.add_argument("--config")

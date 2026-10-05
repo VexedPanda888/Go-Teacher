@@ -21,13 +21,18 @@ class ServerRegistrationTest(unittest.TestCase):
             server = build_server(cfg, engine=MockEngine(), start_engine=False)
             try:
                 tools = asyncio.run(server.list_tools())
-                self.assertEqual(len(PUBLIC_TOOLS), 19)
+                self.assertEqual(len(PUBLIC_TOOLS), 24)
                 self.assertEqual([t.name for t in tools], list(PUBLIC_TOOLS))
                 self.assertTrue(all(t.description for t in tools))
                 em = next(t for t in tools if t.name == "explain_moment")
                 self.assertEqual(em.inputSchema["required"], ["position"])
                 for gone in ("plan_budget", "start_verification", "record_interview", "verification_results"):
                     self.assertNotIn(gone, PUBLIC_TOOLS)
+                sr = next(t for t in tools if t.name == "seed_record")
+                self.assertEqual(sr.inputSchema["required"], ["game", "status"])
+                res = asyncio.run(server.call_tool("seed_status", {}))
+                content = res[0] if isinstance(res, tuple) else res
+                self.assertIsNone(json.loads(content[0].text)["session"])
                 res = asyncio.run(server.call_tool("engine_info", {}))
                 content = res[0] if isinstance(res, tuple) else res
                 self.assertEqual(json.loads(content[0].text)["search"]["root"], 3000)

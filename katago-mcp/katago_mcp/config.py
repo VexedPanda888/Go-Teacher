@@ -113,6 +113,17 @@ class Throughput:
 
 
 @dataclass
+class SeedConfig:
+    """Seeding (contract §1.20–§1.24): a brief review of past games, one at a time, that seeds the memory."""
+    games: int = 10                         # how many recent games a seeding takes when the student names none
+    min_moves: int = 60                     # shorter games are left out (a 20-move resignation teaches nothing)
+    survey_visits: int = 500                # visits per move of a seed survey; a stored survey with at least this many is reused
+    prepare_moments: int = 1                # explain_moment prepared in the background for each game's top key moments
+    ready_ahead: int = 3                    # games kept loaded and prepared ahead of the student (0: all of them)
+    ogs_pages: int = 6                      # at most this many pages of 50 games are read from OGS to find them
+
+
+@dataclass
 class Config:
     machine: str = "unnamed"
     katago: KatagoConfig = field(default_factory=KatagoConfig)
@@ -121,6 +132,7 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
     prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
+    seed: SeedConfig = field(default_factory=SeedConfig)
     reviews_dir: str = "reviews"
     games_dir: str = "games"          # SGF files given by name are looked up here; OGS downloads are cached here
     ogs: OgsConfig = field(default_factory=OgsConfig)
@@ -160,6 +172,7 @@ def load_config(path: str | Path | None) -> Config:
     _fill(cfg.search, data.get("search"))
     _fill(cfg.thresholds, data.get("thresholds"))
     _fill(cfg.prefetch, data.get("prefetch"))
+    _fill(cfg.seed, data.get("seed"))
     cfg.reviews_dir = data.get("paths", {}).get("reviews_dir", cfg.reviews_dir)
     cfg.games_dir = data.get("paths", {}).get("games_dir", cfg.games_dir)
     _fill(cfg.ogs, data.get("ogs"))

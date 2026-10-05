@@ -114,7 +114,7 @@ class Prefetcher:
 
     def after_survey(self, job: "Job") -> None:
         """Survey done: prepare its top key moments while Claude tells the story and asks about them."""
-        n = int(self.cfg.moments)
+        n = int(job.options.get("prefetch_moments", self.cfg.moments))     # a seed survey prepares fewer
         if n <= 0 or job.ga is None or not job.options.get("prefetch", True):
             return
         try:
