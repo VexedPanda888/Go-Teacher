@@ -500,13 +500,31 @@ class Tools:
         KataGo's NN cache is a fixed-size table (nnCacheSizePowerOfTwo in analysis.cfg), so its memory levels
         off and this normally never fires: it guards against an oversized cache setting or a leak. A restart
         costs a model reload (~30 s on Metal), so it only happens between jobs, never on a query count.
+        Every decision is logged with the memory reading, so a survey that ran on a heavy engine shows why.
         """
         limit = self.cfg.katago.restart_above_mb
-        if not limit or self.jobs.active is not None or self.prefetch.running is not None \
-                or not hasattr(self.engine, "memory_mb"):
+        if not limit:
+            log.info("restart guard: disabled (restart_above_mb = 0)")
+            return
+        if not hasattr(self.engine, "memory_mb"):
+            log.info("restart guard: skipped, this engine reports no memory")
             return
         mb = self.engine.memory_mb()
-        if mb is None or mb <= limit:
+        used = "unknown" if mb is None else f"{mb:.0f} MB"
+        if self.jobs.active is not None:
+            log.info("restart guard: skipped, survey %s is running (katago uses %s, limit %d)",
+                     self.jobs.active.job_id, used, limit)
+            return
+        task = self.prefetch.running
+        if task is not None:
+            log.info("restart guard: skipped, prefetch of %s move %d is running (katago uses %s, limit %d)",
+                     task.job_id, task.move_number + 1, used, limit)
+            return
+        if mb is None:
+            log.info("restart guard: no restart, katago memory unknown (limit %d)", limit)
+            return
+        if mb <= limit:
+            log.info("restart guard: no restart, katago uses %s (limit %d)", used, limit)
             return
         log.warning("katago uses %.0f MB (limit %d); restarting it before the survey", mb, limit)
         with _engine_errors():

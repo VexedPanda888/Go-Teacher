@@ -540,6 +540,44 @@ class RestartGuardTest(unittest.TestCase):
     def test_zero_limit_disables(self):
         self.assertEqual(self._start(6000, limit=0), 0)
 
+    def _guard_log(self, memory_mb, limit=4000, prefetching=False):
+        """The guard's log lines for one call, and the restarts it made."""
+        from katago_mcp.prefetch import Task
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = MockEngine()
+            eng.fake_memory_mb = memory_mb
+            t = make_tools(tmp, eng, katago__restart_above_mb=limit)
+            if prefetching:
+                t.prefetch.running = Task("job_x", 40, "Q7", {})
+            with self.assertLogs("katago_mcp", level="INFO") as cm:
+                t._restart_if_heavy()
+            t.prefetch.running = None
+            t.close()
+            return "\n".join(cm.output), eng.restarts
+
+    def test_logs_no_restart_with_memory(self):
+        out, restarts = self._guard_log(1800)
+        self.assertEqual(restarts, 0)
+        self.assertIn("no restart, katago uses 1800 MB (limit 4000)", out)
+
+    def test_logs_unknown_memory(self):
+        out, _ = self._guard_log(None)
+        self.assertIn("katago memory unknown", out)
+
+    def test_logs_disabled(self):
+        out, _ = self._guard_log(6000, limit=0)
+        self.assertIn("disabled", out)
+
+    def test_logs_skip_for_running_prefetch(self):
+        out, restarts = self._guard_log(6000, prefetching=True)
+        self.assertEqual(restarts, 0)
+        self.assertIn("skipped, prefetch of job_x move 41 is running (katago uses 6000 MB, limit 4000)", out)
+
+    def test_logs_restart(self):
+        out, restarts = self._guard_log(6000)
+        self.assertEqual(restarts, 1)
+        self.assertIn("katago uses 6000 MB (limit 4000); restarting", out)
+
 
 class SgfInputTest(unittest.TestCase):
     """sgf inputs: text, file path (games dir / absolute), OGS id or link (fetched, cached)."""
