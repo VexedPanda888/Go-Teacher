@@ -30,14 +30,14 @@ A Claude project that reviews your OGS games the way a strong, patient teacher w
 ### Principles every workstream serves
 1. **The engine is the authority on the board.** Claude brings the story, the questions, the ideas that make a position understandable and the patience to go back and forth; every concrete claim (a sequence, a status, a count) comes from a tool result.
 2. **Review like a teacher.** A quick pass for the story of the game, then the key moments; Claude decides which and how many as the review goes (decision 21).
-3. **Self-review first, then check the reasoning.** The student reviews the game themselves first — surprises, shifts, successes and their own reasoning — before any engine result; the engine then checks their reasoning, not just their moves, and at each key moment they say what they were thinking before anything is shown (decision 23).
+3. **Self-review first, then check the reasoning.** The student reviews the game themselves first — surprises, shifts and successes, asked in one message, with a line of their reasoning for each — before any engine result; the engine then checks their reasoning, not just their moves, and at each key moment they say what they were thinking before anything is shown (decisions 23, 25).
 4. **Explanation by lines, not labels.** The student's thinking first, then what actually happens, shown as engine-checked lines on the page; the *why* is what differs at the ends of the lines. A score difference is the size of a mistake, never its reason. No taxonomy (decision 20).
-5. **One to three takeaways per game, ideally one**, each a change in how the student thinks, said and written in their own words, concrete enough to check at the board.
+5. **One takeaway per game**, a change in how the student thinks, said and written in their own words, concrete enough to check at the board (decision 25).
 6. **Engine-validated dashboard.** No sequence appears in the dashboard unless the server has legality-checked and evaluated it.
 7. **Points, not percentages.** Score lead is the unit for everything; winrate only answers "how decided is the game."
 8. **Simplest sufficient move.** When the engine's best move is hard to find at the student's rank, recommend the move within about a point of it that a player three stones stronger plays most often.
 9. **Server computes, Claude narrates.** Derived facts (chains, group fates, swings, decisive moment, end comparisons) are computed deterministically in the server so they are consistent across reviews and machines and cannot be confabulated.
-10. **As long as it needs.** No time budget: search sizes are fixed per machine, a review aims at about 30 minutes, and goes longer when the student wants (decision 19).
+10. **As long as it needs.** No time budget: search sizes are fixed per machine, a review aims at about 20 minutes, and goes longer when the student wants (decisions 19, 25).
 
 ---
 
@@ -136,7 +136,7 @@ keeps explanations honest. See `skills/katago-analysis/SKILL.md`. (Rewritten in 
 
 ### WS4 — Skill `go-teaching` (C4) — Size M
 The pedagogy: the guided self-review, checking the student's reasoning with the story, choosing key moments,
-asking first, the explanation standard, the back and forth, the takeaway, recall quizzes, conduct. See
+asking first, the explanation standard, the back and forth, the takeaway, conduct. See
 `skills/go-teaching/SKILL.md`. (Rewritten in WS10.)
 
 **Acceptance.** A sample explanation written from real `explain_moment` results passes a checklist: starts from the student's thinking, every claim traceable, every sequence on the page, the why from the end comparison, no uncashed concept words.
@@ -159,7 +159,7 @@ The student's takeaways across games and the themes that recur, shared across al
 `skills/go-teacher-flow/references/memory.md`. (Recurrence by takeaway theme since WS10; the lessons of
 earlier reviews carry over as takeaways.)
 
-**Acceptance.** Two consecutive reviews where the second one visibly uses the first one's takeaways (a recall quiz on one; a repeated theme named when it comes back).
+**Acceptance.** Two consecutive reviews where the second one visibly uses the first one's takeaway (a repeated theme named when it comes back).
 
 **Dependencies:** WS4 (taxonomy and beliefs).
 
@@ -207,7 +207,7 @@ the top key moments), fixed `[search]` sizes per machine with time estimates, ta
 
 **Acceptance**
 - 81 tests pass offline with the mock engine (done 4 Oct); the headless-Chrome page tests pass on a machine with Chrome.
-- One real review on the Pro: the story names the group fates and the turning point you recognise; each key moment's `explain_moment` is ready or arrives within the `engine_info` estimate; each moment ends in a takeaway you would sign; about 30 minutes for two to three moments.
+- One real review on the Pro: the story names the group fates and the turning point you recognise; each key moment's `explain_moment` is ready or arrives within the `engine_info` estimate; the review ends in one takeaway you would sign; about 20 minutes for one or two moments.
 - You prefer the explanations to those of the taxonomy reviews, on two games reviewed both ways.
 
 **Dependencies:** WS2, WS4, WS5, WS7.
@@ -225,7 +225,7 @@ top of the teacher-pattern redesign (WS10), the causal evidence (forced lines, e
 | WS1 engine setup | **working on the Pro** (Metal) | install scripts and `selfcheck` delivered; the 5700XT and the Air are not yet confirmed |
 | WS2 katago-mcp server | running, 0.6.0 | 24 tools; 0.4.3 ran against live KataGo on the Pro; 0.5.0 (story, `explain_moment`, prefetch) and 0.6.0 (seeding) tested on the mock engine, seeding also on the stored real surveys and the live OGS list |
 | WS3 katago-analysis skill | rewritten (WS10) | the story, `explain_moment`, follow-up tools, honesty checks |
-| WS4 go-teaching skill | rewritten (WS10) | the teacher's pattern, explanation standard, takeaways, recall quizzes |
+| WS4 go-teaching skill | rewritten (WS10) | the teacher's pattern, explanation standard, the takeaway; shortened (decision 25) |
 | WS5 review-dashboard | delivered | branches off branches, end comparison panel, the takeaway (WS10); follow-up questions as their own episodes (0.2.2); live from Phase 0 with boards and clicked answers (0.4.0), tested in headless Chrome with a stand-in database, not yet on claude.ai |
 | WS6 memory artifact | delivered; schema 2 (WS10) | takeaways in the `lessons` collection, the 37 earlier lessons carried over as they are; the read-only page does not show `theme` or `recurring_themes` yet |
 | WS7 review flow | rewritten (WS10) | the `go-teacher-flow` skill; repackage the skills (`skills/package.sh`) and re-upload |
@@ -263,6 +263,7 @@ top of the teacher-pattern redesign (WS10), the causal evidence (forced lines, e
 | 22 | Takeaways carry over (4 Oct) | new takeaways are written to the memory's `lessons` collection in a compatible shape, so the 37 earlier lessons stay where they are, count as takeaways for recall quizzes and recurrence, and the memory page keeps showing them; `episodes` and `patterns` are no longer written |
 | 23 | Guided self-review (4 Oct; replaces the upfront questions of 21) | the survey time becomes a guided self-review following a strong player's method for teaching yourself Go: the student steps through the game for surprises, shifts and successes and reasons about each, with no engine result until done (the engine seen early replaces self-doubt and reasoning); the story then checks their reasoning (what they saw, where their judgment was off, what they did not see — pointed to, and looked at again before it is explained); key moments start from their own ideas; one to three takeaways per game, ideally one, each a change in thought process, written down; the self-review is shown on the page and kept in memory |
 | 24 | Seeding with the student (5 Oct; replaces 10 and the old WS8) | a chat asks to seed; an earlier seeding (the profile's `seed`, or the September survey seeding) is replaced only after the student confirms; the student's recent OGS games (default 10, reviewed ones left out) appear one at a time on a seed page that shows the survey's engine data; per game the survey's story, the student's feedback, one lesson Claude proposes and the student confirms; memory is written once at the end (`games` with `seeded: true`, `lessons/<id>-S1` with `source: "seed"`), and seeded lessons count as takeaways |
+| 25 | A shorter review (6 Oct; amends 16, 21 and 23) | reviews took too long: the self-review is one message (surprises, shifts and successes together, a move number and a line of reasoning each) with at most one follow-up, no per-moment questioning or boards before the story; one takeaway per game, from one key moment (a second only when it teaches the same thing); no recall quizzes and no dashboard quizzes; Claude queues no `explain_moment` before the story beyond the server's own prefetch, only for a chosen moment not yet prepared; about 20 minutes |
 
 ---
 
@@ -271,7 +272,7 @@ top of the teacher-pattern redesign (WS10), the causal evidence (forced lines, e
 | Risk | Mitigation |
 |---|---|
 | Claude rationalizes engine numbers into wrong Go explanations | the explanation standard: every claim a line on the page; server-computed derived facts; end comparisons instead of deltas; stability check and `notes` in `explain_moment`; engine-validated branches only |
-| Without a time budget, reviews run long | 30-minute target said at the start; Claude checks in around 30 minutes; prefetch keeps the student from waiting on the engine |
+| Without a time budget, reviews run long | 20-minute target said at the start; one-message self-review, one takeaway, no quizzes (decision 25); prefetch keeps the student from waiting on the engine |
 | Winrate misleads, especially in handicap games | points everywhere; winrate only for "how decided" |
 | The Air is too slow for the pipeline | `plan_budget` states the minimum full-rigor time up front; fewer episodes; `analysis.json` reusable across machines |
 | Memory bloat or stale profile | compact profile with recency weighting; full history kept only in `episodes` |

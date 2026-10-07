@@ -49,7 +49,7 @@ class ExplainMomentTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_key_moments_are_prepared_in_the_background(self):
-        self.assertEqual(wait_prepared(self.tools, self.job_id), ["done"] * min(3, len(self.moments)))
+        self.assertEqual(wait_prepared(self.tools, self.job_id), ["done"] * min(self.tools.cfg.prefetch.moments, len(self.moments)))
         bg = [p for name, p in self.engine.calls if name == "katago-prefetch"]
         self.assertTrue(bg)
         self.assertTrue(all(p == self.tools.cfg.prefetch.priority for p in bg))

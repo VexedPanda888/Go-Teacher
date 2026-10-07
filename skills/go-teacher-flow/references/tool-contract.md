@@ -676,7 +676,7 @@ type BoardRow = { kind: "board"; id: string; seq: number; game_id: string; title
                                 setup: { AB: Point[]; AW: Point[] }; moves: string[] /* that game's first at_move moves */ };
                   sha256: string };
 ```
-**Behavior.** `line` is legality-checked from the position after `at_move` (`illegal_move`, `wrong_color` with the ply); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`). With `from_game` the row still belongs to this review (`game_id`, `seq`, the log) and carries the past game's record up to `at_move`, which the page replays instead of the review's game (a recall quiz on an old takeaway, go-teaching §6).
+**Behavior.** `line` is legality-checked from the position after `at_move` (`illegal_move`, `wrong_color` with the ply); `ask_color` is the side to move after `line`. `sha256` is the SHA-256 of the canonical JSON (§5) of the row without `title`, `text` and `sha256`: wording may be changed when writing, nothing else. The game row of a job and of its SGF are identical. Every row is appended to `reviews/<game_id>/dashboard_rows.jsonl`, which also numbers the boards (`seq`). With `from_game` the row still belongs to this review (`game_id`, `seq`, the log) and carries the past game's record up to `at_move`, which the page replays instead of the review's game (a position from an old takeaway; reviews no longer quiz these).
 
 **The page side** (review-dashboard skill). The live page (`build_dashboard.py --live`) is published with `capabilities: { db: { rules: [{ path: "", read: "view", write: "owner" }] }, user: {} }` and reads `review/game`, `boards/*` and `answers/*`. It shows no engine data: no score, graph or ownership. A row whose checksum fails is listed as "did not arrive intact". The student's answer to a board with `ask` is written by the page to `answers/<board id>` as `{ board, moves: string[] /* "WQ7" */, sent_at }` (one move for `ask: "move"`); the page refuses an occupied point, suicide and an immediate ko retake, and `explain_moment` checks the moves again when they are passed as `expected_line`. The final dashboard is republished to the same URL; the `db` survives the republish, and the page lists its boards under "During the review".
 With `page: "seed"` the board's `id` and `doc_id` are prefixed with the game id (`ogs_123-b01`): the seed page holds the boards of many games and shows each game's own. The seed page's other rows come from `seed_game` and `seed_record`.
@@ -971,7 +971,7 @@ neighborhood_radius = 3                   # §1.11
 misread_margin = 3.0                      # §1.12
 
 [prefetch]
-moments = 3                               # §1.3: key moments prepared when a survey finishes (0: off)
+moments = 1                               # §1.3: key moments prepared when a survey finishes (0: off)
 priority = 5                              # §0.8: KataGo priority of background work
 
 [seed]                                    # §1.20

@@ -33,9 +33,9 @@ about a position comes from a tool result whose `query_id` you note in `moments.
    server's `games/` folder. Never retype SGF text into a tool call. Use the same `sgf` value for
    `start_game_analysis`.
 3. `start_game_analysis(sgf)` — the survey, sized to take about 10 minutes on this machine. When it
-   finishes, the server prepares `explain_moment` for the story's top three key moments in the
-   background (nothing is shown; you ask first). Queue the moves the student named in the self-review
-   the same way (`background: true`) once the survey is done.
+   finishes, the server prepares `explain_moment` for the story's top key moment in the
+   background (nothing is shown; you ask first). Queue nothing else before the story: queue a key
+   moment you choose that is not `prepared` (`background: true`) when you choose it.
 
 A tool call blocks your turn: you cannot talk to the student while a search runs. That is why the slow
 work runs in the background: the survey while the student does the guided self-review, the key
@@ -102,14 +102,14 @@ What it returns, and what each part is for in the explanation (go-teaching §5):
 | Question | Tool |
 |---|---|
 | "What about my line?" (a sequence) | `analyze_line(pos, line)`: every node evaluated, then the engine continues |
-| "Is this group alive?" / a status quiz | `local_solve(pos, group_point)`: attacker-first and defender-first playouts; read `caveats` |
+| "Is this group alive?" | `local_solve(pos, group_point)`: attacker-first and defender-first playouts; read `caveats` |
 | "Was this sente?" / endgame size | `swing_value(pos, [points])`: each point as a swing, sente or gote |
 | "Why there and not here?" (urgent vs big) | `pass_probe(pos, player, move, {rank_regions: true})`: the value of playing in each area now |
 | "Would my opponent have found it?" | `human_move_distribution(pos, ["opponent"], [moves])` |
 | A line from any position, or a comparison of two ends | `forced_line`, `terminal_features(a, compare_to: b)` |
 | What a move was for, alone | `intent_probe(pos, move)`; where reading breaks: `expectation_probe(pos, move, {expected_line})` |
 
-Every line you discuss goes on the page (go-teaching §7, review-dashboard "Follow-up questions").
+Every line you discuss goes on the page (go-teaching §6, review-dashboard "Follow-up questions").
 
 ## 5. What keeps the explanations honest
 

@@ -199,7 +199,7 @@ raw SGF text is accepted but pasting it through the chat mangles long records.
 Every call is logged to `reviews/<game_id>/queries.jsonl` with a `query_id`.
 
 **Background work.** When a survey finishes, the server runs `explain_moment` for the story's top
-three key moments (`[prefetch].moments`; 0 turns it off; the CLI never does it). `explain_moment(...,
+key moment (`[prefetch].moments`, default 1; 0 turns it off; the CLI never does it). `explain_moment(...,
 background: true)` queues more. A prepared result answers Claude's identical call at once, with
 `precomputed: {query_id}`; `job_results` shows each key moment's state as `prepared`. The queue and the
 stored results live in memory: a server restart loses them, and the calls simply run again.

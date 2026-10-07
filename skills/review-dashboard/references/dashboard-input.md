@@ -12,7 +12,8 @@ Read before writing the page text and the `validate_variations` input.
   better move does; at the end of the sequence, what is different from the better line's end. Concept
   words and "the engine ranks/prefers": go-teaching §5.
 - `takeaway` is the student's own sentence about what they will do differently, as you agreed it in the
-  review (go-teaching §4.5). Keep their words; one or two sentences.
+  review (go-teaching §4.5). Keep their words; one or two sentences. The review has one takeaway: put it
+  on the moment it came from (a second moment that taught the same thing has none).
 - Label branches by what they are for the student: "As played", "What you expected", "Where it breaks
   (move k)", "Better: E", "If White resists at X", "Your idea (P8)", "Your question: P8 first?". Never
   "Engine's line".
@@ -40,7 +41,6 @@ Read before writing the page text and the `validate_variations` input.
       {"id": "B6", "label": "Your idea (P8)",            "kind": "fix",       "from_move": 86, "moves": ["BP8", "WR8"]}
     ],
     "comparison": {"a": "B1", "b": "B4"},
-    "quiz": {"at_move": 87, "type": "move", "candidates": ["R8", "P8"]},
     "takeaway": "When my group already has a base and White plays a contact move nearby, I'll read whether I can ignore it before answering."
   }],
   "summary": { … see below … }
@@ -66,24 +66,22 @@ Read before writing the page text and the `validate_variations` input.
 - `comparison` names two branches (`a` = the played line, `b` = the better line); the server computes
   what differs at their ends (groups, territory, who plays next freely, the next biggest move, weak
   groups) and the page shows it as a table. Write no numbers of your own about it.
-- Quiz `type: "move"`: the student guesses move `at_move`; `candidates` are the moves you want graded
-  (the actual move and the peer-typical move are added and labelled automatically).
-  Quiz `type: "status"`: `{"at_move": n, "type": "status", "status": {"group_point": "F3",
-  "solve_query_id": "q_…"}}` where the query id comes from a `local_solve` you ran in this session.
+- No `quiz`: the page has no quizzes. Leave the field out (each one costs searches in
+  `validate_variations`).
 
 ## summary (free text you write, shown at the bottom of the page)
 
 ```json
 {
   "story": "two to four sentences: how the game went and where it turned",
-  "takeaways": [{"momentId": "M1", "title": "…", "takeaway": "the student's sentence"}],
+  "takeaways": [{"momentId": "M1", "title": "…", "takeaway": "the student's sentence"}],   // one entry
   "selfReview": {
     "surprises": ["Move 41, White's cut worked: you didn't see your three stones were a liberty short. The engine agrees: −8 here."],
     "shifts": ["You felt behind after move 60; the lead stayed with you until move 87."],
     "successes": ["The capture race at 150: you read it right, and it decided the game."]
   },
   "strengths": ["a correct move that was hard for your level, with its move number"],
-  "nextGame": "one concrete thing to try once per game, from the takeaways",
+  "nextGame": "one concrete thing to try once per game, from the takeaway",
   "reliability": "how deep the checks went, e.g. 'Each key moment checked at 12,000 visits with 8-move lines.'"
 }
 ```
@@ -100,7 +98,5 @@ check found, in a sentence; the page lists it under "Your self-review, checked".
 - `wrong_color`: the branch starts with the colour that is not to move at `from_move`; either start one
   move earlier or begin the branch with the opponent's actual move.
 - `bad_kind`: an episode `kind` other than `moment` or `question`.
-- `unknown_query` for a status quiz: the `solve_query_id` is from another server session; run
-  `local_solve` again and use the new id.
 - The page shows "No estimate stored for this position" on the territory toggle: ownership is exported
   only for moment roots (before/after) and branch ends; that is expected elsewhere.

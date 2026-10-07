@@ -47,7 +47,7 @@ group_event_min_size = 4            # the story tells the fate of groups this bi
 group_event_hold = 6                # ... when the new status still holds this many moves later
 
 [prefetch]
-moments = 3                         # when a survey finishes, prepare explain_moment for this many key moments (0: off)
+moments = 1                         # when a survey finishes, prepare explain_moment for this many key moments (0: off)
 priority = 5                        # KataGo priority of that work: survey 0 < prefetch < Claude's calls 10
 
 [seed]

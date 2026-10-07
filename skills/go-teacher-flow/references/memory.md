@@ -8,7 +8,7 @@ records what the student took from each game and what keeps coming back, never p
 
 ## Collections
 
-`lessons/<game_id>-L<n>` — **one per takeaway**, the heart of memory. The collection keeps its old
+`lessons/<game_id>-L<n>` — **one per takeaway** (a review now makes one, `-L1`), the heart of memory. The collection keeps its old
 name so the lessons of earlier reviews stay where they are and count as takeaways. A takeaway written
 from this version on:
 
@@ -29,22 +29,21 @@ from this version on:
   category numbers.
 - `moments`: the key moments it came from (several moments that taught the same thing make one
   takeaway). `move`, `played`, `better`: the first of them — its move number, the move played, and the
-  better move the student learned (for recall quizzes).
-- `recall`: the recall quizzes on it (go-teaching §6), oldest first: `{date, game_id, answer, result}`
-  with `result` `found` (the better move), `acceptable` (another move within a point) or `missed`.
-- `status`: `open`, or `retired` after the student found it in two recall quizzes in a row.
+  better move the student learned.
+- `recall`: kept from when reviews quizzed old takeaways; write `[]` and leave existing entries alone.
+  Reviews no longer quiz.
+- `status`: `open`. Takeaways retired by earlier recall quizzes stay `retired`.
 
 **Seeded lessons** (`references/seeding.md`) are `lessons/<game_id>-S1`, written by `seed_finish` with
 `source: "seed"` and `seed_id`. The student confirmed each one, but it is Claude's sentence unless
-`student_words` is set. Treat them like any takeaway, for recall quizzes and recurrence. A real review
-of a seeded game numbers its own takeaways `-L1`, `-L2`, … as usual.
+`student_words` is set. Treat them like any takeaway for recurrence. A real review
+of a seeded game numbers its own takeaway `-L1` as usual.
 
 **Lessons from earlier reviews** (before October 2026) have the same document shape with older field
 names: `rule_check` (or `principle`) in place of `takeaway`, `cue`, `title`, `status`, `recall`, and no
 `move` / `played` / `better`: those are in `episodes/<the first of episode_ids>` (`moves[0]`, `played`,
 `teachable_move`). They also carry `category`, `belief` and `pattern_hash` from the old taxonomy:
-ignore those. Treat each one exactly like a takeaway; never rewrite them except to append `recall` or
-change `status`.
+ignore those. Treat each one exactly like a takeaway; never rewrite them.
 
 `games/<game_id>` — one per reviewed game:
 
@@ -99,28 +98,21 @@ an old lesson's move; write neither.
    `recurring_themes` into `notes.md`: a recurring theme is worth watching for when you choose key
    moments (go-teaching §3). A profile with `schema_version` 1 is the old shape: use `summary`, `watch`,
    `student_priorities` and `open_lesson_ids`, and rewrite it in the new shape at the end.
-2. The recall list (go-teaching §6): `get` up to five of the profile's `open_lesson_ids` (and, for an
-   old lesson, the first of its `episode_ids` to find its move). Order them: last `recall` result
-   `missed` first, then never quizzed, then the longest since the last quiz; a recurring theme breaks
-   ties. Keep the first three in `notes.md`: lesson id, game id, date, move N, the better move, the
-   move played, the takeaway (or `rule_check` / `principle`). Skip one with no better move.
 
 ## At the end
 
 After the dashboard is published, in this order (each write pins `if_version` when the document was
 read earlier; new documents need no version):
 
-1. `batch` (≤ 50 writes): `set` `games/<game_id>`; `set` each takeaway as `lessons/<game_id>-L<n>`
-   (one to three per game; n = 1, 2, … in the order of their first moments, continuing after any lessons
-   an earlier review of the same game left); `update` each lesson quizzed in this review ("Recall" in `notes.md`) with its `recall` list
-   plus the new entry, and `status: "retired"` when this was its second `found` in a row.
+1. `batch`: `set` `games/<game_id>`; `set` the takeaway as `lessons/<game_id>-L<n>` (one per game;
+   n = 1, or the next number after any lessons an earlier review of the same game left).
 2. Recompute the profile from the last 10 games (query `games` ordered by `date` desc, limit 10, then
    their `lesson_ids`): group the takeaways by `theme` (same wording, or the same situation in other
    words: then reuse one wording); a theme with takeaways from two or more games is recurring. Write
    `summary` (3–4 sentences), `watch` (1 sentence), `recurring_themes`, `open_lesson_ids` (every
    lesson with `status: "open"`, newest first), `games_reviewed`, `updated_at`, `schema_version: 2`;
    keep `student`, `student_priorities` and `seed`. `set` `profile/main` with `if_version` from the start.
-3. Say in chat, in one line, what was recorded ("memory: the game and 2 takeaways; 'answering moves that
+3. Say in chat, in one line, what was recorded ("memory: the game and its takeaway; 'answering moves that
    did not need an answer' has now come up in 3 of the last 10 games").
 
 If a pinned write fails with a version conflict, re-read that document and redo only that write.

@@ -94,7 +94,7 @@ class KatagoConfig:
 @dataclass
 class PrefetchConfig:
     """Background explain_moment work (contract §1.20): Claude's identical later call returns at once."""
-    moments: int = 3                        # when a survey finishes, prepare this many of its key moments (0: off)
+    moments: int = 1                        # when a survey finishes, prepare this many of its key moments (0: off)
     priority: int = 5                       # KataGo priority of background work: above the survey (0), below Claude's calls (10)
 
 
