@@ -164,9 +164,12 @@ consider there. "When my opponent saves a group in the corner, before answering 
 weak groups on the board." "Before I hane at the head of two stones, I check their cut." Not a single
 move to copy, and not a slogan ("read more", "think about direction").
 
-If theirs is vague, sharpen it with questions ("which situation exactly?", "what will you check
-first?"), not by writing it for them. If it is wrong (it contradicts the lines you showed), say so and
-show the line again. When it is a corrected judgment ("I was afraid of X; X is fine when…"), keep the
+Their first wording is good enough if it names a situation and something to check, even roughly: accept
+it and move on. If it is vague (a slogan, no situation), offer at most one question ("which situation
+exactly?"), not by writing it for them; whatever they answer, take it. Never ask them to reword a
+second time, and never hold the review until the sentence is polished: it is their note to
+themselves, not an answer to be graded. If it is wrong (it contradicts the lines you showed), say so
+and show the line again. When it is a corrected judgment ("I was afraid of X; X is fine when…"), keep the
 when: that is the part they will recognise.
 
 **One per game.** When a second moment teaches the same thing, fold it into the same takeaway ("these

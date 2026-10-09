@@ -70,8 +70,9 @@ and at most one more that teaches the same thing; say which comes first and why;
 4. *Back and forth* until they can explain it back: their questions ("what about X?" →
    `explain_moment(pos, X)`), your checks (go-teaching §4.4). Use the waits for the next moment's
    question.
-5. *Takeaway.* They say what they will think about or do differently; sharpen it with questions until
-   it is concrete and checkable at the board, and have them write it down in their own words
+5. *Takeaway.* They say what they will think about or do differently; accept their first wording if it
+   names a situation and something to check. If it is vague, ask at most one sharpening question, then
+   take what they say. Have them write it down in their own words
    (go-teaching §4.5). One takeaway per game: a second moment that teaches the same thing sharpens it,
    it does not add another. Record it in `moments.md`.
 
